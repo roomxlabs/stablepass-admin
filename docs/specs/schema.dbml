@@ -1,0 +1,232 @@
+// ============================================================================
+// StablePass — Data Model (DBML, for dbdiagram.io)
+// Generated from the Stage 1 blueprint. Paste into https://dbdiagram.io.
+// Core spine: trainer → horse → post/race. app_user owns all engagement.
+// No owner PII exists on any table (structural invariant, §6.6).
+// ============================================================================
+
+Enum subscription_status { trial  active  lapsed  canceled }
+Enum trainer_status      { active  onboarding }
+Enum horse_status        { active  disabled }
+Enum training_status     { spelling  pre_training  farm_training  city_training  racing  retired }
+Enum post_type           { video  photo  text  voice  news }
+Enum post_status         { draft  scheduled  published  unpublished }
+Enum race_status         { upcoming  finished }
+Enum race_source         { manual  api }
+Enum notification_type   { new_post  race_day  race_result  milestone }
+Enum device_platform     { ios  android }
+Enum reaction_emoji      { like  love  clap  pray  fire  flex  horse }   // 👍❤️👏🙏🔥💪🐎 operator finalises
+
+// ---------------------------------------------------------------- Users & Auth
+Table app_user {
+  id          uuid [pk, note: 'Equals Supabase auth.users id (1:1, no join)']
+  name        text [not null]
+  email       text [not null, unique]
+  phone       text
+  is_admin    boolean [not null, default: false, note: 'true only for the operator']
+  pref_new_post    boolean [not null, default: true, note: 'notification-type master switches']
+  pref_race_day    boolean [not null, default: true]
+  pref_race_result boolean [not null, default: true]
+  pref_milestone   boolean [not null, default: true]
+  created_at  timestamptz [not null]
+}
+
+Table subscription {
+  id                     uuid [pk]
+  user_id          uuid [not null, unique, ref: - app_user.id]  // 1:1
+  status                 subscription_status [not null, default: 'trial']
+  trial_ends_at          timestamptz [not null]
+  stripe_customer_id     text [note: 'null until conversion']
+  stripe_subscription_id text [note: 'null until conversion']
+  current_period_end     timestamptz
+  created_at             timestamptz [not null]
+  updated_at             timestamptz [not null]
+}
+
+// -------------------------------------------------------------------- Trainers
+Table trainer {
+  id           uuid [pk]
+  name         text [not null]
+  display_name text
+  slug         text [not null, unique]
+  stable_name  text [note: 'e.g. "Chris Waller Racing"']
+  location     text [note: 'e.g. "Rosehill, NSW"']
+  bio          text
+  photo_url    text
+  status       trainer_status [not null, default: 'active']
+  created_at   timestamptz [not null]
+}
+
+Table trainer_contact {                          // admin-only, internal staff PII
+  id          uuid [pk]
+  trainer_id  uuid [not null, ref: > trainer.id]
+  role        text [not null]
+  name        text [not null]
+  email       text
+  phone       text
+  created_at  timestamptz [not null]
+}
+
+// ---------------------------------------------------------------------- Horses
+Table horse {
+  id                uuid [pk, note: 'Stable through naming; all engagement keys on this']
+  trainer_id        uuid [not null, ref: > trainer.id, note: 'Fixed for life of row']
+  status            horse_status [not null, default: 'active']
+  training_status   training_status [not null, default: 'spelling']
+  sire              text
+  dam               text
+  display_name      text [not null, note: '"sire × dam" while unnamed']
+  racing_name       text
+  stable_name       text
+  sex               text
+  colour            text
+  foaling_year      integer [note: 'Age computed from this, never stored']
+  racing_api_id     text [note: 'Future feed match key']
+  starts            integer [not null, default: 0]
+  wins              integer [not null, default: 0]
+  places            integer [not null, default: 0]
+  prize_money_cents bigint  [not null, default: 0]
+  story             text
+  photo_url         text
+  created_at        timestamptz [not null]
+  disabled_at       timestamptz
+}
+
+// ----------------------------------------------------------------------- Posts
+Table post {
+  id                uuid [pk]
+  horse_id          uuid [not null, ref: > horse.id]
+  type              post_type [not null]
+  status            post_status [not null, default: 'draft']
+  title             text
+  body              text
+  mux_asset_id      text
+  mux_playback_id   text
+  media_url         text
+  source_trainer_id uuid [not null, ref: > trainer.id, note: 'Attribution / consent']
+  watermarked       boolean [not null, default: false]
+  like_count        integer [not null, default: 0, note: 'Denormalised for ranking']
+  scheduled_for     timestamptz
+  published_at      timestamptz
+  unpublished_at    timestamptz
+  expires_at        timestamptz
+  created_at        timestamptz [not null]
+}
+
+// ------------------------------------------------------------------ Engagement
+Table follow {
+  id            uuid [pk]
+  user_id uuid [not null, ref: > app_user.id]
+  trainer_id    uuid [ref: > trainer.id, note: 'set when following a trainer']
+  horse_id      uuid [ref: > horse.id,   note: 'set when following a horse']
+  created_at    timestamptz [not null]
+
+  Note: 'CHECK num_nonnulls(trainer_id, horse_id) = 1 — exactly one target'
+  indexes {
+    (user_id, trainer_id, horse_id) [unique]
+  }
+}
+
+Table notify_optin {                             // push opt-in: horse OR trainer (mirrors follow)
+  id            uuid [pk]
+  user_id       uuid [not null, ref: > app_user.id]
+  trainer_id    uuid [ref: > trainer.id, note: 'set when opting into a trainer']
+  horse_id      uuid [ref: > horse.id,   note: 'set when opting into a horse']
+  created_at    timestamptz [not null]
+
+  Note: 'CHECK num_nonnulls(trainer_id, horse_id) = 1 — exactly one target'
+  indexes {
+    (user_id, trainer_id, horse_id) [unique]
+  }
+}
+
+Table bookmark {
+  user_id uuid [not null, ref: > app_user.id]
+  post_id       uuid [not null, ref: > post.id]
+  created_at    timestamptz [not null, note: 'sort key, newest-first']
+
+  indexes {
+    (user_id, post_id) [pk]
+  }
+}
+
+Table reaction {
+  user_id uuid [not null, ref: > app_user.id]
+  post_id       uuid [not null, ref: > post.id]
+  emoji         reaction_emoji [not null]
+  created_at    timestamptz [not null]
+
+  indexes {
+    (user_id, post_id) [pk]
+  }
+}
+
+Table impression {
+  user_id uuid [not null, ref: > app_user.id]
+  post_id       uuid [not null, ref: > post.id]
+  seen_at       timestamptz [not null]
+
+  indexes {
+    (user_id, post_id) [pk]
+  }
+}
+
+// ------------------------------------------------------------------------ Race
+Table race {                                     // the shared EVENT (many horses can run in it)
+  id             uuid [pk]
+  status         race_status [not null, default: 'upcoming']
+  venue          text
+  race_date      date [not null]
+  race_number    integer
+  race_class     text [note: 'grade/class: Maiden, BM78, G2']
+  distance_m     integer [note: 'e.g. 1400']
+  scheduled_at   timestamptz [note: 'jump time; drives 2h-before alert']
+  racing_api_ref text [note: 'event feed ref; null while manual']
+  source         race_source [not null, default: 'manual']
+  finished_at    timestamptz
+  created_at     timestamptz [not null]
+
+  Note: 'UNIQUE (venue, race_date, race_number) — dedup key for horse-first find-or-create'
+  indexes {
+    (venue, race_date, race_number) [unique]
+  }
+}
+
+Table race_horse {                               // a horse's RUN in a race (junction + per-runner fields)
+  id              uuid [pk]
+  race_id         uuid [not null, ref: > race.id]
+  horse_id        uuid [not null, ref: > horse.id]
+  barrier         integer [note: 'per runner']
+  jockey          text [note: 'e.g. "T. Berry" (per runner)']
+  result          text [note: 'free text, e.g. "2nd of 12"; null until run']
+  finish_position integer
+  racing_api_ref  text [note: 'per-runner feed match via horse.racing_api_id']
+  created_at      timestamptz [not null]
+
+  indexes {
+    (race_id, horse_id) [unique]
+  }
+}
+
+// --------------------------------------------------------------- Notifications
+Table notification {
+  id            uuid [pk]
+  user_id uuid [not null, ref: > app_user.id]
+  type          notification_type [not null]
+  target_type   text [not null, note: "'race' | 'post'"]
+  target_id     uuid [not null, note: 'id of the race/post (polymorphic, write-once)']
+  title         text [not null]
+  body          text [not null]
+  read          boolean [not null, default: false]
+  pushed        boolean [not null, default: false]
+  created_at    timestamptz [not null]
+}
+
+Table device_token {
+  id            uuid [pk]
+  user_id uuid [not null, ref: > app_user.id]
+  expo_token    text [not null]
+  platform      device_platform [not null]
+  created_at    timestamptz [not null]
+  last_seen_at  timestamptz [not null, note: 'prune stale tokens']
+}

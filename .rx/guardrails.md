@@ -18,6 +18,7 @@ Admin never creates/edits/stores a horse **owner**. There is no owner field.
 
 ## 5. Media split
 Post video → Mux; images/voice → Supabase Storage; admin photo uploads go **direct to Storage**. No public post-media bucket.
+**Watermark = overlay / deterrence, not mutation.** The stablepass watermark is a display-time overlay applied for deterrence; the stored original asset is never modified. No upload step re-encodes or bakes the mark into the source file.
 
 ## 6. No betting / bookmaker anything
 No odds/bets/wagering/bookmaker UI or fields.

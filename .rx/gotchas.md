@@ -54,3 +54,33 @@ The `(dash)` shell gate in `layout.tsx` is airtight for a static page, but Next 
 **in parallel** and caches the layout across soft navigations — it won't re-run per page. Any
 data-bearing `(dash)` page (ENG-174 dashboard, resource screens) must re-assert `requireAdminPage()` /
 gate its own reads (or rely on RLS `*_all_admin`), not lean on the layout alone.
+
+## Admin API routes ship as T1 scaffold stubs — flesh them out in place
+Routes like `app/api/admin/posts/**` already exist in the base branch as stubs with a
+`// TODO(ticket):` marker and a placeholder body (`return ok({ id, action })`). An endpoint ticket
+(e.g. ENG-175/T5) edits those files in place, not greenfield — read the stub first and keep the
+`requireAdmin` preamble.
+
+## `api-contract.md` POST /posts row is stale (multipart + asset ids)
+The doc lists `POST /api/admin/posts` as `multipart` in with `muxAssetId/muxPlaybackId/mediaUrl` in the
+response. The guardrail-correct **direct-upload** flow (bytes never transit our server) is **JSON in →
+202 with an upload target out**: video `{ uploadUrl, muxUploadId }`, photo
+`{ uploadUrl, path, token, bucket }`. Mux asset/playback ids don't exist until *after* the client's
+direct upload (a webhook, later). T6 Compose must send JSON then PUT the bytes to the returned target.
+A `502 storage_unavailable` code (photo path) was added alongside the doc's `mux_unavailable`.
+
+## push-dispatch is invoked with the admin session, not a service-role secret
+Publish/result fan-out calls `sb.functions.invoke("push-dispatch", …)` on the caller's RLS client — the
+edge function holds service role internally (T2). The admin BFF never imports a service-role key. Keep
+the fan-out best-effort (wrap in try/catch) so a notify failure never rolls back the status transition.
+
+## No Mux SDK dependency — use the REST API
+`lib/mux.ts` creates a direct upload via `fetch` to `https://api.mux.com/video/v1/uploads` with a
+Basic-auth header from `MUX_TOKEN_ID`/`MUX_TOKEN_SECRET`; `playback_policy: ["signed"]`. Don't add
+`@mux/mux-node` — it isn't in package.json and isn't needed for upload-URL creation.
+
+## Route unit tests: mock `@/lib/supabase/server`, not the gate
+`requireAdmin()` calls `supabaseServer()`, so `vi.mock("@/lib/supabase/server")` drives both the gate
+(`app_user.is_admin`) and the route's own reads/writes from one fake. `lib/testing/supabase-fake.ts` is
+a reusable scriptable client (per-table `select` vs `mutate` results, `functions.invoke`,
+`storage.createSignedUploadUrl`) — reuse it for the other admin route tickets.

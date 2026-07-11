@@ -164,3 +164,15 @@ screenshot against `next start -p 3002` — far lighter. For a screen with serve
 extend `e2e/mock-supabase.mjs` (the Next server hits :8787, so Playwright `page.route` can't intercept
 those); for browser-side BFF/Storage calls (create-draft, signed-upload PUT), use `page.route` in the
 spec so you don't touch the shared mock. Both are additive/collision-safe.
+
+## `e2e/mock-supabase.mjs` now has a GENERIC DB handler that shadows post/horse (ENG-179)
+Trainers (ENG-179) replaced the per-table mock fixtures with an in-memory `DB` + a catch-all
+`if (GET && startsWith('/rest/v1/') && hasOwnProperty(DB, table)) return DB[table]`. `DB` holds
+`trainer/horse/post/trainer_contact`, so that one handler now **shadows `/rest/v1/post` and
+`/rest/v1/horse` for every screen** — a later screen's server reads of those tables silently get
+trainer-shaped rows (no `horse_id`/`title`/`status`). Fix: put the new screen's `/rest/v1/post` +
+`/rest/v1/horse` handlers **before** the generic one and disambiguate by the screen's own query
+filters — the dashboard (ENG-174) keys on `status=eq.published` (post) and `status=eq.active` (horse);
+trainers' reads carry neither, so they fall through untouched. Be HEAD-aware for `head:true` count
+queries: emit a `Content-Range: 0-N/TOTAL` header (see `sendTable`) or `count` comes back null and the
+tiles render 0. This file is a cross-ticket hotspot — expect to reconcile it on every screen rebase.

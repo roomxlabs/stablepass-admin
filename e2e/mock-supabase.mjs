@@ -106,6 +106,52 @@ function sendJson(res, status, body) {
   res.end(payload);
 }
 
+// Emulates a PostgREST list/count response: sets Content-Range so supabase-js
+// can read `count` from `count: 'exact'` queries (dashboard tiles rely on this),
+// and returns no body for the HEAD requests that `head: true` issues.
+function sendTable(res, method, rows, total) {
+  const count = total ?? rows.length;
+  const headers = {
+    "Content-Type": "application/json",
+    "Content-Range": `0-${Math.max(0, rows.length - 1)}/${count}`,
+    ...corsHeaders(),
+  };
+  if (method === "HEAD") {
+    res.writeHead(200, headers);
+    res.end();
+    return;
+  }
+  res.writeHead(200, headers);
+  res.end(JSON.stringify(rows));
+}
+
+// Dashboard (ENG-174 / T4) fixtures. One published-post set feeds three reads:
+// the recently-published table, the quiet-horse recency check, and race-day
+// per-runner post recency. h1 posted this week (loud); h2/h3 are stale (quiet).
+const DASH_POSTS = [
+  { id: "p1", horse_id: "h1", type: "video", title: "Last fast gallop before Saturday", like_count: 142, published_at: new Date(Date.now() - 2 * 36e5).toISOString(), horse: { display_name: "Mahogany", racing_name: "MAHOGANY (AUS)" }, trainer: { name: "Chris Waller" } },
+  { id: "p4", horse_id: "h1", type: "photo", title: "Morning trackwork in the fog", like_count: 73, published_at: new Date(Date.now() - 26 * 36e5).toISOString(), horse: { display_name: "Mahogany", racing_name: "MAHOGANY (AUS)" }, trainer: { name: "Chris Waller" } },
+  { id: "p2", horse_id: "h2", type: "photo", title: "Track session - three furlongs strong", like_count: 89, published_at: new Date(Date.now() - 9 * 864e5).toISOString(), horse: { display_name: "Black Caviar", racing_name: "BLACK CAVIAR (AUS)" }, trainer: { name: "Peter Moody" } },
+  { id: "p3", horse_id: "h3", type: "text", title: "Routine day - barrier trial complete", like_count: 56, published_at: new Date(Date.now() - 12 * 864e5).toISOString(), horse: { display_name: "Winx", racing_name: "WINX (AUS)" }, trainer: { name: "Chris Waller" } },
+];
+
+// Upcoming races within 24h. h1 posted 2h ago (green "Posted"), h9 never
+// posted (amber "No post yet"), h2 posted 9d ago (neutral "Last post").
+const DASH_RACES = [
+  { id: "r1", venue: "Caulfield", race_number: 3, race_class: "Maiden", scheduled_at: new Date(Date.now() + 2 * 36e5).toISOString(), race_horse: [{ horse_id: "h1", horse: { display_name: "Mahogany", racing_name: "MAHOGANY (AUS)", trainer: { name: "Chris Waller", display_name: "Chris Waller" } } }] },
+  { id: "r2", venue: "Randwick", race_number: 5, race_class: "BM78", scheduled_at: new Date(Date.now() + 4 * 36e5).toISOString(), race_horse: [{ horse_id: "h9", horse: { display_name: "Northern Star", racing_name: null, trainer: { name: "Peter Moody", display_name: "Peter Moody" } } }] },
+  { id: "r3", venue: "Rosehill", race_number: 7, race_class: "G2", scheduled_at: new Date(Date.now() + 6 * 36e5).toISOString(), race_horse: [{ horse_id: "h2", horse: { display_name: "Black Caviar", racing_name: "BLACK CAVIAR (AUS)", trainer: { name: "Peter Moody", display_name: "Peter Moody" } } }] },
+];
+
+// Active horses for the quiet-horse check. h1 posted this week (loud); h2/h3
+// stale; h5 never posted — so three quiet horses, one retired (matches mockup).
+const DASH_HORSES = [
+  { id: "h1", display_name: "Mahogany", racing_name: "MAHOGANY (AUS)", training_status: "racing", photo_url: null, status: "active" },
+  { id: "h2", display_name: "Black Caviar", racing_name: "BLACK CAVIAR (AUS)", training_status: "city_training", photo_url: null, status: "active" },
+  { id: "h3", display_name: "Winx", racing_name: "WINX (AUS)", training_status: "retired", photo_url: null, status: "active" },
+  { id: "h5", display_name: "Anamoe", racing_name: "ANAMOE (AUS)", training_status: "spelling", photo_url: null, status: "active" },
+];
+
 async function drainBody(req) {
   return new Promise((resolve) => {
     const chunks = [];
@@ -139,6 +185,30 @@ export function startMockSupabase() {
       setEmpty(empty);
       sendJson(res, 200, { ok: true, empty });
       return;
+    }
+
+    // Dashboard (ENG-174 / T4) reads. These run BEFORE the generic DB-backed
+    // Trainers handler below, which otherwise shadows /rest/v1/post and
+    // /rest/v1/horse. Disambiguated by the dashboard's own query signatures: its
+    // post reads filter status=eq.published and its horse read filters
+    // status=eq.active — trainers' post/horse reads carry neither, so they fall
+    // through to the DB handler untouched. GET returns rows; HEAD returns the
+    // Content-Range count for the `count: 'exact'` tile queries.
+    if (req.method === "GET" || req.method === "HEAD") {
+      const p = url.pathname;
+      const qs = url.search;
+      if (p.startsWith("/rest/v1/reaction")) { sendTable(res, req.method, [], 3420); return; }
+      if (p.startsWith("/rest/v1/bookmark")) { sendTable(res, req.method, [], 612); return; }
+      if (p.startsWith("/rest/v1/subscription")) { sendTable(res, req.method, [], 412); return; }
+      if (p.startsWith("/rest/v1/race")) { sendTable(res, req.method, DASH_RACES, DASH_RACES.length); return; }
+      if (p.startsWith("/rest/v1/post") && qs.includes("status=eq.published")) {
+        sendTable(res, req.method, DASH_POSTS, 68); // 68 = posts-this-week tile
+        return;
+      }
+      if (p.startsWith("/rest/v1/horse") && qs.includes("status=eq.active")) {
+        sendTable(res, req.method, DASH_HORSES, DASH_HORSES.length);
+        return;
+      }
     }
 
     // PostgREST table reads backing the Trainers list (trainer / horse / post /

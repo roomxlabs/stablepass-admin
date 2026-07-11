@@ -164,3 +164,23 @@ screenshot against `next start -p 3002` — far lighter. For a screen with serve
 extend `e2e/mock-supabase.mjs` (the Next server hits :8787, so Playwright `page.route` can't intercept
 those); for browser-side BFF/Storage calls (create-draft, signed-upload PUT), use `page.route` in the
 spec so you don't touch the shared mock. Both are additive/collision-safe.
+
+## mock-supabase.mjs now has a GENERIC `/rest/v1/<table>` dispatcher — it shadows resource handlers
+T9 (trainers) added a `startsWith("/rest/v1/")` handler backed by a `DB` object (`{trainer,horse,post,
+trainer_contact}`) built from a trainer seed, flipped populated↔empty via `POST /__control {empty}`. It
+runs **before** the older per-resource handlers, so it silently serves ALL `/rest/v1/<table>` GETs whose
+table is a `DB` key — including `post` (as trainer "last-activity" stubs: `{source_trainer_id,
+published_at,created_at}`, **no `status`**). A new resource screen that adds its own `/rest/v1/<table>`
+handler AFTER the dispatcher never runs and gets those stubs instead (symptom: SSR `Cannot read
+properties of undefined (reading 'label')` because rows lack the fields you map). Fix: place your
+handler **before** the generic dispatcher and **guard it** on a query-string discriminator unique to
+your screen's read (posts library selects `status`; the trainers post read selects only
+`source_trainer_id,published_at,created_at`) so you don't hijack the other screen's same-path read. Set
+`Content-Range: start-end/total` for `count=exact` list reads (postgrest-js reads the total from it).
+
+## The integration base can advance WHILE you build — rebase before you PR
+`feature/admin-dashboard-v1` is shared; a sibling ticket (e.g. T9) can merge mid-build, moving the tip
+past your branch point. `git worktree` shares refs, so a sibling's `git fetch` updates your
+`origin/<base>` too. Before opening the PR: `git fetch && git rebase origin/feature/admin-dashboard-v1`,
+then re-run the FULL gate (a shared file like `e2e/mock-supabase.mjs` can merge cleanly by text yet
+collide at runtime — see the dispatcher gotcha above).

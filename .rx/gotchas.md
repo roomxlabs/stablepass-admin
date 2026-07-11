@@ -84,3 +84,26 @@ Basic-auth header from `MUX_TOKEN_ID`/`MUX_TOKEN_SECRET`; `playback_policy: ["si
 (`app_user.is_admin`) and the route's own reads/writes from one fake. `lib/testing/supabase-fake.ts` is
 a reusable scriptable client (per-table `select` vs `mutate` results, `functions.invoke`,
 `storage.createSignedUploadUrl`) — reuse it for the other admin route tickets.
+
+## e2e mock must honour `id=eq.` for `.maybeSingle()` single-row reads
+This repo's `@supabase/postgrest-js` `.maybeSingle()` does NOT set the `pgrst.object` Accept header — it fetches as a
+**list** and enforces cardinality client-side (errors → `data=null` if >1 row comes back). So a mock
+(`e2e/mock-supabase.mjs`) that returns the whole fixture array for every `/rest/v1/<table>` GET makes a
+`.eq("id",id).maybeSingle()` page read (e.g. the horse edit page) see N rows, null out, and hit `notFound()`. Do-this:
+in the mock, branch on `url.search.includes("id=eq.")` and return the single matching fixture (object for `pgrst.object`,
+singleton array otherwise). A PK-filtered `.maybeSingle()`/`.single()` is fine against a real DB (0/1 row) — this only bites the mock.
+
+## Admin resource-screen component classes aren't in globals.css yet
+ENG-173 ported only tokens + shell + buttons/inputs into `app/globals.css`. The resource-screen classes the mockups use
+(`.adm-card`, `.chip`, `.pill`, `.horse-grid-adm`/`.horse-card-adm`, `.upload-zone`, `.btn-light`, `.adm-filter-bar`,
+`.search-mini`) live only in the shared mockups `style.css`. Since `app/globals.css` is usually NOT in a screen ticket's
+surface, ENG-178 (horses) scoped them into `app/(dash)/horses/horses.css` (imported by its pages) with values ported
+verbatim from `style.css`. The next resource screen (trainers) will re-need a few — either promote the shared ones to
+`globals.css` via a `shared-surface` ticket, or keep scoping per screen (duplicate CSS is harmless).
+
+## `horse.status` (active/disabled) = visibility; `horse.training_status` = the phase
+The add/edit "Visibility" select maps to `horse_status` (`active`=Visible, `disabled`=Hidden); the "Current status"
+select maps to `training_status` (spelling…racing…retired). The list filter chips are training-status based: **Active =
+`training_status != 'retired'`**, Racing = `'racing'`, Retired = `'retired'` (Active+Retired partition All; Racing ⊂
+Active). `trainer_id` is **fixed for life of row** (schema note) — the edit route's allowlist omits it and the edit form
+disables the trainer dropdown.

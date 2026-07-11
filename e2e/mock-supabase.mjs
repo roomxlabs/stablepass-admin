@@ -113,6 +113,27 @@ export function startMockSupabase() {
       return;
     }
 
+    // Compose (ENG-176) reads the pickable horses + full trainer list as
+    // Layer A PostgREST reads from the server client. Return fixtures with the
+    // trainer embedded (as `trainer:trainer_id(...)` yields).
+    if (req.method === "GET" && url.pathname.startsWith("/rest/v1/horse")) {
+      sendJson(res, 200, [
+        { id: "h1", display_name: "Mahogany", racing_name: "Mahogany", photo_url: null, stable_name: "Randwick", trainer_id: "t1", trainer: { id: "t1", name: "Chris Waller", display_name: "Chris Waller" } },
+        { id: "h2", display_name: "Black Caviar", racing_name: "Black Caviar", photo_url: null, stable_name: "Caulfield", trainer_id: "t2", trainer: { id: "t2", name: "Peter Moody", display_name: "Peter Moody" } },
+        { id: "h3", display_name: "Winx", racing_name: "Winx", photo_url: null, stable_name: "Rosehill", trainer_id: "t1", trainer: { id: "t1", name: "Chris Waller", display_name: "Chris Waller" } },
+      ]);
+      return;
+    }
+
+    if (req.method === "GET" && url.pathname.startsWith("/rest/v1/trainer")) {
+      sendJson(res, 200, [
+        { id: "t1", name: "Chris Waller", display_name: "Chris Waller" },
+        { id: "t2", name: "Peter Moody", display_name: "Peter Moody" },
+        { id: "t3", name: "Gai Waterhouse", display_name: "Gai Waterhouse" },
+      ]);
+      return;
+    }
+
     if (req.method === "POST" && url.pathname === "/auth/v1/logout") {
       res.writeHead(204, corsHeaders());
       res.end();

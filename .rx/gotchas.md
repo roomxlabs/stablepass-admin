@@ -107,3 +107,39 @@ select maps to `training_status` (spelling…racing…retired). The list filter 
 `training_status != 'retired'`**, Racing = `'racing'`, Retired = `'retired'` (Active+Retired partition All; Racing ⊂
 Active). `trainer_id` is **fixed for life of row** (schema note) — the edit route's allowlist omits it and the edit form
 disables the trainer dropdown.
+## Horse/trainer LISTS have no BFF endpoint — read them server-side ([PG])
+`app/api/admin/horses/route.ts` + `trainers/route.ts` are **POST-create only**; there is no GET list.
+Per `screen-api-map.md`, listing is Layer A `[PG] GET horse`/`trainer`. Elevated admin reads need the
+session, which lives in **httpOnly cookies** — so the **browser** client (`supabaseBrowser`, anon) can't
+do them. Read horse/trainer **server-side** in the page via `requireAdminPage()`'s `sb` and pass as
+props (T6 Compose does this). The browser client is only good for token-authorized ops (Storage
+`uploadToSignedUrl`), not RLS-gated table reads. Field mapping: horse name = `racing_name ?? display_name`;
+byline default = `horse.trainer_id`; embed the trainer with `trainer:trainer_id(id,name,display_name)`.
+
+## Post shape: it's `type` + `body`, not `media_kind` + `caption`
+`post.type in ('video','photo','text','voice','news')` (compose creates video/photo only); the caption
+is `post.body`; the byline is `post.source_trainer_id`. Create (`POST /api/admin/posts`) accepts
+`{horseId,type,sourceTrainerId,title?}` and does **not** take the caption — set `body` afterwards via
+`PATCH /api/admin/posts/:id {body, sourceTrainerId}`.
+
+## FE screens need a CSS module — globals.css only carries the shell subset
+`app/globals.css` has tokens + buttons + `admin-shell`/`admin-nav`/`admin-topbar` only. The compose /
+form / member-post classes (`compose-grid`, `upload-zone`, `adm-input`, `.pill`, `.btn-light`,
+`post-web`…) are **absent**. Don't edit globals.css from a screen ticket (collides with sibling screens);
+port the needed rules into a scoped `*.module.css` inside the screen's own surface, referencing the
+global `:root` tokens. Combine a global base class with a module modifier in JSX
+(`className={`btn ${styles.btnLight}`}`).
+
+## Component tests: repo ships no jsdom/testing-library — add per test
+`vitest.config.ts` is `environment: "node"`. For a `renders`-style component test add devDeps
+`@testing-library/react` + `jsdom` and put `// @vitest-environment jsdom` at the top of the `.test.tsx`.
+Extract the network layer into a sibling `api.ts` and `vi.mock("./api")` so the component test never
+touches fetch/Supabase/Mux. `URL.createObjectURL` is absent in jsdom — guard it in the component
+(`typeof URL.createObjectURL === "function"`), don't assume it.
+
+## Screenshots: `next start`, not `next dev`; mock server-reads, route browser-calls
+Dev-mode Turbopack compile + Chromium can OOM a 16 GB box mid-run. Build once (`npm run build`) then
+screenshot against `next start -p 3002` — far lighter. For a screen with server-side `[PG]` reads,
+extend `e2e/mock-supabase.mjs` (the Next server hits :8787, so Playwright `page.route` can't intercept
+those); for browser-side BFF/Storage calls (create-draft, signed-upload PUT), use `page.route` in the
+spec so you don't touch the shared mock. Both are additive/collision-safe.

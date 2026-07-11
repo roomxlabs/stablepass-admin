@@ -22,6 +22,20 @@ const HORSE_FIXTURES = [
   { id: "h8", trainer_id: "t3", display_name: "Saxon Warrior", racing_name: "SAXON WARRIOR (JPN)", stable_name: "Saxon Warrior", sire: "Deep Impact", dam: "Maybe", sex: "gelding", colour: "Bay", foaling_year: 2020, status: "active", training_status: "racing", starts: 12, wins: 3, places: 4, prize_money_cents: 210000000, story: "", photo_url: null, created_at: "2026-01-01T00:00:00Z", trainer: { display_name: "James Cummings" }, follows: [{ count: 2100 }], posts: [{ count: 23 }] },
 ];
 
+// Posts library (T7 / ENG-177). Rows mirror the shape T5's GET /api/admin/posts
+// returns: post columns + embedded horse (with photo) + source trainer. A mix of
+// statuses so the row-action variants render. photo_url is null so the neutral
+// thumb fallback shows (no external asset needed).
+const POST_FIXTURES = [
+  { id: "p1", horse_id: "h1", type: "video", status: "published", title: "Last fast gallop before Saturday", body: "He's spot-on. Track was rolling and he came home strong.", like_count: 142, published_at: "2026-07-11T04:10:00Z", scheduled_for: null, created_at: "2026-07-11T04:00:00Z", horse: { display_name: "Mahogany", racing_name: "MAHOGANY (AUS)", photo_url: null }, trainer: { name: "Chris Waller" } },
+  { id: "p2", horse_id: "h3", type: "photo", status: "published", title: "Track session — three furlongs strong", body: "Morning at Caulfield, going was good.", like_count: 89, published_at: "2026-07-11T00:10:00Z", scheduled_for: null, created_at: "2026-07-11T00:00:00Z", horse: { display_name: "Black Caviar", racing_name: "BLACK CAVIAR (AUS)", photo_url: null }, trainer: { name: "Peter Moody" } },
+  { id: "p3", horse_id: "h4", type: "video", status: "scheduled", title: "Saturday preview — race morning walk", body: "Set to go live race morning, 6:00am.", like_count: 0, published_at: null, scheduled_for: "2026-07-18T20:00:00Z", created_at: "2026-07-10T22:00:00Z", horse: { display_name: "Northern Star", racing_name: null, photo_url: null }, trainer: { name: "Peter Moody" } },
+  { id: "p4", horse_id: "h2", type: "text", status: "published", title: "Routine day — barrier trial complete", body: "Pleased with the way he finished off.", like_count: 56, published_at: "2026-07-10T09:00:00Z", scheduled_for: null, created_at: "2026-07-10T09:00:00Z", horse: { display_name: "Verry Elleegant", racing_name: "VERRY ELLEEGANT (NZ)", photo_url: null }, trainer: { name: "Chris Waller" } },
+  { id: "p5", horse_id: "h6", type: "photo", status: "draft", title: "Quiet day in the box", body: "Draft, waiting on photo from Chris.", like_count: 0, published_at: null, scheduled_for: null, created_at: "2026-07-10T06:00:00Z", horse: { display_name: "Winx", racing_name: "WINX (AUS)", photo_url: null }, trainer: { name: "Chris Waller" } },
+  { id: "p6", horse_id: "h1", type: "video", status: "published", title: "Track gallop — pack work", body: "Group session from Rosehill.", like_count: 118, published_at: "2026-07-09T05:00:00Z", scheduled_for: null, created_at: "2026-07-09T05:00:00Z", horse: { display_name: "Mahogany", racing_name: "MAHOGANY (AUS)", photo_url: null }, trainer: { name: "Chris Waller" } },
+  { id: "p7", horse_id: "h1", type: "photo", status: "unpublished", title: "Stable life — Mahogany on the walker", body: "Cool-down after morning work.", like_count: 34, published_at: "2026-07-08T05:00:00Z", scheduled_for: null, created_at: "2026-07-08T05:00:00Z", horse: { display_name: "Mahogany", racing_name: "MAHOGANY (AUS)", photo_url: null }, trainer: { name: "Chris Waller" } },
+];
+
 const ADMIN_USER = {
   id: "admin-0001",
   aud: "authenticated",
@@ -209,6 +223,27 @@ export function startMockSupabase() {
         sendTable(res, req.method, DASH_HORSES, DASH_HORSES.length);
         return;
       }
+    }
+    // Posts library (T7 / ENG-177). The list read selects `status` — which the
+    // trainers' post read (source_trainer_id,published_at,created_at) does not —
+    // so use that to serve the full post-library fixtures here, ahead of the
+    // generic table reader below (whose synthetic `post` rows exist only for the
+    // trainers "last activity" grouping). The list requests count=exact, so the
+    // total rides the Content-Range header; the __none__ sentinel drives empty.
+    if (req.method === "GET" && url.pathname.startsWith("/rest/v1/post") && url.search.includes("status")) {
+      if (url.search.includes("__none__")) {
+        res.writeHead(200, { "Content-Type": "application/json", "Content-Range": "*/0", ...corsHeaders() });
+        res.end("[]");
+        return;
+      }
+      const total = POST_FIXTURES.length;
+      res.writeHead(200, {
+        "Content-Type": "application/json",
+        "Content-Range": `0-${Math.max(0, total - 1)}/${total}`,
+        ...corsHeaders(),
+      });
+      res.end(JSON.stringify(POST_FIXTURES));
+      return;
     }
 
     // PostgREST table reads backing the Trainers list (trainer / horse / post /

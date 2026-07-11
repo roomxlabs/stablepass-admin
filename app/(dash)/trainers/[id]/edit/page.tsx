@@ -2,6 +2,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { supabaseServer } from "@/lib/supabase/server";
 import TrainerForm, { type ContactInput, type TrainerData } from "../../TrainerForm";
+import "../../trainers.css";
 
 // Edit trainer — reuses the add-trainer form (mockup 08), pre-filled. Loads the
 // trainer + its internal contacts server-side (admin RLS) and hands them to the

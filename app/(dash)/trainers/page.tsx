@@ -2,6 +2,7 @@ import Link from "next/link";
 import { supabaseServer } from "@/lib/supabase/server";
 import { Icon } from "../icons";
 import { listTrainers, timeAgo, type TrainerRow } from "./data";
+import "./trainers.css";
 
 // Trainers DB — list with All/Active/Onboarding filters, ?q= search over
 // name/stable/location, horse count, last-post recency and roster status.

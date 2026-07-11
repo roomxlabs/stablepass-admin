@@ -1,5 +1,6 @@
 import Link from "next/link";
 import TrainerForm from "../TrainerForm";
+import "../trainers.css";
 
 // Add trainer — matches mockups/web/admin/screens/08-add-trainer.html. Gated by
 // the (dash) layout (requireAdminPage). The form posts to the admin trainer +

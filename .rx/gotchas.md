@@ -84,3 +84,24 @@ Basic-auth header from `MUX_TOKEN_ID`/`MUX_TOKEN_SECRET`; `playback_policy: ["si
 (`app_user.is_admin`) and the route's own reads/writes from one fake. `lib/testing/supabase-fake.ts` is
 a reusable scriptable client (per-table `select` vs `mutate` results, `functions.invoke`,
 `storage.createSignedUploadUrl`) — reuse it for the other admin route tickets.
+
+## Mockups live OUTSIDE the repo — real path differs from `.rx/mockups.md`
+`.rx/mockups.md` writes the source as `../docs/dev-handover/mockups/web/admin/`, but the files actually
+sit at `<repo>/../dev-handover/StablePass-mockups/mockups/web/admin/screens/` (and the shared design
+system at `.../mockups/web/style.css`). Resolve with `find … -name '<NN>-*.html'` rather than trusting
+the manifest path. Build live from the HTML + `style.css` (real token values), not from memory.
+
+## A resource LIST screen needs no GET endpoint — Server Component reads via `supabaseServer()`
+The admin list pages are Server Components under `app/(dash)/<res>/page.tsx` that query the RLS admin
+client directly (gated by the layout). So a list ticket's surface may legitimately declare only the
+mutation routes (e.g. ENG-179 trainers owns `POST/PATCH`, no `GET`). Keep data-fetching in a small
+injectable helper (`app/(dash)/<res>/data.ts` taking `sb`) so it's unit-testable against the fake, and
+use flat per-table queries + JS merge for derived columns (horse count, last-post, contact email) —
+PostgREST embedding can't be verified here (no live backend), flat selects can.
+
+## Screenshot a data-backed `(dash)` screen: extend the mock-Supabase harness
+`e2e/mock-supabase.mjs` (from ENG-173) serves GoTrue + `app_user`. To screenshot a list/detail screen,
+add PostgREST reads for its tables + a `POST /__control {empty}` toggle so one spec captures both the
+populated and empty states (see ENG-179's trainer/horse/post/trainer_contact seed). The spec signs in
+via the form, flips `/__control`, `goto`s the route, waits on a `data-testid`, and screenshots
+`fullPage`. No live backend needed. Reuse this for horses (T8) and any future resource screen.

@@ -2,6 +2,7 @@ import Link from "next/link";
 import { supabaseServer } from "@/lib/supabase/server";
 import { Icon } from "../icons";
 import { listTrainers, timeAgo, type TrainerRow } from "./data";
+import { TRAINER_PHOTO_BUCKET, signPhotoMap } from "@/lib/storage/photos";
 import "./trainers.css";
 
 // Trainers DB — list with All/Active/Onboarding filters, ?q= search over
@@ -39,6 +40,13 @@ export default async function TrainersPage({
 
   const sb = await supabaseServer();
   const { rows, counts } = await listTrainers(sb, { status, q });
+
+  // Private bucket: sign each trainer's photo path for the avatar thumbnails.
+  const trainerPhotos = await signPhotoMap(sb, TRAINER_PHOTO_BUCKET, rows.map((r) => r.photoUrl));
+  const signedRows = rows.map((r) => ({
+    ...r,
+    photoUrl: r.photoUrl ? trainerPhotos.get(r.photoUrl) ?? null : null,
+  }));
 
   const filtered = Boolean(status || q);
 
@@ -78,7 +86,7 @@ export default async function TrainersPage({
             </form>
           </div>
 
-          {rows.length === 0 ? (
+          {signedRows.length === 0 ? (
             <div className="adm-empty" data-testid="trainers-empty">
               <h3>{filtered ? "No trainers match" : "No trainers yet"}</h3>
               <p>
@@ -105,7 +113,7 @@ export default async function TrainersPage({
                 </tr>
               </thead>
               <tbody>
-                {rows.map((row) => (
+                {signedRows.map((row) => (
                   <tr key={row.id}>
                     <td className="with-thumb">
                       <TrainerThumb row={row} />

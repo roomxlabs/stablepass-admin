@@ -7,6 +7,7 @@ import {
   humanizeTrainingStatus,
   statusPillClass,
 } from "./format";
+import { HORSE_PHOTO_BUCKET, signPhotoMap } from "@/lib/storage/photos";
 import "./horses.css";
 
 // Horses DB — screens/05-horses.html. Data-bearing (dash) page: it re-asserts
@@ -119,6 +120,8 @@ export default async function HorsesPage({
   const current = Math.min(requestedPage, pageCount);
   const start = (current - 1) * PAGE_SIZE;
   const shown = filtered.slice(start, start + PAGE_SIZE);
+  // Private bucket: turn each stored photo path into a signed URL for display.
+  const covers = await signPhotoMap(sb, HORSE_PHOTO_BUCKET, shown.map((h) => h.photo_url));
 
   return (
     <>
@@ -173,12 +176,14 @@ export default async function HorsesPage({
             <>
               <div style={{ padding: 20 }}>
                 <div className="horse-grid-adm">
-                  {shown.map((h) => (
+                  {shown.map((h) => {
+                    const cover = h.photo_url ? covers.get(h.photo_url) ?? null : null;
+                    return (
                     <Link key={h.id} href={`/horses/${h.id}/edit`} className="horse-card-adm">
                       <div className="cover">
-                        {h.photo_url ? (
-                          // eslint-disable-next-line @next/next/no-img-element -- remote Storage photo; mockup uses a plain cover img
-                          <img src={h.photo_url} alt="" />
+                        {cover ? (
+                          // eslint-disable-next-line @next/next/no-img-element -- signed Storage photo; mockup uses a plain cover img
+                          <img src={cover} alt="" />
                         ) : (
                           <div className="cover-fallback">
                             <Icon name="horseHead" />
@@ -210,7 +215,8 @@ export default async function HorsesPage({
                         </div>
                       </div>
                     </Link>
-                  ))}
+                    );
+                  })}
                 </div>
               </div>
 

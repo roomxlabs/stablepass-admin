@@ -3,6 +3,7 @@ import { requireAdminPage } from "@/lib/auth/admin";
 import PostsLibrary from "./PostsLibrary";
 import { mapPostRow, parseStatusFilter } from "./format";
 import type { PostRow, StatusCounts, StatusFilter } from "./types";
+import { HORSE_PHOTO_BUCKET, signPhotoMap } from "@/lib/storage/photos";
 import "./posts.css";
 
 // Posts library — screens/04-posts.html. Data-bearing (dash) page: it
@@ -87,9 +88,17 @@ export default async function PostsPage({
     { all: 0, published: 0, scheduled: 0, draft: 0, unpublished: 0 },
   );
 
+  // Private bucket: sign horse thumbnails (stored as object paths) for display.
+  const items = rows.map(mapPostRow);
+  const thumbs = await signPhotoMap(sb, HORSE_PHOTO_BUCKET, items.map((p) => p.thumbUrl));
+  const posts = items.map((p) => ({
+    ...p,
+    thumbUrl: p.thumbUrl ? thumbs.get(p.thumbUrl) ?? null : null,
+  }));
+
   return (
     <PostsLibrary
-      posts={rows.map(mapPostRow)}
+      posts={posts}
       status={status}
       counts={counts}
       q={q}

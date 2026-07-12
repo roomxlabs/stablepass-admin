@@ -7,6 +7,7 @@ import {
   type QuietHorse,
   type RaceRunner,
 } from "@/lib/dashboard/queries";
+import { HORSE_PHOTO_BUCKET, signPhotoMap } from "@/lib/storage/photos";
 import { Icon } from "./icons";
 import "./dashboard.css";
 
@@ -82,6 +83,13 @@ export default async function DashboardPage() {
   // Flatten races → one queue row per running horse (matches the mockup rows).
   const queue = races.flatMap((r) =>
     r.runners.map((runner) => ({ race: r, runner, key: `${r.id}:${runner.horseId}` })),
+  );
+
+  // Private bucket: sign the quiet-horse thumbnails for display.
+  const quietCovers = await signPhotoMap(
+    sb,
+    HORSE_PHOTO_BUCKET,
+    analytics.quietHorses.map((h) => h.imageUrl),
   );
 
   return (
@@ -177,12 +185,14 @@ export default async function DashboardPage() {
             {analytics.quietHorses.length === 0 ? (
               <div className="adm-empty">Every active horse has posted this week. 🎉</div>
             ) : (
-              analytics.quietHorses.slice(0, 6).map((h) => (
+              analytics.quietHorses.slice(0, 6).map((h) => {
+                const cover = h.imageUrl ? quietCovers.get(h.imageUrl) ?? null : null;
+                return (
                 <div className="adm-quiet-row" key={h.id}>
                   <div className="adm-quiet-thumb">
-                    {h.imageUrl ? (
-                      // eslint-disable-next-line @next/next/no-img-element -- remote Storage photo; mockup uses a plain thumb img
-                      <img src={h.imageUrl} alt="" />
+                    {cover ? (
+                      // eslint-disable-next-line @next/next/no-img-element -- signed Storage photo; mockup uses a plain thumb img
+                      <img src={cover} alt="" />
                     ) : (
                       <Icon name="horseHead" />
                     )}
@@ -197,7 +207,8 @@ export default async function DashboardPage() {
                     Post
                   </Link>
                 </div>
-              ))
+                );
+              })
             )}
           </div>
         </div>

@@ -1,9 +1,10 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { supabaseBrowser } from "@/lib/supabase/client";
+import { signPhoto } from "@/lib/storage/photos";
 import { TRAINING_STATUSES, dollarsToCents, humanizeTrainingStatus } from "./format";
 
 // Shared add/edit form — screens/07-add-horse.html. In edit mode the same
@@ -71,6 +72,19 @@ export default function HorseForm({ mode, trainers, horseId, initial = {} }: Pro
   const [submitting, setSubmitting] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // `photoUrl` stores the private-bucket object PATH; sign it for the <img>.
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    if (!initial.photoUrl) return;
+    signPhoto(supabaseBrowser(), PHOTO_BUCKET, initial.photoUrl).then((url) => {
+      if (active) setPreviewUrl(url);
+    });
+    return () => {
+      active = false;
+    };
+  }, [initial.photoUrl]);
 
   const set = <K extends keyof HorseInitial>(key: K, value: string) =>
     setForm((f) => ({ ...f, [key]: value }));
@@ -89,8 +103,9 @@ export default function HorseForm({ mode, trainers, horseId, initial = {} }: Pro
         upsert: true,
       });
       if (upErr) throw upErr;
-      const { data } = sb.storage.from(PHOTO_BUCKET).getPublicUrl(path);
-      set("photoUrl", data.publicUrl);
+      // Store the object path (private bucket); sign it for the live preview.
+      set("photoUrl", path);
+      setPreviewUrl(await signPhoto(sb, PHOTO_BUCKET, path));
     } catch {
       setError("Photo upload failed. You can still save and add a photo later.");
     } finally {
@@ -365,8 +380,8 @@ export default function HorseForm({ mode, trainers, horseId, initial = {} }: Pro
                 {form.photoUrl ? (
                   <>
                     <div className="preview">
-                      {/* eslint-disable-next-line @next/next/no-img-element -- remote Storage preview */}
-                      <img src={form.photoUrl} alt="Horse cover preview" />
+                      {/* eslint-disable-next-line @next/next/no-img-element -- signed Storage preview */}
+                      <img src={previewUrl ?? undefined} alt="Horse cover preview" />
                     </div>
                     <div className="upload-tools">
                       <div className="upload-meta">Photo uploaded</div>

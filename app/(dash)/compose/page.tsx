@@ -1,6 +1,7 @@
 import { requireAdminPage } from "@/lib/auth/admin";
 import ComposeScreen from "./ComposeScreen";
 import type { HorseOption, TrainerOption } from "./types";
+import { HORSE_PHOTO_BUCKET, signPhotoMap } from "@/lib/storage/photos";
 
 // The operator's core daily flow. The (dash) layout already gates the tree;
 // we call requireAdminPage() again here for the elevated RLS client (`sb`) used
@@ -61,5 +62,12 @@ export default async function ComposePage() {
     name: t.name ?? t.display_name ?? "Unnamed trainer",
   }));
 
-  return <ComposeScreen horses={horses} trainers={trainers} />;
+  // Private bucket: sign each pickable horse's photo path for display.
+  const horsePhotos = await signPhotoMap(sb, HORSE_PHOTO_BUCKET, horses.map((h) => h.photoUrl));
+  const signedHorses: HorseOption[] = horses.map((h) => ({
+    ...h,
+    photoUrl: h.photoUrl ? horsePhotos.get(h.photoUrl) ?? null : null,
+  }));
+
+  return <ComposeScreen horses={signedHorses} trainers={trainers} />;
 }

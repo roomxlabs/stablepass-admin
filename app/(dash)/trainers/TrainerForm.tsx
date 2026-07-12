@@ -1,9 +1,10 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { supabaseBrowser } from "@/lib/supabase/client";
+import { signPhoto } from "@/lib/storage/photos";
 
 // Add / edit trainer form — matches mockups/web/admin/screens/08-add-trainer.html.
 // Shared by /trainers/new (create) and /trainers/:id/edit (edit). Contacts are
@@ -61,6 +62,8 @@ export default function TrainerForm(props: Props) {
   const [location, setLocation] = useState(seed?.location ?? "");
   const [bio, setBio] = useState(seed?.bio ?? "");
   const [photoUrl, setPhotoUrl] = useState<string | null>(seed?.photoUrl ?? null);
+  // `photoUrl` holds the private-bucket object PATH; sign it for the <img>.
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [contacts, setContacts] = useState<ContactInput[]>(
     isEdit && props.contacts.length ? props.contacts : [emptyContact("Trainer")],
   );
@@ -69,6 +72,18 @@ export default function TrainerForm(props: Props) {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    const stored = seed?.photoUrl;
+    if (!stored) return;
+    let active = true;
+    signPhoto(supabaseBrowser(), PHOTO_BUCKET, stored).then((url) => {
+      if (active) setPreviewUrl(url);
+    });
+    return () => {
+      active = false;
+    };
+  }, [seed]);
 
   function setContact(i: number, patch: Partial<ContactInput>) {
     setContacts((cs) => cs.map((c, idx) => (idx === i ? { ...c, ...patch } : c)));
@@ -92,13 +107,14 @@ export default function TrainerForm(props: Props) {
     try {
       const ext = file.name.split(".").pop() || "jpg";
       const path = `${slugify(name || "trainer")}-${Date.now()}.${ext}`;
-      const { error: upErr } = await supabaseBrowser()
-        .storage.from(PHOTO_BUCKET)
-        .upload(path, file, { upsert: true });
+      const sb = supabaseBrowser();
+      const { error: upErr } = await sb.storage.from(PHOTO_BUCKET).upload(path, file, { upsert: true });
       if (upErr) {
         setError(`Photo upload failed: ${upErr.message}`);
       } else {
+        // Store the object path (private bucket); sign it for the live preview.
         setPhotoUrl(path);
+        setPreviewUrl(await signPhoto(sb, PHOTO_BUCKET, path));
       }
     } catch {
       setError("Photo upload failed. You can add it later.");
@@ -284,16 +300,42 @@ export default function TrainerForm(props: Props) {
         </div>
         <div className="adm-card-body">
           <input ref={fileRef} type="file" accept="image/png,image/jpeg" hidden onChange={onPhoto} />
-          <div className="upload-zone">
-            <div className="zone-title">
-              {uploading
-                ? "Uploading…"
-                : photoUrl
-                  ? "Photo added"
-                  : <>Drop image here or <span className="link" role="button" tabIndex={0}
-                      onClick={() => fileRef.current?.click()}>browse</span></>}
-            </div>
-            <div className="adm-help">JPEG or PNG · up to 5 MB · ideally 800×800</div>
+          <div className={photoUrl ? "upload-zone filled" : "upload-zone"}>
+            {photoUrl ? (
+              <>
+                <div className="preview">
+                  {/* eslint-disable-next-line @next/next/no-img-element -- signed Storage preview */}
+                  <img src={previewUrl ?? undefined} alt="Trainer photo preview" />
+                </div>
+                <div className="upload-tools">
+                  <div className="upload-meta">{uploading ? "Uploading…" : "Photo added"}</div>
+                  <button
+                    type="button"
+                    className="btn btn-light"
+                    style={{ padding: "6px 12px", fontSize: "12.5px" }}
+                    onClick={() => fileRef.current?.click()}
+                  >
+                    Replace
+                  </button>
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="zone-title">
+                  {uploading ? (
+                    "Uploading…"
+                  ) : (
+                    <>
+                      Drop image here or{" "}
+                      <span className="link" role="button" tabIndex={0} onClick={() => fileRef.current?.click()}>
+                        browse
+                      </span>
+                    </>
+                  )}
+                </div>
+                <div className="adm-help">JPEG or PNG · up to 5 MB · ideally 800×800</div>
+              </>
+            )}
           </div>
         </div>
       </div>

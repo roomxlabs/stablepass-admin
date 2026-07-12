@@ -2,6 +2,7 @@
 
 import { useMemo, useRef, useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { Icon } from "../icons";
 import PreviewModal from "./PreviewModal";
 import type { PostPreviewData } from "./PostPreview";
@@ -63,6 +64,7 @@ export default function ComposeScreen({
     pct: 0,
   });
 
+  const router = useRouter();
   const [mode, setMode] = useState<PublishMode>("publish");
   const [scheduledFor, setScheduledFor] = useState("");
   const [previewOpen, setPreviewOpen] = useState(false);
@@ -191,6 +193,10 @@ export default function ComposeScreen({
       } else {
         setAction({ kind: "ok", message: "Saved as draft." });
       }
+      // Any successful action (publish / schedule / draft) → land on Posts
+      // (refresh so the new/updated post shows in the library).
+      router.push("/posts");
+      router.refresh();
     } catch (e) {
       setAction({ kind: "error", message: (e as Error).message });
     }

@@ -24,6 +24,11 @@ vi.mock("next/link", () => ({
   ),
 }));
 
+// next/navigation → stub router so useRouter() works in the test renderer.
+vi.mock("next/navigation", () => ({
+  useRouter: () => ({ push: vi.fn(), refresh: vi.fn() }),
+}));
+
 const TRAINERS: TrainerOption[] = [
   { id: "t1", name: "Chris Waller" },
   { id: "t2", name: "Peter Moody" },

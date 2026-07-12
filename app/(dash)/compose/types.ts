@@ -40,3 +40,19 @@ export type CreateDraftResponse = {
   token?: string;
   bucket?: string;
 };
+
+/**
+ * An existing post loaded into Compose for editing. The PATCH contract only
+ * covers `body` (caption) + `source_trainer_id` (byline), so horse and media
+ * are shown read-only. `mediaUrl` is a signed photo URL; video has no inline
+ * playback here (null → placeholder).
+ */
+export type EditInitial = {
+  id: string;
+  status: string; // draft | scheduled | published | unpublished
+  mediaType: MediaType;
+  mediaUrl: string | null;
+  caption: string;
+  bylineId: string;
+  horse: HorseOption;
+};

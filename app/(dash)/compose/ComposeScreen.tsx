@@ -15,7 +15,7 @@ import {
   uploadPhotoToStorage,
   uploadVideoToMux,
 } from "./api";
-import type { CreateDraftResponse, HorseOption, MediaType, TrainerOption } from "./types";
+import type { CreateDraftResponse, EditInitial, HorseOption, MediaType, TrainerOption } from "./types";
 import styles from "./compose.module.css";
 
 const CAPTION_MAX = 240;
@@ -45,19 +45,22 @@ function humanSize(bytes: number): string {
 export default function ComposeScreen({
   horses,
   trainers,
+  initial,
 }: {
   horses: HorseOption[];
   trainers: TrainerOption[];
+  initial?: EditInitial;
 }) {
-  const [search, setSearch] = useState("");
+  const isEdit = !!initial;
+  const [search, setSearch] = useState(initial?.horse.name ?? "");
   const [showResults, setShowResults] = useState(false);
-  const [horse, setHorse] = useState<HorseOption | null>(null);
-  const [bylineId, setBylineId] = useState<string>("");
-  const [caption, setCaption] = useState("");
+  const [horse, setHorse] = useState<HorseOption | null>(initial?.horse ?? null);
+  const [bylineId, setBylineId] = useState<string>(initial?.bylineId ?? "");
+  const [caption, setCaption] = useState(initial?.caption ?? "");
 
   const [file, setFile] = useState<File | null>(null);
-  const [mediaType, setMediaType] = useState<MediaType | null>(null);
-  const [mediaUrl, setMediaUrl] = useState<string | null>(null);
+  const [mediaType, setMediaType] = useState<MediaType | null>(initial?.mediaType ?? null);
+  const [mediaUrl, setMediaUrl] = useState<string | null>(initial?.mediaUrl ?? null);
   const [draft, setDraft] = useState<CreateDraftResponse | null>(null);
   const [upload, setUpload] = useState<{ state: UploadState; pct: number; error?: string }>({
     state: "idle",
@@ -218,6 +221,21 @@ export default function ComposeScreen({
     }
   }
 
+  // Edit mode: PATCH the editable fields (caption + byline) on the existing
+  // post — horse and media are fixed here (the PATCH contract covers neither).
+  async function saveEdit() {
+    if (!initial) return;
+    setAction({ kind: "working" });
+    try {
+      await patchPost(initial.id, { body: caption, sourceTrainerId: bylineId });
+      setAction({ kind: "ok", message: "Changes saved." });
+      router.push("/posts");
+      router.refresh();
+    } catch (e) {
+      setAction({ kind: "error", message: (e as Error).message });
+    }
+  }
+
   const previewData: PostPreviewData = {
     horseName: horse?.name ?? null,
     byline: trainerName,
@@ -234,7 +252,7 @@ export default function ComposeScreen({
   return (
     <>
       <div className="admin-topbar">
-        <h1>Compose post</h1>
+        <h1>{isEdit ? "Edit post" : "Compose post"}</h1>
         <div className="actions">
           <Link href="/posts" className={styles.cancelLink}>
             Cancel
@@ -246,30 +264,43 @@ export default function ComposeScreen({
           >
             Preview
           </button>
-          <button
-            type="button"
-            className={`btn ${styles.btnLight} ${styles.btnSm}`}
-            onClick={() => runAction("draft")}
-            disabled={!draftReady || busy}
-          >
-            Save draft
-          </button>
-          <button
-            type="button"
-            className={`btn ${styles.btnLight} ${styles.btnSm}`}
-            onClick={() => runAction("schedule")}
-            disabled={!draftReady || busy}
-          >
-            Schedule
-          </button>
-          <button
-            type="button"
-            className={`btn btn-primary ${styles.btnSm}`}
-            onClick={() => runAction("publish")}
-            disabled={!draftReady || busy}
-          >
-            Publish
-          </button>
+          {isEdit ? (
+            <button
+              type="button"
+              className={`btn btn-primary ${styles.btnSm}`}
+              onClick={saveEdit}
+              disabled={busy}
+            >
+              {busy ? "Saving…" : "Save changes"}
+            </button>
+          ) : (
+            <>
+              <button
+                type="button"
+                className={`btn ${styles.btnLight} ${styles.btnSm}`}
+                onClick={() => runAction("draft")}
+                disabled={!draftReady || busy}
+              >
+                Save draft
+              </button>
+              <button
+                type="button"
+                className={`btn ${styles.btnLight} ${styles.btnSm}`}
+                onClick={() => runAction("schedule")}
+                disabled={!draftReady || busy}
+              >
+                Schedule
+              </button>
+              <button
+                type="button"
+                className={`btn btn-primary ${styles.btnSm}`}
+                onClick={() => runAction("publish")}
+                disabled={!draftReady || busy}
+              >
+                Publish
+              </button>
+            </>
+          )}
         </div>
       </div>
 
@@ -285,21 +316,23 @@ export default function ComposeScreen({
                 Horse
               </label>
               <div className={styles.searchWrap}>
-                <input
-                  id="horse-search"
-                  className={styles.input}
-                  type="text"
-                  placeholder="Search horses by name…"
-                  value={search}
-                  autoComplete="off"
-                  data-testid="horse-search"
-                  onChange={(e) => {
-                    setSearch(e.target.value);
-                    setShowResults(true);
-                    if (horse && e.target.value !== horse.name) setHorse(null);
-                  }}
-                  onFocus={() => setShowResults(true)}
-                />
+                {!isEdit ? (
+                  <input
+                    id="horse-search"
+                    className={styles.input}
+                    type="text"
+                    placeholder="Search horses by name…"
+                    value={search}
+                    autoComplete="off"
+                    data-testid="horse-search"
+                    onChange={(e) => {
+                      setSearch(e.target.value);
+                      setShowResults(true);
+                      if (horse && e.target.value !== horse.name) setHorse(null);
+                    }}
+                    onFocus={() => setShowResults(true)}
+                  />
+                ) : null}
                 {showResults && !horse ? (
                   <ul className={styles.results} data-testid="horse-results">
                     {matches.length === 0 ? (
@@ -353,9 +386,11 @@ export default function ComposeScreen({
                     <div className={styles.pickSub}>
                       {horse.trainerName ? `by ${horse.trainerName}` : "no trainer set"}
                       {horse.stableName ? ` · ${horse.stableName}` : ""}
-                      <button type="button" className={styles.changeLink} onClick={changeHorse}>
-                        Change horse
-                      </button>
+                      {!isEdit ? (
+                        <button type="button" className={styles.changeLink} onClick={changeHorse}>
+                          Change horse
+                        </button>
+                      ) : null}
                     </div>
                   </div>
                 </div>
@@ -379,7 +414,27 @@ export default function ComposeScreen({
                 }}
               />
 
-              {file ? (
+              {isEdit ? (
+                <div className={`${styles.uploadZone} ${styles.filled}`} data-testid="media-existing">
+                  <div className={styles.preview}>
+                    {mediaType === "photo" && mediaUrl ? (
+                      // eslint-disable-next-line @next/next/no-img-element -- signed existing media
+                      <img src={mediaUrl} alt="" />
+                    ) : (
+                      <span className={styles.previewPlay}>
+                        <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
+                          <polygon points="8 5 20 12 8 19 8 5" fill="currentColor" />
+                        </svg>
+                      </span>
+                    )}
+                  </div>
+                  <div className={styles.uploadTools}>
+                    <span className={styles.uploadMeta}>
+                      Existing {mediaType} · media can’t be changed when editing.
+                    </span>
+                  </div>
+                </div>
+              ) : file ? (
                 <div className={`${styles.uploadZone} ${styles.filled}`} data-testid="media-filled">
                   <div className={styles.preview}>
                     {mediaType === "photo" && mediaUrl ? (
@@ -512,7 +567,13 @@ export default function ComposeScreen({
               <div className={styles.row}>
                 <span className={styles.rowLbl}>Status</span>
                 <span className={styles.rowVal}>
-                  {draftReady ? (
+                  {isEdit ? (
+                    <span
+                      className={`${styles.pill} ${initial!.status === "published" ? styles.pillGreen : styles.pillAmber} ${styles.pillDot}`}
+                    >
+                      {initial!.status.charAt(0).toUpperCase() + initial!.status.slice(1)}
+                    </span>
+                  ) : draftReady ? (
                     <span className={`${styles.pill} ${styles.pillGreen} ${styles.pillDot}`}>Ready</span>
                   ) : (
                     <span className={`${styles.pill} ${styles.pillAmber} ${styles.pillDot}`}>Draft</span>
@@ -528,6 +589,8 @@ export default function ComposeScreen({
                 <span className={styles.rowVal}>{mediaLabel}</span>
               </div>
 
+              {!isEdit ? (
+                <>
               <label className={`${styles.label} ${styles.whenLabel}`}>When to publish</label>
 
               <label className={styles.radioRow}>
@@ -577,16 +640,18 @@ export default function ComposeScreen({
                   <div className={styles.radioHelp}>Goes live to subscribers straight away.</div>
                 </span>
               </label>
+                </>
+              ) : null}
 
               <div className={styles.publishActions}>
                 <button
                   type="button"
                   className="btn btn-primary btn-block"
                   data-testid="primary-action"
-                  onClick={() => runAction(mode)}
-                  disabled={!draftReady || busy}
+                  onClick={isEdit ? saveEdit : () => runAction(mode)}
+                  disabled={isEdit ? busy : !draftReady || busy}
                 >
-                  {busy ? "Working…" : primaryLabel}
+                  {busy ? (isEdit ? "Saving…" : "Working…") : isEdit ? "Save changes" : primaryLabel}
                 </button>
                 <button
                   type="button"
@@ -595,14 +660,16 @@ export default function ComposeScreen({
                 >
                   Preview on mobile &amp; web
                 </button>
-                <button
-                  type="button"
-                  className={styles.discardBtn}
-                  onClick={onDiscard}
-                  disabled={!draft || busy}
-                >
-                  Discard draft
-                </button>
+                {!isEdit ? (
+                  <button
+                    type="button"
+                    className={styles.discardBtn}
+                    onClick={onDiscard}
+                    disabled={!draft || busy}
+                  >
+                    Discard draft
+                  </button>
+                ) : null}
               </div>
 
               {action.kind === "ok" ? (

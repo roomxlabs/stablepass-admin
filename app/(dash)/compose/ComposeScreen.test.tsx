@@ -2,7 +2,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import ComposeScreen from "./ComposeScreen";
-import type { HorseOption, TrainerOption } from "./types";
+import type { EditInitial, HorseOption, TrainerOption } from "./types";
 
 // Mock the whole network layer so the component test never touches fetch /
 // Supabase / Mux. Each fn is a spy we assert against.
@@ -74,6 +74,43 @@ describe("ComposeScreen", () => {
     expect(screen.getByText("Which horse is this for?")).toBeTruthy();
     expect(screen.getByText("Add the content.")).toBeTruthy();
     expect(screen.getByText("Write the caption.")).toBeTruthy();
+  });
+
+  it("edit mode: hydrates the post and saves changes via patchPost", async () => {
+    api.patchPost.mockResolvedValue(undefined);
+    const initial: EditInitial = {
+      id: "post-9",
+      status: "published",
+      mediaType: "photo",
+      mediaUrl: "https://signed.example/photo.jpg",
+      caption: "Old caption",
+      bylineId: "t1",
+      horse: HORSES[0],
+    };
+    render(<ComposeScreen horses={HORSES} trainers={TRAINERS} initial={initial} />);
+
+    // Title switches to edit; fields hydrate from the post.
+    expect(screen.getByRole("heading", { name: "Edit post" })).toBeTruthy();
+    expect((screen.getByTestId("caption") as HTMLTextAreaElement).value).toBe("Old caption");
+    expect((screen.getByTestId("byline-select") as HTMLSelectElement).value).toBe("t1");
+    // Media shown read-only; no horse search / create controls in edit mode.
+    expect(screen.getByTestId("media-existing")).toBeTruthy();
+    expect(screen.queryByTestId("horse-search")).toBeNull();
+
+    // Edit caption + byline, then save → PATCH the existing post.
+    fireEvent.change(screen.getByTestId("caption"), { target: { value: "New caption" } });
+    fireEvent.change(screen.getByTestId("byline-select"), { target: { value: "t2" } });
+    fireEvent.click(screen.getByTestId("primary-action"));
+
+    await waitFor(() =>
+      expect(api.patchPost).toHaveBeenCalledWith("post-9", {
+        body: "New caption",
+        sourceTrainerId: "t2",
+      }),
+    );
+    // Edit never touches the create/publish endpoints.
+    expect(api.createDraft).not.toHaveBeenCalled();
+    expect(api.publishPost).not.toHaveBeenCalled();
   });
 
   it("defaults the byline to the picked horse's trainer, and stays editable", () => {

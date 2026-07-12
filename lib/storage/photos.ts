@@ -7,6 +7,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 
 export const HORSE_PHOTO_BUCKET = "horse-photos";
 export const TRAINER_PHOTO_BUCKET = "trainer-photos";
+export const POST_MEDIA_BUCKET = "post-media";
 
 // 1 hour: long enough for a page/session, short enough that a leaked URL expires.
 export const PHOTO_SIGN_TTL = 3600;

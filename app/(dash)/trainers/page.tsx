@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { supabaseServer } from "@/lib/supabase/server";
-import { Icon } from "../icons";
+import SearchField from "../SearchField";
 import { listTrainers, timeAgo, type TrainerRow } from "./data";
 import { TRAINER_PHOTO_BUCKET, signPhotoMap } from "@/lib/storage/photos";
 import "./trainers.css";
@@ -55,11 +55,14 @@ export default async function TrainersPage({
       <div className="admin-topbar">
         <h1>Trainers</h1>
         <div className="actions">
-          <form className="search wide" method="get" action="/trainers">
-            <Icon name="search" />
-            {status ? <input type="hidden" name="status" value={status} /> : null}
-            <input name="q" defaultValue={q ?? ""} placeholder="Search trainers…" aria-label="Search trainers" />
-          </form>
+          <SearchField
+            action="/trainers"
+            className="search wide"
+            placeholder="Search trainers…"
+            ariaLabel="Search trainers"
+            defaultValue={q ?? ""}
+            hidden={status ? { status } : {}}
+          />
           <Link href="/trainers/new" className="btn btn-primary" style={{ padding: "8px 16px", fontSize: "13.5px" }}>
             + Add trainer
           </Link>
@@ -79,11 +82,14 @@ export default async function TrainersPage({
               Onboarding <strong>{counts.onboarding}</strong>
             </Link>
             <div className="spacer" />
-            <form className="search-mini" method="get" action="/trainers">
-              <Icon name="search" />
-              {status ? <input type="hidden" name="status" value={status} /> : null}
-              <input name="q" defaultValue={q ?? ""} placeholder="Filter by stable or location…" aria-label="Filter trainers" />
-            </form>
+            <SearchField
+              action="/trainers"
+              className="search-mini"
+              placeholder="Filter by stable or location…"
+              ariaLabel="Filter trainers"
+              defaultValue={q ?? ""}
+              hidden={status ? { status } : {}}
+            />
           </div>
 
           {signedRows.length === 0 ? (

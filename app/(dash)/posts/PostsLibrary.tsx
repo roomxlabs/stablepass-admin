@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { Icon } from "../icons";
+import SearchField from "../SearchField";
 import PostRow from "./PostRow";
 import { STATUS_FILTERS, buildPostsHref } from "./format";
 import type { PostView, StatusCounts, StatusFilter } from "./types";
@@ -42,12 +42,14 @@ export default function PostsLibrary({
       <div className="admin-topbar">
         <h1>Posts library</h1>
         <div className="actions">
-          <form className="search search-form" action="/posts" method="get">
-            {status !== "all" && <input type="hidden" name="status" value={status} />}
-            {horseId && <input type="hidden" name="horseId" value={horseId} />}
-            <Icon name="search" />
-            <input name="q" defaultValue={q} placeholder="Search posts…" aria-label="Search posts" />
-          </form>
+          <SearchField
+            action="/posts"
+            className="search search-form"
+            placeholder="Search posts…"
+            ariaLabel="Search posts"
+            defaultValue={q}
+            hidden={{ ...(status !== "all" && { status }), ...(horseId && { horseId }) }}
+          />
           <Link href="/compose" className="btn btn-primary" style={{ padding: "8px 16px", fontSize: "13.5px" }}>
             + New post
           </Link>
@@ -68,17 +70,14 @@ export default function PostsLibrary({
               </Link>
             ))}
             <div className="spacer" />
-            <form className="search-mini" action="/posts" method="get">
-              {status !== "all" && <input type="hidden" name="status" value={status} />}
-              {horseId && <input type="hidden" name="horseId" value={horseId} />}
-              <Icon name="search" />
-              <input
-                name="q"
-                defaultValue={q}
-                placeholder="Filter by horse or trainer…"
-                aria-label="Filter posts by horse or trainer"
-              />
-            </form>
+            <SearchField
+              action="/posts"
+              className="search-mini"
+              placeholder="Filter by horse or trainer…"
+              ariaLabel="Filter posts by horse or trainer"
+              defaultValue={q}
+              hidden={{ ...(status !== "all" && { status }), ...(horseId && { horseId }) }}
+            />
           </div>
 
           {posts.length === 0 ? (

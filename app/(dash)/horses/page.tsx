@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { requireAdminPage } from "@/lib/auth/admin";
 import { Icon } from "../icons";
+import SearchField from "../SearchField";
 import {
   formatCount,
   horseMeta,
@@ -128,11 +129,14 @@ export default async function HorsesPage({
       <div className="admin-topbar">
         <h1>Horses</h1>
         <div className="actions">
-          <form className="search" action="/horses" method="get">
-            {filter !== "all" && <input type="hidden" name="filter" value={filter} />}
-            <Icon name="search" />
-            <input name="q" defaultValue={q} placeholder="Search horses…" aria-label="Search horses" />
-          </form>
+          <SearchField
+            action="/horses"
+            className="search"
+            placeholder="Search horses…"
+            ariaLabel="Search horses"
+            defaultValue={q}
+            hidden={filter !== "all" ? { filter } : {}}
+          />
           <Link href="/horses/new" className="btn btn-primary" style={{ padding: "8px 16px", fontSize: "13.5px" }}>
             + Add horse
           </Link>
@@ -153,11 +157,14 @@ export default async function HorsesPage({
               </Link>
             ))}
             <div className="spacer" />
-            <form className="search-mini" action="/horses" method="get">
-              {filter !== "all" && <input type="hidden" name="filter" value={filter} />}
-              <Icon name="search" />
-              <input name="q" defaultValue={q} placeholder="Filter by trainer or stable…" aria-label="Filter horses" />
-            </form>
+            <SearchField
+              action="/horses"
+              className="search-mini"
+              placeholder="Filter by trainer or stable…"
+              ariaLabel="Filter horses"
+              defaultValue={q}
+              hidden={filter !== "all" ? { filter } : {}}
+            />
           </div>
 
           {shown.length === 0 ? (

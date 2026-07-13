@@ -123,6 +123,8 @@
   border-bottom: 1px solid var(--line);
 }
 .adm-table tr:hover td { background: rgba(40, 93, 80, 0.025); }
+/* The whole row opens the post detail (Compose in edit mode). */
+.adm-table tbody tr.row-link { cursor: pointer; }
 .adm-table td .row-thumb {
   width: 36px;
   height: 36px;

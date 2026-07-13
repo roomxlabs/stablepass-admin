@@ -2,24 +2,15 @@
 
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
-import Link from "next/link";
 import type { PostStatus } from "./types";
 import { discardDraft, publishNow, republishPost, unpublishPost } from "./api";
 
 // The per-row action affordances. Which action shows is a pure function of the
 // post's status (guardrail §2): Discard appears only on a draft; a published
 // post can be Unpublished (reversible soft-hide) and an unpublished one
-// Republished; a scheduled post can be Published now. Edit always links to
-// Compose (T6), where the editable fields are PATCHed via T5.
-export default function PostActions({
-  id,
-  status,
-  editHref,
-}: {
-  id: string;
-  status: PostStatus;
-  editHref: string;
-}) {
+// Republished; a scheduled post can be Published now. Opening the post detail
+// (Compose in edit mode) is the row click itself (PostRow), not an action here.
+export default function PostActions({ id, status }: { id: string; status: PostStatus }) {
   const router = useRouter();
   const [pending, startTransition] = useTransition();
   const [busy, setBusy] = useState(false);
@@ -43,7 +34,6 @@ export default function PostActions({
 
   return (
     <>
-      <Link href={editHref}>Edit</Link>
       {status === "published" && (
         <button type="button" className="danger" disabled={working} onClick={() => act(unpublishPost)}>
           Unpublish

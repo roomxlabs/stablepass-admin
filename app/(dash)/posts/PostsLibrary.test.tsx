@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import PostsLibrary from "./PostsLibrary";
 import type { PostView, StatusCounts } from "./types";
 
@@ -9,8 +9,9 @@ import type { PostView, StatusCounts } from "./types";
 vi.mock("next/link", () => ({
   default: ({ children, href }: { children: React.ReactNode; href: string }) => <a href={href}>{children}</a>,
 }));
+const push = vi.fn();
 vi.mock("next/navigation", () => ({
-  useRouter: () => ({ refresh: vi.fn(), push: vi.fn() }),
+  useRouter: () => ({ refresh: vi.fn(), push }),
 }));
 vi.mock("./api", () => ({
   unpublishPost: vi.fn(),
@@ -22,6 +23,7 @@ vi.mock("./api", () => ({
 function view(over: Partial<PostView>): PostView {
   return {
     id: "p",
+    editHref: `/compose?id=${over.id ?? "p"}`,
     title: "Track gallop",
     excerpt: "Morning at Caulfield.",
     horseName: "Mahogany",
@@ -33,7 +35,6 @@ function view(over: Partial<PostView>): PostView {
     statusPillClass: "pill green dot",
     whenLabel: "2h ago",
     likeCount: 42,
-    editHref: "/compose?id=p",
     ...over,
   };
 }
@@ -92,9 +93,21 @@ describe("PostsLibrary", () => {
     expect(screen.queryByRole("button", { name: "Unpublish" })).not.toBeNull();
   });
 
-  it("shows an Edit affordance on every row", () => {
+  it("clicking a row opens the post detail (Compose in edit mode)", () => {
     renderLib();
-    expect(screen.getAllByRole("link", { name: "Edit" })).toHaveLength(4);
+    fireEvent.click(screen.getAllByText("Track gallop")[0]);
+    expect(push).toHaveBeenCalledWith("/compose?id=pub");
+  });
+
+  it("clicking a row action does NOT navigate away", () => {
+    renderLib();
+    fireEvent.click(screen.getByRole("button", { name: "Unpublish" }));
+    expect(push).not.toHaveBeenCalled();
+  });
+
+  it("no per-row Edit link remains (the row itself replaced it)", () => {
+    renderLib();
+    expect(screen.queryByRole("link", { name: "Edit" })).toBeNull();
   });
 
   it("renders the N-of-M pagination footer", () => {

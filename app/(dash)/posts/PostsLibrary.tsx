@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { Icon } from "../icons";
-import PostActions from "./PostActions";
+import PostRow from "./PostRow";
 import { STATUS_FILTERS, buildPostsHref } from "./format";
 import type { PostView, StatusCounts, StatusFilter } from "./types";
 
@@ -109,47 +109,7 @@ export default function PostsLibrary({
                 </thead>
                 <tbody>
                   {posts.map((p) => (
-                    <tr key={p.id}>
-                      <td className="with-thumb">
-                        <div className="row-thumb">
-                          {p.thumbUrl ? (
-                            // eslint-disable-next-line @next/next/no-img-element -- remote Storage horse photo, CSS-cropped thumb
-                            <img src={p.thumbUrl} alt="" />
-                          ) : (
-                            <div className="thumb-fallback">
-                              <Icon name="horseHead" />
-                            </div>
-                          )}
-                        </div>
-                        <div>
-                          <div className="row-name">{p.title}</div>
-                          {p.excerpt && <div className="row-sub">{p.excerpt}</div>}
-                        </div>
-                      </td>
-                      <td className="nowrap">
-                        <strong>{p.horseName}</strong>
-                        {p.trainerName && <div className="row-sub">{p.trainerName}</div>}
-                      </td>
-                      <td className="nowrap">
-                        <span className="pill">{p.typeLabel}</span>
-                      </td>
-                      <td className="nowrap">
-                        <span className={p.statusPillClass}>{p.statusLabel}</span>
-                      </td>
-                      <td className="nowrap">{p.whenLabel}</td>
-                      <td className="nowrap">
-                        {p.likeCount === null ? (
-                          "—"
-                        ) : (
-                          <>
-                            <strong>{p.likeCount}</strong> likes
-                          </>
-                        )}
-                      </td>
-                      <td className="actions">
-                        <PostActions id={p.id} status={p.status} editHref={p.editHref} />
-                      </td>
-                    </tr>
+                    <PostRow key={p.id} post={p} />
                   ))}
                 </tbody>
               </table>

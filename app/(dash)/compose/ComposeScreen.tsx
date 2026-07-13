@@ -445,14 +445,9 @@ export default function ComposeScreen({
                       // eslint-disable-next-line @next/next/no-img-element -- local object URL preview
                       <img src={mediaUrl} alt="" />
                     ) : mediaType === "video" && mediaUrl ? (
-                      <>
-                        <video src={mediaUrl} muted playsInline preload="metadata" />
-                        <span className={styles.previewPlay}>
-                          <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
-                            <polygon points="8 5 20 12 8 19 8 5" fill="currentColor" />
-                          </svg>
-                        </span>
-                      </>
+                      // Playable local preview of the picked file (object URL);
+                      // native controls replace the decorative play glyph.
+                      <HlsVideo src={mediaUrl} controls playsInline preload="metadata" />
                     ) : null}
                   </div>
                   {upload.state === "uploading" ? (

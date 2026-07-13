@@ -7,6 +7,7 @@ import {
   signPhoto,
   signPhotoMap,
 } from "@/lib/storage/photos";
+import { resolveVideoPlayback } from "@/lib/mux-playback";
 
 // The operator's core daily flow. The (dash) layout already gates the tree;
 // we call requireAdminPage() again here for the elevated RLS client (`sb`) used
@@ -41,6 +42,7 @@ type PostRow = {
   body: string | null;
   source_trainer_id: string;
   media_url: string | null;
+  mux_playback_id: string | null;
   horse: HorseRow | HorseRow[] | null;
 };
 
@@ -99,7 +101,7 @@ export default async function ComposePage({
     const { data } = await sb
       .from("post")
       .select(
-        "id,type,status,body,source_trainer_id,media_url,horse:horse_id(id,display_name,racing_name,photo_url,stable_name,trainer_id,trainer:trainer_id(id,name,display_name))",
+        "id,type,status,body,source_trainer_id,media_url,mux_playback_id,horse:horse_id(id,display_name,racing_name,photo_url,stable_name,trainer_id,trainer:trainer_id(id,name,display_name))",
       )
       .eq("id", id)
       .maybeSingle();
@@ -107,9 +109,15 @@ export default async function ComposePage({
     if (post && (post.type === "photo" || post.type === "video")) {
       const h = one(post.horse);
       const t = h ? one(h.trainer) : null;
+      // Photo → signed Storage URL; video → signed Mux HLS URL (reconciled
+      // from Mux on read if the webhook hasn't set mux_playback_id yet).
       const [horsePhoto, mediaUrl] = await Promise.all([
         signPhoto(sb, HORSE_PHOTO_BUCKET, h?.photo_url ?? null),
-        post.type === "photo" ? signPhoto(sb, POST_MEDIA_BUCKET, post.media_url) : Promise.resolve(null),
+        post.type === "photo"
+          ? signPhoto(sb, POST_MEDIA_BUCKET, post.media_url)
+          : resolveVideoPlayback(sb, { id: post.id, mux_playback_id: post.mux_playback_id }).then(
+              (p) => p.playbackUrl,
+            ),
       ]);
       initial = {
         id: post.id,

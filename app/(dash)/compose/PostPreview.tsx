@@ -4,6 +4,7 @@
 // stablepass overlay is applied member-side at display time (guardrail: no
 // watermarking in admin).
 import type { MediaType } from "./types";
+import HlsVideo from "./HlsVideo";
 import styles from "./compose.module.css";
 
 export type PostPreviewData = {
@@ -13,14 +14,6 @@ export type PostPreviewData = {
   mediaType: MediaType | null;
   mediaUrl: string | null;
 };
-
-function PlayGlyph() {
-  return (
-    <svg className={styles.postPlay} viewBox="0 0 24 24" aria-hidden="true">
-      <polygon points="8 5 20 12 8 19 8 5" fill="currentColor" />
-    </svg>
-  );
-}
 
 export default function PostPreview({ data }: { data: PostPreviewData }) {
   const { horseName, byline, caption, mediaType, mediaUrl } = data;
@@ -52,10 +45,9 @@ export default function PostPreview({ data }: { data: PostPreviewData }) {
           // eslint-disable-next-line @next/next/no-img-element -- local object URL, not a remote asset
           <img src={mediaUrl} alt="" />
         ) : mediaUrl && mediaType === "video" ? (
-          <>
-            <video src={mediaUrl} muted playsInline preload="metadata" />
-            <PlayGlyph />
-          </>
+          // Playable: native controls replace the static play glyph so the
+          // operator can vet the actual video (signed HLS or local file).
+          <HlsVideo src={mediaUrl} controls playsInline preload="metadata" />
         ) : (
           <div className={styles.postMediaEmpty}>Media preview</div>
         )}

@@ -28,6 +28,7 @@ type Builder = {
   delete: (...a: any[]) => Builder;
   eq: (...a: any[]) => Builder;
   neq: (...a: any[]) => Builder;
+  is: (...a: any[]) => Builder;
   in: (...a: any[]) => Builder;
   ilike: (...a: any[]) => Builder;
   or: (expr: string, ...a: any[]) => Builder;
@@ -56,6 +57,7 @@ function makeBuilder(state: FakeState, table: string): Builder {
     delete: () => { op = "mutate"; return b; },
     eq: () => b,
     neq: () => b,
+    is: () => b,
     in: () => b,
     ilike: () => b,
     or: (expr: string) => { state.calls.or.push(expr); return b; },

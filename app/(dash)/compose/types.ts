@@ -44,8 +44,8 @@ export type CreateDraftResponse = {
 /**
  * An existing post loaded into Compose for editing. The PATCH contract only
  * covers `body` (caption) + `source_trainer_id` (byline), so horse and media
- * are shown read-only. `mediaUrl` is a signed photo URL; video has no inline
- * playback here (null → placeholder).
+ * are shown read-only. `mediaUrl` is a signed photo URL for photos, or a
+ * signed Mux HLS URL for videos (null → asset still processing → placeholder).
  */
 export type EditInitial = {
   id: string;

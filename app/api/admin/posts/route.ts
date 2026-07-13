@@ -104,7 +104,10 @@ export async function POST(req: Request) {
 
   if (type === "video") {
     try {
-      const { uploadId, uploadUrl } = await createMuxDirectUpload();
+      // passthrough = post id: Mux echoes it on asset webhooks so the BE
+      // mux-webhook (and our read-time fallback) can reconcile the processed
+      // asset back onto this post.
+      const { uploadId, uploadUrl } = await createMuxDirectUpload({ passthrough: draft.id });
       return accepted({ id: draft.id, status: "draft", type, watermarked: false, uploadUrl, muxUploadId: uploadId });
     } catch (e) {
       await sb.from("post").delete().eq("id", draft.id); // roll back the orphan draft

@@ -4,6 +4,7 @@ import { useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Icon } from "../icons";
+import HlsVideo from "./HlsVideo";
 import PreviewModal from "./PreviewModal";
 import type { PostPreviewData } from "./PostPreview";
 import {
@@ -420,6 +421,9 @@ export default function ComposeScreen({
                     {mediaType === "photo" && mediaUrl ? (
                       // eslint-disable-next-line @next/next/no-img-element -- signed existing media
                       <img src={mediaUrl} alt="" />
+                    ) : mediaType === "video" && mediaUrl ? (
+                      // Signed Mux HLS URL hydrated by the edit page loader.
+                      <HlsVideo src={mediaUrl} controls playsInline preload="metadata" />
                     ) : (
                       <span className={styles.previewPlay}>
                         <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
@@ -711,7 +715,7 @@ export default function ComposeScreen({
                       // eslint-disable-next-line @next/next/no-img-element -- local object URL preview
                       <img src={mediaUrl} alt="" />
                     ) : mediaUrl && mediaType === "video" ? (
-                      <video src={mediaUrl} muted playsInline preload="metadata" />
+                      <HlsVideo src={mediaUrl} muted playsInline preload="metadata" />
                     ) : null}
                   </div>
                   <div className={styles.miniBody}>

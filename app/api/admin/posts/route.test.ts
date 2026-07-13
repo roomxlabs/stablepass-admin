@@ -6,9 +6,12 @@ const state: FakeState = blankState();
 vi.mock("@/lib/supabase/server", () => ({
   supabaseServer: async () => makeFakeClient(state),
 }));
+const createMuxDirectUpload = vi.fn<
+  (opts?: { passthrough?: string }) => Promise<{ uploadId: string; uploadUrl: string }>
+>(async () => ({ uploadId: "up_123", uploadUrl: "https://mux.local/upload" }));
 vi.mock("@/lib/mux", () => ({
   MuxError: class MuxError extends Error {},
-  createMuxDirectUpload: async () => ({ uploadId: "up_123", uploadUrl: "https://mux.local/upload" }),
+  createMuxDirectUpload: (opts?: { passthrough?: string }) => createMuxDirectUpload(opts),
 }));
 
 import { GET, POST } from "./route";
@@ -59,6 +62,14 @@ describe("POST /api/admin/posts — create draft", () => {
     const j = await r.json();
     expect(j.data.uploadUrl).toBe("https://mux.local/upload");
     expect(j.data.muxUploadId).toBe("up_123");
+  });
+
+  it("passes passthrough = post id to Mux (webhook reconcile contract)", async () => {
+    asAdmin();
+    state.tables.horse = { select: { single: { id: "h1" } } };
+    state.tables.post = { mutate: { single: { id: "p2", status: "draft", type: "video", horse_id: "h1" } } };
+    await POST(postReq({ horseId: "h1", type: "video", sourceTrainerId: "t1" }));
+    expect(createMuxDirectUpload).toHaveBeenCalledWith(expect.objectContaining({ passthrough: "p2" }));
   });
 
   it("rejects a non video/photo type → 400", async () => {

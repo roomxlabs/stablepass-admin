@@ -52,6 +52,7 @@ export type EditInitial = {
   status: string; // draft | scheduled | published | unpublished
   mediaType: MediaType;
   mediaUrl: string | null;
+  title: string;
   caption: string;
   bylineId: string;
   horse: HorseOption;

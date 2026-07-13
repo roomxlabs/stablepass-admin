@@ -33,10 +33,10 @@ export async function createDraft(input: {
   return readData<CreateDraftResponse>(res);
 }
 
-/** Persist editable fields (caption `body` + `source_trainer_id` byline). PATCH. */
+/** Persist editable fields (title, caption `body`, `source_trainer_id` byline). PATCH. */
 export async function patchPost(
   id: string,
-  patch: { body?: string; sourceTrainerId?: string; title?: string },
+  patch: { body?: string; sourceTrainerId?: string; title?: string | null },
 ): Promise<void> {
   const res = await fetch(`/api/admin/posts/${id}`, {
     method: "PATCH",

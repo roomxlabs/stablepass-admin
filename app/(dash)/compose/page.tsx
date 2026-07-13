@@ -39,6 +39,7 @@ type PostRow = {
   id: string;
   type: string;
   status: string;
+  title: string | null;
   body: string | null;
   source_trainer_id: string;
   media_url: string | null;
@@ -101,7 +102,7 @@ export default async function ComposePage({
     const { data } = await sb
       .from("post")
       .select(
-        "id,type,status,body,source_trainer_id,media_url,mux_playback_id,horse:horse_id(id,display_name,racing_name,photo_url,stable_name,trainer_id,trainer:trainer_id(id,name,display_name))",
+        "id,type,status,title,body,source_trainer_id,media_url,mux_playback_id,horse:horse_id(id,display_name,racing_name,photo_url,stable_name,trainer_id,trainer:trainer_id(id,name,display_name))",
       )
       .eq("id", id)
       .maybeSingle();
@@ -124,6 +125,7 @@ export default async function ComposePage({
         status: post.status,
         mediaType: post.type as MediaType,
         mediaUrl,
+        title: post.title ?? "",
         caption: post.body ?? "",
         bylineId: post.source_trainer_id,
         horse: {

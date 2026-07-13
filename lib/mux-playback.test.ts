@@ -6,7 +6,13 @@ vi.mock("@/lib/mux", () => ({
   findMuxAssetByPassthrough: (p: string) => findMuxAssetByPassthrough(p),
 }));
 
-import { muxSignedStreamUrl, resolveVideoPlayback, signMuxPlaybackToken, type PlaybackDb } from "./mux-playback";
+import {
+  muxSignedStreamUrl,
+  muxSignedThumbnailUrl,
+  resolveVideoPlayback,
+  signMuxPlaybackToken,
+  type PlaybackDb,
+} from "./mux-playback";
 
 // A real (throwaway) RSA keypair so tokens can be cryptographically verified.
 const { privateKey, publicKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
@@ -62,10 +68,18 @@ describe("signMuxPlaybackToken", () => {
     expect(verifier.verify(publicKey, Buffer.from(sig, "base64url"))).toBe(true);
   });
 
+  it("mints thumbnail tokens with aud=t on the image host", () => {
+    const url = muxSignedThumbnailUrl("pb_1");
+    expect(url).toContain("https://image.mux.com/pb_1/thumbnail.jpg?token=");
+    const payload = JSON.parse(Buffer.from(url!.split("token=")[1].split(".")[1], "base64url").toString());
+    expect(payload).toMatchObject({ sub: "pb_1", aud: "t" });
+  });
+
   it("returns null when the signing key env is not configured", () => {
     clearSigningEnv();
     expect(signMuxPlaybackToken("pb_1")).toBeNull();
     expect(muxSignedStreamUrl("pb_1")).toBeNull();
+    expect(muxSignedThumbnailUrl("pb_1")).toBeNull();
   });
 });
 

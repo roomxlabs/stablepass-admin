@@ -21,6 +21,8 @@ export type PostRow = {
   status: PostStatus;
   title: string | null;
   body: string | null;
+  media_url: string | null;
+  mux_playback_id: string | null;
   like_count: number | null;
   published_at: string | null;
   scheduled_for: string | null;

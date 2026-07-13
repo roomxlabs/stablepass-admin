@@ -21,11 +21,16 @@ const PLAYBACK_TOKEN_TTL_SEC = 3600; // preview links live for an hour
 const b64url = (s: string) => Buffer.from(s).toString("base64url");
 
 /**
- * Mint a signed playback token (RS256 JWT, `aud: "v"`) for a playback id.
+ * Mint a signed playback token (RS256 JWT) for a playback id. `aud` selects
+ * what the token unlocks: `"v"` = video stream, `"t"` = thumbnail image.
  * Returns null when the signing key env is not configured — callers treat
  * that as "no playable URL" rather than an error.
  */
-export function signMuxPlaybackToken(playbackId: string, ttlSec = PLAYBACK_TOKEN_TTL_SEC): string | null {
+export function signMuxPlaybackToken(
+  playbackId: string,
+  aud: "v" | "t" = "v",
+  ttlSec = PLAYBACK_TOKEN_TTL_SEC,
+): string | null {
   const keyId = process.env.MUX_SIGNING_KEY_ID;
   const keyMaterial = process.env.MUX_SIGNING_PRIVATE_KEY;
   if (!keyId || !keyMaterial) return null;
@@ -37,7 +42,7 @@ export function signMuxPlaybackToken(playbackId: string, ttlSec = PLAYBACK_TOKEN
 
   const header = b64url(JSON.stringify({ alg: "RS256", typ: "JWT", kid: keyId }));
   const payload = b64url(
-    JSON.stringify({ sub: playbackId, aud: "v", exp: Math.floor(Date.now() / 1000) + ttlSec }),
+    JSON.stringify({ sub: playbackId, aud, exp: Math.floor(Date.now() / 1000) + ttlSec }),
   );
   const signer = createSign("RSA-SHA256");
   signer.update(`${header}.${payload}`);
@@ -47,8 +52,14 @@ export function signMuxPlaybackToken(playbackId: string, ttlSec = PLAYBACK_TOKEN
 
 /** The signed HLS URL for a playback id, or null when signing isn't configured. */
 export function muxSignedStreamUrl(playbackId: string): string | null {
-  const token = signMuxPlaybackToken(playbackId);
+  const token = signMuxPlaybackToken(playbackId, "v");
   return token ? `https://stream.mux.com/${playbackId}.m3u8?token=${token}` : null;
+}
+
+/** A signed Mux-generated frame for list thumbnails, or null when signing is off. */
+export function muxSignedThumbnailUrl(playbackId: string): string | null {
+  const token = signMuxPlaybackToken(playbackId, "t");
+  return token ? `https://image.mux.com/${playbackId}/thumbnail.jpg?token=${token}` : null;
 }
 
 // Minimal supabase-js surface for the guarded reconcile UPDATE (testable fake).

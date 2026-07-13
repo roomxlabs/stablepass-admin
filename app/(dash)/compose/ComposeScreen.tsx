@@ -57,6 +57,7 @@ export default function ComposeScreen({
   const [showResults, setShowResults] = useState(false);
   const [horse, setHorse] = useState<HorseOption | null>(initial?.horse ?? null);
   const [bylineId, setBylineId] = useState<string>(initial?.bylineId ?? "");
+  const [title, setTitle] = useState(initial?.title ?? "");
   const [caption, setCaption] = useState(initial?.caption ?? "");
 
   const [file, setFile] = useState<File | null>(null);
@@ -185,8 +186,12 @@ export default function ComposeScreen({
 
     setAction({ kind: "working" });
     try {
-      // Persist the editable byline + caption before the lifecycle action.
-      await patchPost(draft.id, { body: caption, sourceTrainerId: bylineId });
+      // Persist the editable title + byline + caption before the lifecycle action.
+      await patchPost(draft.id, {
+        title: title.trim() || null,
+        body: caption,
+        sourceTrainerId: bylineId,
+      });
 
       if (next === "publish") {
         await publishPost(draft.id);
@@ -215,6 +220,7 @@ export default function ComposeScreen({
     try {
       await discardDraft(draft.id);
       resetMedia();
+      setTitle("");
       setCaption("");
       setAction({ kind: "ok", message: "Draft discarded." });
     } catch (e) {
@@ -228,7 +234,11 @@ export default function ComposeScreen({
     if (!initial) return;
     setAction({ kind: "working" });
     try {
-      await patchPost(initial.id, { body: caption, sourceTrainerId: bylineId });
+      await patchPost(initial.id, {
+        title: title.trim() || null,
+        body: caption,
+        sourceTrainerId: bylineId,
+      });
       setAction({ kind: "ok", message: "Changes saved." });
       router.push("/posts");
       router.refresh();
@@ -535,6 +545,20 @@ export default function ComposeScreen({
                   </option>
                 ))}
               </select>
+
+              <label className={styles.label} htmlFor="post-title">
+                Title
+              </label>
+              <input
+                id="post-title"
+                className={styles.input}
+                type="text"
+                value={title}
+                data-testid="title"
+                placeholder="Last fast gallop before Saturday"
+                onChange={(e) => setTitle(e.target.value)}
+                style={{ marginBottom: 14 }}
+              />
 
               <div className={styles.captionRow}>
                 <label className={styles.label} htmlFor="caption">

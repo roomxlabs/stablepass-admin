@@ -83,6 +83,7 @@ describe("ComposeScreen", () => {
       status: "published",
       mediaType: "photo",
       mediaUrl: "https://signed.example/photo.jpg",
+      title: "Old title",
       caption: "Old caption",
       bylineId: "t1",
       horse: HORSES[0],
@@ -91,19 +92,22 @@ describe("ComposeScreen", () => {
 
     // Title switches to edit; fields hydrate from the post.
     expect(screen.getByRole("heading", { name: "Edit post" })).toBeTruthy();
+    expect((screen.getByTestId("title") as HTMLInputElement).value).toBe("Old title");
     expect((screen.getByTestId("caption") as HTMLTextAreaElement).value).toBe("Old caption");
     expect((screen.getByTestId("byline-select") as HTMLSelectElement).value).toBe("t1");
     // Media shown read-only; no horse search / create controls in edit mode.
     expect(screen.getByTestId("media-existing")).toBeTruthy();
     expect(screen.queryByTestId("horse-search")).toBeNull();
 
-    // Edit caption + byline, then save → PATCH the existing post.
+    // Edit title + caption + byline, then save → PATCH the existing post.
+    fireEvent.change(screen.getByTestId("title"), { target: { value: "New title" } });
     fireEvent.change(screen.getByTestId("caption"), { target: { value: "New caption" } });
     fireEvent.change(screen.getByTestId("byline-select"), { target: { value: "t2" } });
     fireEvent.click(screen.getByTestId("primary-action"));
 
     await waitFor(() =>
       expect(api.patchPost).toHaveBeenCalledWith("post-9", {
+        title: "New title",
         body: "New caption",
         sourceTrainerId: "t2",
       }),
@@ -162,9 +166,11 @@ describe("ComposeScreen", () => {
 
     fireEvent.click(screen.getByTestId("primary-action"));
 
-    // Caption + byline persisted, then the publish endpoint called with the draft id.
+    // Title (empty → null) + caption + byline persisted, then the publish
+    // endpoint called with the draft id.
     await waitFor(() => expect(api.publishPost).toHaveBeenCalledWith("p1"));
     expect(api.patchPost).toHaveBeenCalledWith("p1", {
+      title: null,
       body: "Spot-on before Saturday.",
       sourceTrainerId: "t1",
     });

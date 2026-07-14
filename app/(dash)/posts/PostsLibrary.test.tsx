@@ -84,13 +84,13 @@ describe("PostsLibrary", () => {
     expect(screen.getAllByRole("button", { name: "Discard" })).toHaveLength(1);
   });
 
-  it("toggles Unpublish (published) ↔ Republish (unpublished), Publish now on scheduled", () => {
+  it("toggles Unpublish (published) ↔ Republish (unpublished), Publish now on scheduled + drafts", () => {
     renderLib();
     expect(screen.getAllByRole("button", { name: "Unpublish" })).toHaveLength(1);
     expect(screen.getAllByRole("button", { name: "Republish" })).toHaveLength(1);
-    expect(screen.getAllByRole("button", { name: "Publish now" })).toHaveLength(1);
-    // A draft never offers unpublish/republish/publish-now beyond those rows.
-    expect(screen.queryByRole("button", { name: "Unpublish" })).not.toBeNull();
+    // One scheduled row + one draft row → two Publish now affordances (the
+    // publish endpoint accepts both statuses).
+    expect(screen.getAllByRole("button", { name: "Publish now" })).toHaveLength(2);
   });
 
   it("clicking a row opens the post detail (Compose in edit mode)", () => {

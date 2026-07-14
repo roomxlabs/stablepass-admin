@@ -112,9 +112,38 @@ describe("ComposeScreen", () => {
         sourceTrainerId: "t2",
       }),
     );
-    // Edit never touches the create/publish endpoints.
+    // Editing a published post never touches the create/publish endpoints —
+    // and offers no Publish now (drafts only).
     expect(api.createDraft).not.toHaveBeenCalled();
     expect(api.publishPost).not.toHaveBeenCalled();
+    expect(screen.queryByTestId("publish-draft")).toBeNull();
+  });
+
+  it("edit mode on a DRAFT: Publish now saves the edits then publishes", async () => {
+    api.patchPost.mockResolvedValue(undefined);
+    api.publishPost.mockResolvedValue(undefined);
+    const initial: EditInitial = {
+      id: "post-7",
+      status: "draft",
+      mediaType: "photo",
+      mediaUrl: "https://signed.example/photo.jpg",
+      title: "",
+      caption: "Almost ready",
+      bylineId: "t1",
+      horse: HORSES[0],
+    };
+    render(<ComposeScreen horses={HORSES} trainers={TRAINERS} initial={initial} />);
+
+    fireEvent.click(screen.getByTestId("publish-draft"));
+
+    // Fields persisted first, then the existing publish endpoint flips it live.
+    await waitFor(() => expect(api.publishPost).toHaveBeenCalledWith("post-7"));
+    expect(api.patchPost).toHaveBeenCalledWith("post-7", {
+      title: null,
+      body: "Almost ready",
+      sourceTrainerId: "t1",
+    });
+    expect(api.createDraft).not.toHaveBeenCalled();
   });
 
   it("defaults the byline to the picked horse's trainer, and stays editable", () => {

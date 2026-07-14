@@ -247,6 +247,26 @@ export default function ComposeScreen({
     }
   }
 
+  // Edit mode, draft only: persist the edits, then flip the draft live via the
+  // publish endpoint (it accepts draft + scheduled).
+  async function publishDraftNow() {
+    if (!initial) return;
+    setAction({ kind: "working" });
+    try {
+      await patchPost(initial.id, {
+        title: title.trim() || null,
+        body: caption,
+        sourceTrainerId: bylineId,
+      });
+      await publishPost(initial.id);
+      setAction({ kind: "ok", message: "Post published." });
+      router.push("/posts");
+      router.refresh();
+    } catch (e) {
+      setAction({ kind: "error", message: (e as Error).message });
+    }
+  }
+
   const previewData: PostPreviewData = {
     horseName: horse?.name ?? null,
     byline: trainerName,
@@ -276,14 +296,27 @@ export default function ComposeScreen({
             Preview
           </button>
           {isEdit ? (
-            <button
-              type="button"
-              className={`btn btn-primary ${styles.btnSm}`}
-              onClick={saveEdit}
-              disabled={busy}
-            >
-              {busy ? "Saving…" : "Save changes"}
-            </button>
+            <>
+              <button
+                type="button"
+                className={`btn ${initial?.status === "draft" ? styles.btnLight : "btn-primary"} ${styles.btnSm}`}
+                onClick={saveEdit}
+                disabled={busy}
+              >
+                {busy ? "Saving…" : "Save changes"}
+              </button>
+              {initial?.status === "draft" && (
+                <button
+                  type="button"
+                  className={`btn btn-primary ${styles.btnSm}`}
+                  data-testid="publish-draft"
+                  onClick={publishDraftNow}
+                  disabled={busy}
+                >
+                  {busy ? "Working…" : "Publish now"}
+                </button>
+              )}
+            </>
           ) : (
             <>
               <button

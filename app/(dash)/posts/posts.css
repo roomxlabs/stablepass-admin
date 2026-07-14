@@ -1,0 +1,207 @@
+/* ====================================================================
+   Posts library — admin resource-screen components (T7 / ENG-177).
+   Values ported verbatim from the shared design system
+   (dev-handover/StablePass-mockups/mockups/web/style.css) so the screen
+   matches screens/04-posts.html 1:1. Scoped to the posts feature (imported
+   by its page) to keep the shared app/globals.css — which this ticket does
+   not own — untouched.
+   ==================================================================== */
+
+/* Card ------------------------------------------------------------- */
+.adm-card {
+  background: var(--white);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+/* Filter bar (chips + mini search) --------------------------------- */
+.adm-filter-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 22px;
+  border-bottom: 1px solid var(--line);
+  background: var(--cream);
+}
+.adm-filter-bar .chip {
+  font-size: 12.5px;
+  font-weight: 500;
+  padding: 7px 14px;
+  border-radius: 100px;
+  border: 1px solid var(--line);
+  background: var(--white);
+  color: var(--ink);
+  cursor: pointer;
+  text-decoration: none;
+  white-space: nowrap;
+}
+.adm-filter-bar .chip.active {
+  background: var(--brand-green);
+  color: var(--cream);
+  border-color: var(--brand-green);
+}
+.adm-filter-bar .spacer { flex: 1; }
+.adm-filter-bar .search-mini {
+  background: var(--white);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 7px 12px;
+  font-size: 13px;
+  color: var(--muted);
+  min-width: 240px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+.adm-filter-bar .search-mini .ic { width: 15px; height: 15px; flex-shrink: 0; }
+.adm-filter-bar .search-mini input {
+  border: none;
+  outline: none;
+  background: transparent;
+  font-family: var(--font-sans);
+  font-size: 13px;
+  color: var(--ink);
+  width: 100%;
+}
+.adm-filter-bar .search-mini input::placeholder { color: var(--muted-light); }
+
+/* Topbar search — functional GET form (styled like globals .search) - */
+.admin-topbar .search-form { display: flex; }
+.admin-topbar .search input {
+  border: none;
+  outline: none;
+  background: transparent;
+  font-family: var(--font-sans);
+  font-size: 13px;
+  color: var(--ink);
+  width: 100%;
+}
+.admin-topbar .search input::placeholder { color: var(--muted); }
+
+/* Pills ------------------------------------------------------------ */
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11.5px;
+  font-weight: 600;
+  padding: 3px 9px;
+  border-radius: 100px;
+  background: var(--cream-dark);
+  color: var(--muted);
+  letter-spacing: 0.02em;
+}
+.pill.green { background: var(--brand-green-soft); color: var(--brand-green-dark); }
+.pill.amber { background: #FBF1D6; color: #8A6712; }
+.pill.red { background: #FCEBE7; color: #B0411F; }
+.pill.dot::before { content: "\25CF"; font-size: 9px; }
+
+/* Table ------------------------------------------------------------ */
+.adm-table { width: 100%; border-collapse: collapse; table-layout: auto; }
+.adm-table th,
+.adm-table td {
+  text-align: left;
+  padding: 12px 14px;
+  font-size: 13px;
+  border-bottom: 1px solid var(--line);
+  vertical-align: middle;
+}
+.adm-table th:first-child,
+.adm-table td:first-child { padding-left: 22px; }
+.adm-table th:last-child,
+.adm-table td:last-child { padding-right: 22px; }
+.adm-table td.nowrap,
+.adm-table th.nowrap { white-space: nowrap; }
+.adm-table th {
+  background: var(--cream);
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+  border-bottom: 1px solid var(--line);
+}
+.adm-table tr:hover td { background: rgba(40, 93, 80, 0.025); }
+/* The whole row opens the post detail (Compose in edit mode). */
+.adm-table tbody tr.row-link { cursor: pointer; }
+.adm-table td .row-thumb {
+  width: 36px;
+  height: 36px;
+  border-radius: 8px;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+.adm-table td .row-thumb img { width: 100%; height: 100%; object-fit: cover; }
+.adm-table td .row-thumb .thumb-fallback {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--cream-dark);
+  color: var(--line-dark);
+}
+.adm-table td .row-thumb .thumb-fallback .ic { width: 18px; height: 18px; }
+.adm-table td.with-thumb { display: flex; align-items: center; gap: 12px; }
+.adm-table td .row-name { font-weight: 500; font-size: 14px; }
+.adm-table td .row-sub { font-size: 12px; color: var(--muted); margin-top: 1px; }
+/* Allow the Post text block to shrink (wrap long titles/captions) rather than
+   force the column wide enough to push the row actions past the card edge. */
+.adm-table td.with-thumb > div { min-width: 0; }
+.adm-table td.actions { text-align: right; white-space: nowrap; }
+.adm-table td.actions a,
+.adm-table td.actions button {
+  color: var(--brand-green);
+  font-weight: 500;
+  text-decoration: none;
+  font-size: 12.5px;
+  margin-left: 10px;
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  font-family: var(--font-sans);
+}
+.adm-table td.actions a:hover:not(:disabled),
+.adm-table td.actions button:hover:not(:disabled) { text-decoration: underline; }
+.adm-table td.actions a.danger,
+.adm-table td.actions button.danger { color: var(--red); }
+.adm-table td.actions button:disabled { opacity: 0.5; cursor: default; }
+.adm-table td.actions .row-err { color: var(--red); font-size: 11px; margin-left: 10px; }
+
+/* Soft-hide help note ---------------------------------------------- */
+.adm-help { font-size: 12px; color: var(--muted); margin: 0; }
+
+/* Empty state ------------------------------------------------------ */
+.posts-empty { padding: 56px 24px; text-align: center; }
+.posts-empty h2 {
+  font-family: var(--font-serif);
+  font-size: 20px;
+  font-weight: 600;
+  margin: 0 0 6px;
+}
+.posts-empty p { color: var(--muted); font-size: 14px; margin: 0 0 18px; }
+
+/* Footer (count + pagination) -------------------------------------- */
+.posts-foot {
+  padding: 16px 22px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 13px;
+  color: var(--muted);
+  border-top: 1px solid var(--line);
+}
+.posts-foot .pager { display: flex; gap: 8px; }
+.posts-foot .pager a,
+.posts-foot .pager span {
+  padding: 6px 14px;
+  font-size: 12.5px;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--line);
+  background: var(--white);
+  color: var(--ink);
+  text-decoration: none;
+}
+.posts-foot .pager span.disabled { opacity: 0.45; }

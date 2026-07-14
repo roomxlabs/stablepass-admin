@@ -8,8 +8,9 @@ import { discardDraft, publishNow, republishPost, unpublishPost } from "./api";
 // The per-row action affordances. Which action shows is a pure function of the
 // post's status (guardrail §2): Discard appears only on a draft; a published
 // post can be Unpublished (reversible soft-hide) and an unpublished one
-// Republished; a scheduled post can be Published now. Opening the post detail
-// (Compose in edit mode) is the row click itself (PostRow), not an action here.
+// Republished; a scheduled or draft post can be Published now (the publish
+// endpoint accepts both). Opening the post detail (Compose in edit mode) is
+// the row click itself (PostRow), not an action here.
 export default function PostActions({ id, status }: { id: string; status: PostStatus }) {
   const router = useRouter();
   const [pending, startTransition] = useTransition();
@@ -44,7 +45,7 @@ export default function PostActions({ id, status }: { id: string; status: PostSt
           Republish
         </button>
       )}
-      {status === "scheduled" && (
+      {(status === "scheduled" || status === "draft") && (
         <button type="button" disabled={working} onClick={() => act(publishNow)}>
           Publish now
         </button>

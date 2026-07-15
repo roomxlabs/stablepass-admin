@@ -2,7 +2,9 @@
 
 import { useRouter } from "next/navigation";
 import { Icon } from "../icons";
+import LocalTime from "../LocalTime";
 import PostActions from "./PostActions";
+import { whenIso } from "./format";
 import type { PostView } from "./types";
 
 // One Posts-library row. The whole row is the way into the post detail
@@ -11,6 +13,9 @@ import type { PostView } from "./types";
 // and never navigate.
 export default function PostRow({ post: p }: { post: PostView }) {
   const router = useRouter();
+  // The "Published" instant, by status. Drafts (and rows missing the relevant
+  // timestamp) have none → "—". <LocalTime> renders it in the browser TZ.
+  const iso = whenIso(p);
 
   return (
     <tr
@@ -51,7 +56,7 @@ export default function PostRow({ post: p }: { post: PostView }) {
       <td className="nowrap">
         <span className={p.statusPillClass}>{p.statusLabel}</span>
       </td>
-      <td className="nowrap">{p.whenLabel}</td>
+      <td className="nowrap">{iso ? <LocalTime kind="when" iso={iso} /> : "—"}</td>
       <td className="nowrap">
         {p.likeCount === null ? (
           "—"

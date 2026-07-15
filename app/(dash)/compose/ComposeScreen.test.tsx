@@ -86,6 +86,7 @@ describe("ComposeScreen", () => {
       title: "Old title",
       caption: "Old caption",
       bylineId: "t1",
+      scheduledFor: null,
       horse: HORSES[0],
     };
     render(<ComposeScreen horses={HORSES} trainers={TRAINERS} initial={initial} />);
@@ -130,9 +131,14 @@ describe("ComposeScreen", () => {
       title: "",
       caption: "Almost ready",
       bylineId: "t1",
+      scheduledFor: null,
       horse: HORSES[0],
     };
     render(<ComposeScreen horses={HORSES} trainers={TRAINERS} initial={initial} />);
+
+    // A draft in edit mode keeps BOTH affordances (Publish now + Schedule).
+    expect(screen.getByTestId("publish-draft")).toBeTruthy();
+    expect(screen.getByTestId("edit-schedule")).toBeTruthy();
 
     fireEvent.click(screen.getByTestId("publish-draft"));
 
@@ -238,5 +244,213 @@ describe("ComposeScreen", () => {
       ),
     );
     expect(api.uploadPhotoToStorage).not.toHaveBeenCalled();
+  });
+
+  // --- Scheduling: explicit Date + Time picker (create + edit) ----------------
+
+  async function uploadPhoto() {
+    api.createDraft.mockResolvedValue({
+      id: "p1",
+      status: "draft",
+      type: "photo",
+      watermarked: false,
+      uploadUrl: "https://storage.example/signed",
+      path: "p1/original",
+      token: "tok",
+      bucket: "post-media",
+    });
+    api.uploadPhotoToStorage.mockResolvedValue(undefined);
+    const file = new File([new Uint8Array([1, 2, 3])], "gallop.jpg", { type: "image/jpeg" });
+    fireEvent.change(screen.getByTestId("media-input"), { target: { files: [file] } });
+    await screen.findByTestId("upload-done");
+  }
+
+  it("create flow: Schedule combines Date + Time into the UTC ISO of the local pick", async () => {
+    api.patchPost.mockResolvedValue(undefined);
+    api.schedulePost.mockResolvedValue(undefined);
+
+    renderScreen();
+    pickHorse("horse-opt-h1");
+    await uploadPhoto();
+
+    // "Schedule for later" is the 2nd of the three When-to-publish radios; picking
+    // it reveals the Date + Time pair — two separately labelled native controls.
+    fireEvent.click(screen.getAllByRole("radio")[1]);
+    expect(screen.getByText("Date")).toBeTruthy();
+    expect(screen.getByText("Time")).toBeTruthy();
+
+    fireEvent.change(screen.getByTestId("schedule-date"), { target: { value: "2099-06-21" } });
+    fireEvent.change(screen.getByTestId("schedule-time"), { target: { value: "16:30" } });
+    fireEvent.click(screen.getByTestId("primary-action"));
+
+    // The local pick is converted to the correct UTC instant, exactly as the old
+    // single datetime-local did (new Date(local).toISOString()).
+    const expectedIso = new Date("2099-06-21T16:30").toISOString();
+    await waitFor(() => expect(api.schedulePost).toHaveBeenCalledWith("p1", expectedIso));
+    // Fields PATCHed before the schedule action, same as the publish path.
+    expect(api.patchPost).toHaveBeenCalledWith("p1", {
+      title: null,
+      body: "",
+      sourceTrainerId: "t1",
+    });
+    expect(api.patchPost.mock.invocationCallOrder[0]).toBeLessThan(
+      api.schedulePost.mock.invocationCallOrder[0],
+    );
+    expect(api.publishPost).not.toHaveBeenCalled();
+  });
+
+  it("edit mode: draft shows the Schedule section (Schedule); published shows none", () => {
+    const base = {
+      mediaType: "photo" as const,
+      mediaUrl: "https://signed.example/photo.jpg",
+      title: "T",
+      caption: "C",
+      bylineId: "t1",
+      horse: HORSES[0],
+    };
+
+    const draft = render(
+      <ComposeScreen
+        horses={HORSES}
+        trainers={TRAINERS}
+        initial={{ ...base, id: "d1", status: "draft", scheduledFor: null }}
+      />,
+    );
+    expect(screen.getByTestId("edit-schedule")).toBeTruthy();
+    const label = screen.getByTestId("schedule-action").textContent ?? "";
+    expect(label).toContain("Schedule");
+    expect(label).not.toContain("Update");
+    draft.unmount();
+
+    render(
+      <ComposeScreen
+        horses={HORSES}
+        trainers={TRAINERS}
+        initial={{ ...base, id: "u1", status: "published", scheduledFor: null }}
+      />,
+    );
+    expect(screen.queryByTestId("edit-schedule")).toBeNull();
+  });
+
+  it("edit mode on a SCHEDULED post: current schedule + Update schedule; PATCH then re-schedule", async () => {
+    api.patchPost.mockResolvedValue(undefined);
+    api.schedulePost.mockResolvedValue(undefined);
+    const initial: EditInitial = {
+      id: "post-5",
+      status: "scheduled",
+      mediaType: "photo",
+      mediaUrl: "https://signed.example/photo.jpg",
+      title: "Race day",
+      caption: "Big race Saturday",
+      bylineId: "t1",
+      scheduledFor: "2099-06-20T09:30:00.000Z",
+      horse: HORSES[0],
+    };
+    render(<ComposeScreen horses={HORSES} trainers={TRAINERS} initial={initial} />);
+
+    expect(screen.getByTestId("edit-schedule")).toBeTruthy();
+    expect(screen.getByTestId("current-schedule")).toBeTruthy();
+    expect(screen.getByTestId("schedule-action").textContent).toContain("Update schedule");
+
+    fireEvent.change(screen.getByTestId("schedule-date"), { target: { value: "2099-07-01" } });
+    fireEvent.change(screen.getByTestId("schedule-time"), { target: { value: "18:45" } });
+    fireEvent.click(screen.getByTestId("schedule-action"));
+
+    const expectedIso = new Date("2099-07-01T18:45").toISOString();
+    await waitFor(() => expect(api.schedulePost).toHaveBeenCalledWith("post-5", expectedIso));
+    expect(api.patchPost).toHaveBeenCalledWith("post-5", {
+      title: "Race day",
+      body: "Big race Saturday",
+      sourceTrainerId: "t1",
+    });
+    expect(api.patchPost.mock.invocationCallOrder[0]).toBeLessThan(
+      api.schedulePost.mock.invocationCallOrder[0],
+    );
+  });
+
+  it("schedule: a past Date + Time renders an inline error and never calls the endpoint", () => {
+    const initial: EditInitial = {
+      id: "post-3",
+      status: "draft",
+      mediaType: "photo",
+      mediaUrl: "https://signed.example/photo.jpg",
+      title: "T",
+      caption: "C",
+      bylineId: "t1",
+      scheduledFor: null,
+      horse: HORSES[0],
+    };
+    render(<ComposeScreen horses={HORSES} trainers={TRAINERS} initial={initial} />);
+
+    fireEvent.change(screen.getByTestId("schedule-date"), { target: { value: "2000-01-01" } });
+    fireEvent.change(screen.getByTestId("schedule-time"), { target: { value: "10:00" } });
+    fireEvent.click(screen.getByTestId("schedule-action"));
+
+    expect(screen.getByTestId("action-note").textContent).toMatch(/past/i);
+    expect(api.schedulePost).not.toHaveBeenCalled();
+    expect(api.patchPost).not.toHaveBeenCalled();
+  });
+
+  it("schedule: a 409 invalid_status endpoint error renders inline with a refresh hint", async () => {
+    api.patchPost.mockResolvedValue(undefined);
+    // Simulate the cron publishing the post between load and confirm → 409.
+    api.schedulePost.mockRejectedValue(
+      Object.assign(new Error("A published post cannot be scheduled."), {
+        code: "invalid_status",
+        status: 409,
+      }),
+    );
+    const initial: EditInitial = {
+      id: "post-8",
+      status: "scheduled",
+      mediaType: "photo",
+      mediaUrl: "https://signed.example/photo.jpg",
+      title: "T",
+      caption: "C",
+      bylineId: "t1",
+      scheduledFor: "2099-06-20T09:30:00.000Z",
+      horse: HORSES[0],
+    };
+    render(<ComposeScreen horses={HORSES} trainers={TRAINERS} initial={initial} />);
+
+    fireEvent.change(screen.getByTestId("schedule-date"), { target: { value: "2099-07-01" } });
+    fireEvent.change(screen.getByTestId("schedule-time"), { target: { value: "18:45" } });
+    fireEvent.click(screen.getByTestId("schedule-action"));
+
+    await waitFor(() =>
+      expect(screen.getByTestId("action-note").textContent).toMatch(/refresh/i),
+    );
+  });
+
+  it("schedule: a server-returned scheduled_for_in_past (clock skew) maps to the friendly inline line", async () => {
+    api.patchPost.mockResolvedValue(undefined);
+    // A future pick clears the client guard, but the endpoint rejects it as past
+    // (clock skew between the browser and the server).
+    api.schedulePost.mockRejectedValue(
+      Object.assign(new Error("scheduledFor must be in the future."), {
+        code: "scheduled_for_in_past",
+        status: 400,
+      }),
+    );
+    const initial: EditInitial = {
+      id: "post-6",
+      status: "draft",
+      mediaType: "photo",
+      mediaUrl: "https://signed.example/photo.jpg",
+      title: "T",
+      caption: "C",
+      bylineId: "t1",
+      scheduledFor: null,
+      horse: HORSES[0],
+    };
+    render(<ComposeScreen horses={HORSES} trainers={TRAINERS} initial={initial} />);
+
+    fireEvent.change(screen.getByTestId("schedule-date"), { target: { value: "2099-07-01" } });
+    fireEvent.change(screen.getByTestId("schedule-time"), { target: { value: "18:45" } });
+    fireEvent.click(screen.getByTestId("schedule-action"));
+
+    // Endpoint reached (guard passed), then the code maps to the friendly line.
+    await waitFor(() => expect(api.schedulePost).toHaveBeenCalledTimes(1));
+    expect(screen.getByTestId("action-note").textContent).toMatch(/past/i);
   });
 });

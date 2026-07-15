@@ -42,6 +42,7 @@ type PostRow = {
   title: string | null;
   body: string | null;
   source_trainer_id: string;
+  scheduled_for: string | null;
   media_url: string | null;
   mux_playback_id: string | null;
   horse: HorseRow | HorseRow[] | null;
@@ -102,7 +103,7 @@ export default async function ComposePage({
     const { data } = await sb
       .from("post")
       .select(
-        "id,type,status,title,body,source_trainer_id,media_url,mux_playback_id,horse:horse_id(id,display_name,racing_name,photo_url,stable_name,trainer_id,trainer:trainer_id(id,name,display_name))",
+        "id,type,status,title,body,source_trainer_id,scheduled_for,media_url,mux_playback_id,horse:horse_id(id,display_name,racing_name,photo_url,stable_name,trainer_id,trainer:trainer_id(id,name,display_name))",
       )
       .eq("id", id)
       .maybeSingle();
@@ -128,6 +129,7 @@ export default async function ComposePage({
         title: post.title ?? "",
         caption: post.body ?? "",
         bylineId: post.source_trainer_id,
+        scheduledFor: post.scheduled_for,
         horse: {
           id: h?.id ?? "",
           name: h?.racing_name ?? h?.display_name ?? "Unnamed horse",

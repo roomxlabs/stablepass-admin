@@ -9,6 +9,7 @@ import {
 } from "@/lib/dashboard/queries";
 import { HORSE_PHOTO_BUCKET, signPhotoMap } from "@/lib/storage/photos";
 import { Icon } from "./icons";
+import LocalTime from "./LocalTime";
 import "./dashboard.css";
 
 // Dashboard landing — screens/02-dashboard.html. Data-bearing (dash) page: it
@@ -22,16 +23,6 @@ import "./dashboard.css";
 const RACE_WINDOW_HOURS = 24;
 
 const fmt = (n: number) => n.toLocaleString("en-US");
-
-function raceTime(iso: string | null): string {
-  if (!iso) return "";
-  const d = new Date(iso);
-  let h = d.getHours();
-  const m = d.getMinutes();
-  const ampm = h >= 12 ? "pm" : "am";
-  h = h % 12 || 12;
-  return `${h}:${m.toString().padStart(2, "0")}${ampm}`;
-}
 
 function timeAgo(iso: string | null): string {
   if (!iso) return "";
@@ -150,7 +141,7 @@ export default async function DashboardPage() {
                 const pill = racePill(runner);
                 return (
                   <div className="adm-race-row" key={key}>
-                    <div className="time">{raceTime(race.scheduledAt)}</div>
+                    <div className="time"><LocalTime iso={race.scheduledAt} kind="clock" /></div>
                     <div>
                       <div className="horse-name">{runner.name}</div>
                       <div className="horse-meta">

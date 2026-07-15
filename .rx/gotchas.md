@@ -195,3 +195,17 @@ past your branch point. `git worktree` shares refs, so a sibling's `git fetch` u
 `origin/<base>` too. Before opening the PR: `git fetch && git rebase origin/feature/admin-dashboard-v1`,
 then re-run the FULL gate (a shared file like `e2e/mock-supabase.mjs` can merge cleanly by text yet
 collide at runtime — see the dispatcher gotcha above).
+
+## Client-effect UI (`LocalTime`) renders EMPTY under `next dev` in Playwright — another reason to `next start`
+Reinforces the "screenshots: `next start`, not `next dev`" note above, with a distinct symptom. A
+component that fills its content in a post-mount `useEffect` (the `LocalTime` SSR-safe pattern from
+ENG-251: empty `<time>` server-side, label filled after hydration) shows **permanently blank** when
+Playwright drives `npm run dev` — the element keeps its `datetime`/attrs but `textContent` stays `""`
+the whole run, and the only console noise is `ws://…/_next/webpack-hmr … WebSocket handshake:
+net::ERR_INVALID_HTTP_RESPONSE`. Cause: in the e2e sandbox the dev HMR WebSocket handshake fails, Fast
+Refresh never finishes initialising the client runtime, so effects never fire. It is a **dev-only
+artifact** — against `next build && next start` hydration completes and labels fill correctly. Don't
+mistake the blank labels for a real bug; verify against the prod build. Point Playwright's
+`webServer.command` at `npm run build && npm run start -- -p <port>` (raise `timeout` to ~240s). Port
+note: the shared checkout often already holds 3002 with the human's dev server (serving `main`, not your
+branch) — screenshot YOUR branch via a temp, untracked `pw.*.config.ts` on a free port.

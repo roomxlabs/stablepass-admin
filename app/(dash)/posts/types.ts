@@ -45,7 +45,12 @@ export type PostView = {
   status: PostStatus;
   statusLabel: string;
   statusPillClass: string;
-  whenLabel: string;
+  // Raw instants for the "Published" column — the wall-clock label is formatted
+  // client-side, in the operator's browser TZ, by <LocalTime kind="when"> (was a
+  // preformatted server-TZ `whenLabel` string). Which one is shown depends on
+  // `status` (see `whenIso` in ./format).
+  publishedAt: string | null;
+  scheduledFor: string | null;
   /** null → no engagement to show (draft / scheduled). */
   likeCount: number | null;
   editHref: string;

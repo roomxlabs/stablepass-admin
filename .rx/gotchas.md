@@ -195,3 +195,53 @@ past your branch point. `git worktree` shares refs, so a sibling's `git fetch` u
 `origin/<base>` too. Before opening the PR: `git fetch && git rebase origin/feature/admin-dashboard-v1`,
 then re-run the FULL gate (a shared file like `e2e/mock-supabase.mjs` can merge cleanly by text yet
 collide at runtime — see the dispatcher gotcha above).
+
+## `next dev` + Playwright on 127.0.0.1: NOTHING hydrates (every interactive e2e fails)
+Symptom: an e2e click does nothing — `toHaveClass`/value assertions fail, the DOM is correct and
+`page.goto` works, no `pageerror`, all `/_next/static/*` chunks return 200/304. Probing a node shows
+**no `__reactFiber$…` keys**: React never attached. Console shows only a failed
+`ws://127.0.0.1:3002/_next/webpack-hmr` handshake.
+Cause: `playwright.config.ts` drives `npm run dev` on `http://127.0.0.1:3002`. Next 16 treats a dev
+request whose origin isn't in `allowedDevOrigins` as cross-origin and blocks the dev resources,
+including the HMR socket — whose failed handshake aborts the client bootstrap, so the page renders
+(SSR) but never hydrates. Server-action forms still work (progressive enhancement), which is why
+sign-in passes and hides the problem.
+Do-this: `allowedDevOrigins: ["127.0.0.1"]` in `next.config.ts` (added ENG-243). Dev-only, no effect
+on `next build`/`next start`. If interactive e2e mysteriously fails repo-wide, check this FIRST.
+Note: `compose.spec.ts` and `horses.spec.ts` still fail after the fix — those are separate, genuinely
+pre-existing bugs (`byline-select` doesn't auto-fill; `.horse-empty` never renders for `?q=__none__`).
+
+## ESLint here bans BOTH setState-in-effect and ref access during render
+`react-hooks/set-state-in-effect` rejects `useEffect(() => setX(...), [dep])`, and the compiler rules
+also reject "Cannot access/update refs during render" — so the usual *derive-state-from-a-changed-prop*
+escape hatch (a `previousValue` ref compared during render) is ALSO an error. Both bite when resetting
+component state on a route change.
+Do-this: reset by **remounting** — `<Inner key={pathname} {...props} />` (ENG-243's drawer). Effect
+cleanup runs before the new instance mounts, so a body-scroll lock or listener is released correctly.
+
+## No `@testing-library/jest-dom` — use plain DOM assertions
+`toHaveAttribute` / `toBeVisible` / `toBeInTheDocument` do NOT exist in vitest here. Use
+`el.getAttribute("aria-expanded")`, `el.className`, `el.hasAttribute("inert")`, `toBeTruthy()`,
+`toBeNull()`. Component tests also need `// @vitest-environment jsdom` (config default is `node`).
+
+## jsdom's `matchMedia` never fires a change event — stub it
+A component reacting to a media query (the responsive drawer resets past the shell breakpoint) can't be
+tested with `fireEvent(window, new Event("resize"))`. Stub `window.matchMedia` with a fake exposing a
+`get matches()` getter plus add/removeEventListener that records listeners, then invoke them inside
+`act()`. See `app/(dash)/AdminNav.test.tsx`.
+
+## Don't measure a CSS-transitioned element right after toggling its class
+The drawer slides 220ms. `toHaveClass(/open/)` passes instantly, so a `boundingBox()` or
+`page.screenshot()` on the next line captures it mid-slide (x ≈ -232 of a 262px drawer) — the
+screenshot showed no drawer at all. `toBeInViewport()` is also too weak: a fully off-screen panel whose
+edge touches x=0 still "intersects".
+Do-this: `await expect.poll(async () => (await el.boundingBox())!.x).toBeGreaterThanOrEqual(0)` and
+screenshot with `animations: "disabled"`. Same trap for a backdrop that only changes `opacity` — assert
+the computed opacity, not viewport intersection, or the assertion passes in both states.
+
+## Running the e2e suite rewrites unrelated committed screenshots
+`e2e/__screenshots__/*.png` are tracked, and a full `npm run e2e` regenerates ~11 of them (many are
+stale baselines from earlier tickets). That churn buries a shell/CSS diff and makes a
+"zero desktop regression" claim unreviewable.
+Do-this: before committing, `git checkout -- e2e/__screenshots__/` and re-add only the PNGs your ticket
+owns.

@@ -348,3 +348,165 @@ a { color: inherit; text-decoration: none; }
   margin: 0 0 8px;
 }
 .dash-placeholder p { color: var(--muted); font-size: 14px; margin: 0; }
+
+/* ====================================================================
+   RESPONSIVE — breakpoint convention for the whole admin app (ENG-243)
+   --------------------------------------------------------------------
+   Minimum supported width: 320px.
+
+   SHELL breakpoint — max-width: 899px  (i.e. "< 900px")
+     The fixed sidebar is hidden and replaced by the mobile brand bar +
+     slide-in drawer (.admin-mobile-bar / .admin-drawer). Shell chrome
+     only — owned by this file.
+
+   CONTENT-STACKING breakpoint — max-width: 719px  (i.e. "< 720px")
+     The convention every screen uses to collapse its own multi-column
+     content to a single column. Each screen ticket implements that in
+     its OWN scoped stylesheet (dashboard.css, posts.css, horses.css,
+     trainers.css, compose.module.css) — do NOT add per-screen stacking
+     rules here, or sibling screen tickets collide on this file.
+
+   TAP TARGETS — at shell-breakpoint widths, shared controls (.btn,
+     .input, .admin-nav a, .admin-hamburger, .signout-btn) are >= 44px.
+   ==================================================================== */
+
+/* Mobile chrome is inert at desktop widths: every element below is
+   display:none until the shell breakpoint, so the desktop shell renders
+   pixel-identically to before. */
+.admin-mobile-bar,
+.admin-drawer,
+.admin-drawer-backdrop { display: none; }
+
+.admin-mobile-bar {
+  align-items: center;
+  gap: 10px;
+  padding: 10px 16px;
+  background: var(--brand-green-darker);
+  color: var(--cream);
+  position: sticky;
+  top: 0;
+  z-index: 30;
+}
+.admin-mobile-bar img { height: 26px; display: block; }
+.admin-mobile-bar .badge {
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  background: rgba(250, 247, 242, 0.14);
+  color: var(--cream);
+  padding: 3px 8px;
+  border-radius: 4px;
+  text-transform: uppercase;
+}
+.admin-hamburger {
+  margin-left: auto;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  border: none;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--cream);
+  cursor: pointer;
+}
+.admin-hamburger:hover { background: rgba(250, 247, 242, 0.08); }
+.admin-hamburger:focus-visible { outline: 2px solid var(--cream); outline-offset: 2px; }
+.admin-hamburger .ic { width: 24px; height: 24px; }
+
+/* Drawer — same surface treatment as .admin-sidebar so the nav inside it
+   keeps the mockup's tokens exactly. */
+.admin-drawer {
+  position: fixed;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  width: 264px;
+  max-width: 82vw;
+  flex-direction: column;
+  gap: 6px;
+  padding: 24px 14px;
+  background: var(--brand-green-darker);
+  color: var(--cream);
+  box-shadow: var(--shadow-lg);
+  overflow-y: auto;
+  z-index: 100;
+  transform: translateX(-100%);
+  transition: transform 220ms ease;
+}
+.admin-drawer.open { transform: translateX(0); }
+
+.admin-drawer-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(18, 46, 38, 0.55);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 220ms ease;
+  z-index: 90;
+}
+.admin-drawer-backdrop.open { opacity: 1; pointer-events: auto; }
+
+@media (prefers-reduced-motion: reduce) {
+  .admin-drawer,
+  .admin-drawer-backdrop { transition: none; }
+}
+
+/* --- Shell breakpoint: sidebar out, drawer in ---------------------- */
+@media (max-width: 899px) {
+  .admin-shell { grid-template-columns: 1fr; }
+  .admin-sidebar { display: none; }
+
+  .admin-mobile-bar { display: flex; }
+  .admin-drawer { display: flex; }
+  .admin-drawer-backdrop { display: block; }
+
+  /* The mobile bar takes over the sticky slot, so the child topbar scrolls
+     normally instead of fighting it for `top: 0`. */
+  .admin-topbar {
+    position: static;
+    padding: 14px 16px;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+  .admin-topbar h1 { font-size: 20px; }
+  .admin-topbar .actions { flex-wrap: wrap; gap: 8px; }
+  .admin-topbar .search { min-width: 0; flex: 1 1 100%; }
+
+  /* Screen content keeps its own layout (owned by the screen tickets); the
+     shell just guarantees a too-wide child scrolls inside the content well
+     rather than making the whole document scroll sideways. */
+  .admin-content {
+    padding: 20px 16px;
+    overflow-x: auto;
+  }
+
+  /* Shared-control tap sizing. */
+  .btn { min-height: 44px; }
+  .input { min-height: 44px; }
+  .admin-nav a { min-height: 44px; }
+  .signout-btn { width: 44px; height: 44px; }
+}
+
+/* --- Sign-in at phone widths (fits 320px) -------------------------- */
+@media (max-width: 480px) {
+  .admin-signin {
+    align-items: flex-start;
+    padding: 24px 16px;
+  }
+  .admin-signin::before {
+    background-size: 420px;
+    background-position: center right -120px;
+  }
+  .admin-signin-card {
+    width: 100%;
+    max-width: 100%;
+    padding: 28px 20px;
+    border-radius: 14px;
+  }
+  .admin-signin-card h1 { font-size: 26px; }
+  .admin-signin-card .lockup { margin-bottom: 22px; }
+  .admin-signin-card .lockup img { height: 32px; }
+}

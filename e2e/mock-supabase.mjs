@@ -5,11 +5,10 @@ import http from "node:http";
 
 const FAKE_ACCESS_TOKEN = "fake-access-token";
 
-const TRAINER_FIXTURES = [
-  { id: "t1", display_name: "Chris Waller", stable_name: "Chris Waller Racing" },
-  { id: "t2", display_name: "Peter Moody", stable_name: "Moody Racing" },
-  { id: "t3", display_name: "James Cummings", stable_name: "Godolphin Australia" },
-];
+// NOTE: there is deliberately no standalone TRAINER_FIXTURES set. Every trainer
+// read is served from the DB built off TRAINER_SEED below, so the /__control
+// empty toggle applies uniformly and a second trainer source can't drift out of
+// sync with the first (that duplication is what made the horse reads ambiguous).
 
 const HORSE_FIXTURES = [
   { id: "h1", trainer_id: "t1", display_name: "Mahogany", racing_name: "MAHOGANY (AUS)", stable_name: "Mahogany", sire: "Snitzel", dam: "Polar Success", sex: "gelding", colour: "Bay", foaling_year: 2020, status: "active", training_status: "racing", starts: 24, wins: 6, places: 9, prize_money_cents: 1200000, story: "A consistent city performer with a bright staying future.", photo_url: null, created_at: "2026-01-08T00:00:00Z", trainer: { display_name: "Chris Waller" }, follows: [{ count: 3400 }], posts: [{ count: 28 }] },
@@ -99,8 +98,136 @@ function buildDb(seed) {
 }
 
 let DB = buildDb(TRAINER_SEED);
+// Analytics (ENG-276) shares the /__control empty toggle so one spec captures
+// both the populated and the empty (new-platform, all-zeros) states.
+let ANALYTICS_EMPTY = false;
 function setEmpty(empty) {
   DB = empty ? { trainer: [], horse: [], post: [], trainer_contact: [] } : buildDb(TRAINER_SEED);
+  ANALYTICS_EMPTY = empty;
+}
+
+// ---- Analytics fixtures (ENG-276 / A4) --------------------------------------
+// Seeded, fake data only. Shapes are the snake_case rows the A3 RPCs return
+// (see lib/analytics/queries.ts), NOT the camelCase response types.
+
+function isoDaysAgo(n) {
+  return new Date(Date.now() - n * 864e5).toISOString().slice(0, 10);
+}
+
+// 14 days of opens, with two race-day peaks matching the mockup's shape.
+const OPENS_BY_DAY = [
+  480, 620, 400, 730, 540, 940, 780, 460, 600, 380, 680, 560, 900, 720,
+].map((opens, i) => ({ day: isoDaysAgo(13 - i), opens }));
+
+// UTC hours. The screen buckets these into 12 two-hour AEST buckets, so the
+// 6-8am and 6-8pm AEST peaks live at UTC 20-21 and UTC 08-09.
+const OPENS_BY_HOUR = [
+  { hour: 20, opens: 820 }, { hour: 21, opens: 640 },
+  { hour: 8, opens: 940 }, { hour: 9, opens: 700 },
+  { hour: 22, opens: 500 }, { hour: 23, opens: 360 },
+  { hour: 0, opens: 440 }, { hour: 1, opens: 580 },
+  { hour: 2, opens: 660 }, { hour: 3, opens: 300 },
+  { hour: 12, opens: 140 }, { hour: 14, opens: 80 },
+];
+
+const TRAINER_ENGAGEMENT = [
+  { trainer_id: "t1", name: "Chris Waller", horses: 12, posts: 38, opens: 4120, reactions: 4882, saves: 964, website_clicks: 210 },
+  { trainer_id: "t2", name: "Peter Moody", horses: 6, posts: 24, opens: 2905, reactions: 3246, saves: 701, website_clicks: 146 },
+  { trainer_id: "t3", name: "Gai Waterhouse", horses: 4, posts: 17, opens: 1844, reactions: 2010, saves: 438, website_clicks: 98 },
+  { trainer_id: "t4", name: "Ciaron Maher", horses: 2, posts: 9, opens: 991, reactions: 1066, saves: 268, website_clicks: 34 },
+];
+
+const HORSE_ENGAGEMENT = [
+  { horse_id: "h1", name: "Mahogany", trainer_name: "Chris Waller", posts: 11, opens: 1682, reactions: 1913, saves: 402 },
+  { horse_id: "h2", name: "Black Caviar", trainer_name: "Peter Moody", posts: 8, opens: 1347, reactions: 1588, saves: 344 },
+  { horse_id: "h3", name: "Verry Elleegant", trainer_name: "Chris Waller", posts: 9, opens: 1120, reactions: 1204, saves: 287 },
+  { horse_id: "h4", name: "Anamoe", trainer_name: "Gai Waterhouse", posts: 6, opens: 846, reactions: 922, saves: 198 },
+];
+
+const TOP_POSTS = [
+  { post_id: "pa1", title: "Last fast gallop before Saturday", horse_name: "Mahogany", type: "video", opens: 598, reactions: 142, saves: 28 },
+  { post_id: "pa2", title: "Track session - three furlongs strong", horse_name: "Black Caviar", type: "photo", opens: 431, reactions: 89, saves: 19 },
+  { post_id: "pa3", title: "Routine day - barrier trial complete", horse_name: "Verry Elleegant", type: "voice", opens: 302, reactions: 56, saves: 11 },
+];
+
+const TRIALS_BY_MONTH = [
+  { month: "2026-02", started: 24, converted: 9 },
+  { month: "2026-03", started: 32, converted: 14 },
+  { month: "2026-04", started: 48, converted: 21 },
+  { month: "2026-05", started: 60, converted: 28 },
+  { month: "2026-06", started: 76, converted: 41 },
+  { month: "2026-07", started: 96, converted: 58 },
+];
+
+const CLICKS_BY_TRAINER = TRAINER_ENGAGEMENT.map((t) => ({
+  trainer_id: t.trainer_id, name: t.name, clicks: t.website_clicks, last_click: null,
+}));
+
+// Subscription rows for the trials list. `user` is the embedded select alias.
+// Fake members only — never real subscriber data.
+function trialSub(name, email, startedDaysAgo, endsInDays, status) {
+  return {
+    status,
+    created_at: new Date(Date.now() - startedDaysAgo * 864e5).toISOString(),
+    trial_ends_at: new Date(Date.now() + endsInDays * 864e5).toISOString(),
+    user: { name, email },
+  };
+}
+const TRIAL_SUBSCRIPTIONS = [
+  trialSub("Sarah Mitchell", "sarah.m@example.test", 26, 5, "trial"),
+  trialSub("Tom Nguyen", "tom.nguyen@example.test", 22, 9, "trial"),
+  trialSub("Rebecca Hartley", "bec.hartley@example.test", 14, 17, "trial"),
+  trialSub("David Okafor", "d.okafor@example.test", 5, 26, "trial"),
+  trialSub("Alex Reid", "alex.reid@example.test", 90, -60, "active"),
+  trialSub("Jo Bennett", "jo.bennett@example.test", 120, -90, "active"),
+];
+
+// Per-post screen fixtures, keyed by the top-post ids above.
+const POST_ANALYTICS_POSTS = [
+  {
+    id: "pa1",
+    title: "Last fast gallop before Saturday",
+    type: "video",
+    published_at: new Date(Date.now() - 4 * 864e5).toISOString(),
+    horse_id: "h1",
+    horse: { display_name: "Mahogany", racing_name: "Mahogany" },
+    trainer: { name: "Chris Waller", display_name: "Chris Waller" },
+  },
+];
+
+const POST_OPENS_BY_DAY = [312, 148, 74, 41, 23].map((opens, i) => ({
+  day: isoDaysAgo(4 - i),
+  opens,
+}));
+
+// Deliberately NOT the canonical set — the screen must render whatever the API
+// returns, since the final reaction set is still due from the client.
+const POST_REACTIONS = [
+  { emoji: "👍", count: 58 },
+  { emoji: "❤️", count: 39 },
+  { emoji: "👏", count: 21 },
+  { emoji: "🔥", count: 13 },
+  { emoji: "🐎", count: 7 },
+  { emoji: "💪", count: 3 },
+  { emoji: "🙏", count: 1 },
+];
+
+function analyticsRpc(fn) {
+  if (ANALYTICS_EMPTY) return [];
+  switch (fn) {
+    case "admin_opens_by_day": return OPENS_BY_DAY;
+    case "admin_opens_by_hour": return OPENS_BY_HOUR;
+    case "admin_trainer_engagement": return TRAINER_ENGAGEMENT;
+    case "admin_horse_engagement": return HORSE_ENGAGEMENT;
+    case "admin_top_posts": return TOP_POSTS;
+    case "admin_trials_by_month": return TRIALS_BY_MONTH;
+    case "admin_clicks_by_trainer": return CLICKS_BY_TRAINER;
+    case "admin_post_opens_by_day": return POST_OPENS_BY_DAY;
+    case "admin_post_reactions": return POST_REACTIONS;
+    default:
+      console.log(`[mock-supabase] unhandled rpc ${fn}`);
+      return [];
+  }
 }
 
 function corsHeaders() {
@@ -157,6 +284,17 @@ const DASH_RACES = [
   { id: "r3", venue: "Rosehill", race_number: 7, race_class: "G2", scheduled_at: new Date(Date.now() + 6 * 36e5).toISOString(), race_horse: [{ horse_id: "h2", horse: { display_name: "Black Caviar", racing_name: "BLACK CAVIAR (AUS)", trainer: { name: "Peter Moody", display_name: "Peter Moody" } } }] },
 ];
 
+// Compose (ENG-176 / T6) pickable horses. Distinct from DASH_HORSES: compose
+// needs the embedded `trainer` (its byline auto-fills from the horse's trainer,
+// asserted by compose.spec.ts) and `stable_name`. DASH_HORSES has neither, so
+// serving the dashboard set here silently breaks the byline — see the horse
+// dispatch block below for why these must be discriminated, not overlapped.
+const COMPOSE_HORSES = [
+  { id: "h1", display_name: "Mahogany", racing_name: "Mahogany", photo_url: null, stable_name: "Randwick", trainer_id: "t1", trainer: { id: "t1", name: "Chris Waller", display_name: "Chris Waller" } },
+  { id: "h2", display_name: "Black Caviar", racing_name: "Black Caviar", photo_url: null, stable_name: "Caulfield", trainer_id: "t2", trainer: { id: "t2", name: "Peter Moody", display_name: "Peter Moody" } },
+  { id: "h3", display_name: "Winx", racing_name: "Winx", photo_url: null, stable_name: "Rosehill", trainer_id: "t1", trainer: { id: "t1", name: "Chris Waller", display_name: "Chris Waller" } },
+];
+
 // Active horses for the quiet-horse check. h1 posted this week (loud); h2/h3
 // stale; h5 never posted — so three quiet horses, one retired (matches mockup).
 const DASH_HORSES = [
@@ -201,6 +339,75 @@ export function startMockSupabase() {
       return;
     }
 
+    // ---- Analytics (ENG-276 / A4) -------------------------------------------
+    // These MUST stay ahead of the dashboard reads and the generic DB reader
+    // below: the dashboard's /rest/v1/subscription handler returns an empty
+    // list, and the generic reader shadows /rest/v1/post with trainer-shaped
+    // stubs (see .rx/gotchas.md). Each is discriminated by a query signature
+    // unique to the analytics reads so the other screens are untouched.
+
+    // Postgres RPCs (PostgREST serves them as POST /rest/v1/rpc/<name>). The
+    // base mock had no RPC handler at all, so these fell through to the
+    // catch-all `200 {}` and every chart rendered blank.
+    if (req.method === "POST" && url.pathname.startsWith("/rest/v1/rpc/")) {
+      const fn = url.pathname.slice("/rest/v1/rpc/".length);
+      sendJson(res, 200, analyticsRpc(fn));
+      return;
+    }
+
+    // Trials list: getTrials() selects trial_ends_at, which no other screen does.
+    if (
+      (req.method === "GET" || req.method === "HEAD") &&
+      url.pathname.startsWith("/rest/v1/subscription") &&
+      url.search.includes("trial_ends_at")
+    ) {
+      const rows = ANALYTICS_EMPTY ? [] : TRIAL_SUBSCRIPTIONS;
+      sendTable(res, req.method, rows, rows.length);
+      return;
+    }
+
+    // Per-post analytics reads the post by PK. Two traps here, both hit during
+    // this ticket:
+    //  1. The `id=eq.` filter must be ANCHORED — unanchored it also matches
+    //     `horse_id=eq.` (the posts library's horse filter) and hijacks it.
+    //  2. url.search is PERCENT-ENCODED, so `:` arrives as `%3A` and a raw
+    //     substring test for an embed alias never fires. Decode first.
+    // The select signature must also be analytics-only: `trainer:source_trainer_id`
+    // alone is shared with the posts library and the preview route, so key on
+    // the full `(name,display_name)` embed, which only this read uses.
+    // `.maybeSingle()` fetches as a LIST and enforces cardinality client side,
+    // so return exactly the one matching row (see .rx/gotchas.md).
+    const decodedSearch = decodeURIComponent(url.search);
+    if (
+      req.method === "GET" &&
+      url.pathname.startsWith("/rest/v1/post") &&
+      /[?&]id=eq\./.test(url.search) &&
+      decodedSearch.includes("trainer:source_trainer_id(name,display_name)")
+    ) {
+      const id = decodeURIComponent(url.search.match(/[?&]id=eq\.([^&]+)/)?.[1] ?? "");
+      const row = POST_ANALYTICS_POSTS.find((p) => p.id === id) ?? null;
+      const accept = req.headers["accept"] ?? "";
+      if (accept.includes("pgrst.object")) sendJson(res, 200, row);
+      else sendJson(res, 200, row ? [row] : []);
+      return;
+    }
+
+    // Saves + reach counts for the per-post screen (head:true count queries —
+    // the total rides Content-Range, so an absent header renders 0).
+    if ((req.method === "GET" || req.method === "HEAD") && url.search.includes("post_id=eq.")) {
+      if (url.pathname.startsWith("/rest/v1/bookmark")) {
+        sendTable(res, req.method, [], ANALYTICS_EMPTY ? 0 : 28);
+        return;
+      }
+    }
+    if (
+      (req.method === "GET" || req.method === "HEAD") &&
+      url.pathname.startsWith("/rest/v1/follow")
+    ) {
+      sendTable(res, req.method, [], ANALYTICS_EMPTY ? 0 : 204);
+      return;
+    }
+
     // Dashboard (ENG-174 / T4) reads. These run BEFORE the generic DB-backed
     // Trainers handler below, which otherwise shadows /rest/v1/post and
     // /rest/v1/horse. Disambiguated by the dashboard's own query signatures: its
@@ -219,10 +426,122 @@ export function startMockSupabase() {
         sendTable(res, req.method, DASH_POSTS, 68); // 68 = posts-this-week tile
         return;
       }
-      if (p.startsWith("/rest/v1/horse") && qs.includes("status=eq.active")) {
+      // NOTE: the dashboard's horse read is served by the consolidated
+      // /rest/v1/horse dispatch below, NOT here. It used to live here keyed on
+      // `status=eq.active` alone, which also swallowed compose's horse read
+      // (compose filters status=eq.active too) and handed it DASH_HORSES —
+      // rows with no embedded trainer, so the compose byline never auto-filled.
+    }
+
+    // -----------------------------------------------------------------------
+    // /rest/v1/horse — ALL of it, in ONE place, ahead of the generic DB-backed
+    // dispatcher further down.
+    //
+    // Five different screens read this one table, so the mock MUST discriminate
+    // on the query string rather than first-match-wins. Two shadowing bugs came
+    // from not doing that (ENG-285):
+    //   1. the generic `/rest/v1/<table>` reader answered every horse read with
+    //      buildDb()'s bare `{ trainer_id }` stubs — 24 nameless rows, no
+    //      display_name — so the horses list rendered 24 empty cards and its
+    //      empty-state spec never saw `.horse-empty`;
+    //   2. the dashboard handler's `status=eq.active` test also matched
+    //      compose's read and returned trainer-less rows.
+    // Per .rx/gotchas.md: specific handlers BEFORE the dispatcher, keyed on a
+    // discriminator unique to the calling screen. Each branch below names its
+    // caller and the marker that identifies it — keep them mutually exclusive.
+    // Exact table match, NOT startsWith: `startsWith("/rest/v1/horse")` would
+    // also swallow a future `horse_*` table (the way `/rest/v1/race` already
+    // captures `race_horse`) — which is the same over-broad-match bug class this
+    // block exists to fix. Compare the sliced table name instead.
+    if ((req.method === "GET" || req.method === "HEAD") && url.pathname === "/rest/v1/horse") {
+      const qs = url.search;
+      const accept = req.headers["accept"] ?? "";
+      const select = url.searchParams.get("select") ?? "";
+
+      // (a) `__none__` search sentinel → empty list. Drives the horses-list
+      // empty state (e2e/horses.spec.ts "horses list — empty").
+      if (qs.includes("__none__")) {
+        sendJson(res, 200, accept.includes("pgrst.object") ? null : []);
+        return;
+      }
+
+      // (b) Horse edit/detail page: `.eq("id", id).maybeSingle()`.
+      // .maybeSingle() does NOT set the pgrst.object Accept header in this
+      // postgrest-js version (supabase/postgrest-js#361) — it fetches as a list
+      // and enforces cardinality client-side, so an `id=eq.` filter must be
+      // honoured regardless of Accept or the edit page 404s.
+      const idParam = url.searchParams.get("id");
+      if (idParam && idParam.startsWith("eq.")) {
+        const match = HORSE_FIXTURES.find((h) => h.id === idParam.slice(3)) ?? null;
+        sendJson(res, 200, accept.includes("pgrst.object") ? match : match ? [match] : []);
+        return;
+      }
+
+      // (c) Trainers list roster counts: `.from("horse").select("trainer_id")`.
+      // The ONLY horse read that wants buildDb()'s stubs — it just counts rows
+      // per trainer — so it reads the live DB rather than the fixtures, which
+      // also keeps it consistent with the /__control empty toggle.
+      // NB: that toggle-consistency is currently unverified by the suite — with
+      // empty=true, DB.trainer is [] so no trainer row renders and the roster
+      // counts never surface. Swapping this for HORSE_FIXTURES keeps e2e green.
+      if (select === "trainer_id") {
+        sendTable(res, req.method, DB.horse, DB.horse.length);
+        return;
+      }
+
+      // (c2) Posts library search: `app/(dash)/posts/page.tsx` resolves a search
+      // term to horse ids with `.select("id").or(...ilike...)`. Filters are
+      // ignored here (as everywhere in this mock), so every fixture id comes
+      // back — that is the same "search matches everything" behaviour the other
+      // list screens get. Explicit branch so it doesn't land in the (g) net.
+      if (select === "id") {
+        sendTable(res, req.method, HORSE_FIXTURES, HORSE_FIXTURES.length);
+        return;
+      }
+
+      // (d) Horses list: unique marker `follows:follow(count)`.
+      if (select.includes("follows:follow(count)")) {
+        sendTable(res, req.method, HORSE_FIXTURES, HORSE_FIXTURES.length);
+        return;
+      }
+
+      // (e) Compose picker: unique marker `trainer:trainer_id(id,name,display_name)`.
+      // Checked BEFORE the dashboard branch — compose also filters status=eq.active.
+      if (select.includes("trainer:trainer_id(id,name,display_name)")) {
+        sendTable(res, req.method, COMPOSE_HORSES, COMPOSE_HORSES.length);
+        return;
+      }
+
+      // (f) Dashboard quiet-horse check: status=eq.active with none of the above
+      // markers. HEAD returns the Content-Range count for `count: 'exact'` tiles.
+      if (qs.includes("status=eq.active")) {
         sendTable(res, req.method, DASH_HORSES, DASH_HORSES.length);
         return;
       }
+
+      // (g) Anything else reading horses gets the full named fixtures — never
+      // the bare stubs. A new screen landing here renders real data instead of
+      // failing silently; add an explicit branch above once it needs its own shape.
+      // It logs loudly because it is a safety net, not a routing decision: a read
+      // landing here means no branch claimed it, and the fixtures it gets back may
+      // not be the shape that screen wants. (Found via mutation testing — this
+      // fallback will happily absorb a broken branch above and keep the suite
+      // green, so the warning is what makes that visible.)
+      console.warn(
+        `[mock-supabase] unrouted /rest/v1/horse read — serving HORSE_FIXTURES. Add an explicit branch keyed on this query: ${decodeURIComponent(qs)}`,
+      );
+      sendTable(res, req.method, HORSE_FIXTURES, HORSE_FIXTURES.length);
+      return;
+    }
+
+    // /rest/v1/trainer — the `__none__` sentinel only. Every other trainer read
+    // (trainers list, compose byline options, horse-edit picker) is satisfied by
+    // the generic DB rows below, which also honour the /__control empty toggle.
+    // Exact match again — `startsWith("/rest/v1/trainer")` would also catch
+    // `trainer_contact`, which must keep falling through to the DB.
+    if (req.method === "GET" && url.pathname === "/rest/v1/trainer" && url.search.includes("__none__")) {
+      sendJson(res, 200, []);
+      return;
     }
     // Posts library (T7 / ENG-177). The list read selects `status` — which the
     // trainers' post read (source_trainer_id,published_at,created_at) does not —
@@ -288,71 +607,9 @@ export function startMockSupabase() {
       return;
     }
 
-    // Compose (ENG-176) reads the pickable horses + full trainer list as
-    // Layer A PostgREST reads from the server client. Return fixtures with the
-    // trainer embedded (as `trainer:trainer_id(...)` yields).
-    if (req.method === "GET" && url.pathname.startsWith("/rest/v1/horse")) {
-      sendJson(res, 200, [
-        { id: "h1", display_name: "Mahogany", racing_name: "Mahogany", photo_url: null, stable_name: "Randwick", trainer_id: "t1", trainer: { id: "t1", name: "Chris Waller", display_name: "Chris Waller" } },
-        { id: "h2", display_name: "Black Caviar", racing_name: "Black Caviar", photo_url: null, stable_name: "Caulfield", trainer_id: "t2", trainer: { id: "t2", name: "Peter Moody", display_name: "Peter Moody" } },
-        { id: "h3", display_name: "Winx", racing_name: "Winx", photo_url: null, stable_name: "Rosehill", trainer_id: "t1", trainer: { id: "t1", name: "Chris Waller", display_name: "Chris Waller" } },
-      ]);
-      return;
-    }
-
-    if (req.method === "GET" && url.pathname.startsWith("/rest/v1/trainer")) {
-      sendJson(res, 200, [
-        { id: "t1", name: "Chris Waller", display_name: "Chris Waller" },
-        { id: "t2", name: "Peter Moody", display_name: "Peter Moody" },
-        { id: "t3", name: "Gai Waterhouse", display_name: "Gai Waterhouse" },
-      ]);
-      return;
-    }
-
     if (req.method === "POST" && url.pathname === "/auth/v1/logout") {
       res.writeHead(204, corsHeaders());
       res.end();
-      return;
-    }
-
-    // Horses DB (T8 / ENG-178). The __none__ sentinel drives the empty-list state.
-    if (req.method === "GET" && url.pathname.startsWith("/rest/v1/horse")) {
-      const accept = req.headers["accept"] ?? "";
-      if (url.search.includes("__none__")) {
-        sendJson(res, 200, accept.includes("pgrst.object") ? null : []);
-        return;
-      }
-      // .maybeSingle() does NOT set the pgrst.object Accept header in this
-      // postgrest-js version (workaround for supabase/postgrest-js#361) — it
-      // fetches as a list and enforces cardinality client-side. So an
-      // `id=eq.<id>` filter must be honoured here regardless of Accept,
-      // otherwise the full fixture list reads as "multiple rows" and the
-      // edit page 404s.
-      const idParam = url.searchParams.get("id");
-      if (idParam && idParam.startsWith("eq.")) {
-        const id = idParam.slice(3);
-        const match = HORSE_FIXTURES.find((h) => h.id === id) ?? null;
-        if (accept.includes("pgrst.object")) {
-          sendJson(res, 200, match);
-          return;
-        }
-        sendJson(res, 200, match ? [match] : []);
-        return;
-      }
-      if (accept.includes("pgrst.object")) {
-        sendJson(res, 200, HORSE_FIXTURES[0]);
-        return;
-      }
-      sendJson(res, 200, HORSE_FIXTURES);
-      return;
-    }
-
-    if (req.method === "GET" && url.pathname.startsWith("/rest/v1/trainer")) {
-      if (url.search.includes("__none__")) {
-        sendJson(res, 200, []);
-        return;
-      }
-      sendJson(res, 200, TRAINER_FIXTURES);
       return;
     }
 

@@ -107,6 +107,7 @@ export default function AnalyticsScreen({ view }: { view: AnalyticsView }) {
               ariaLabel="Bar chart: new trials started per month"
               emptyMessage="No trials started yet."
               testId="trials-by-month"
+              gap={26}
             />
           </div>
 

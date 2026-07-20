@@ -42,17 +42,26 @@ export function BarChart({
   ariaLabel,
   emptyMessage,
   testId,
+  gap,
 }: {
   series: Series[];
   ariaLabel: string;
   emptyMessage: string;
   testId?: string;
+  /**
+   * Space between bars in viewBox units. The default suits the dense series
+   * (14 days, 12 hour-buckets), whose mockup bars are 28 wide on a step of 34.
+   * A short series needs a wider gap: the trials mockup draws 44-wide bars, and
+   * at 6 bars our step is 420/6 = 70, so only gap 26 reproduces that width.
+   * Leaving it at 5 rendered 65-wide slabs — visibly off-spec.
+   */
+  gap?: number;
 }) {
   if (isEmpty(series)) {
     return <ChartEmpty>{emptyMessage}</ChartEmpty>;
   }
 
-  const bars = barLayout(series);
+  const bars = barLayout(series, gap);
   const ticks = axisTicks(series);
 
   return (

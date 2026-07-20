@@ -237,3 +237,30 @@ JS numbers (never exercising the string-bigint path PostgREST can return), the a
 the CSV header row, and `daysLeft` was never asserted. Use `toEqual` (not `toMatchObject`) on any PII payload so
 a new leaked field fails, and assert derived fields explicitly including the edge case (an expired trial must be
 `0`, not negative).
+
+## e2e ran `next dev` despite the gotcha above — client screens were INERT (ENG-285)
+`playwright.config.ts` had drifted to `command: "npm run dev -- -p 3002"` while the "Screenshots:
+`next start`, not `next dev`" gotcha above said otherwise. Under the dev server the client bundle
+never finished hydrating: every `"use client"` screen rendered its SSR markup but stayed dead — no
+console error, no failed request, so it looks like a data bug. Symptom: compose's horse picker never
+opened; the tell is that the caption counter stays at `0/240` while you type. Do-this: keep the
+webServer on `npm run build && npm run start -- -p 3002` (timeout 300000). To decide "not hydrated"
+vs "no data" in 30s, type into a control with a React-driven counter and watch whether it moves.
+
+## Discriminate mock handlers on the query string EXACTLY — and beware a second shadowing pair
+Extending the dispatcher gotcha above with what ENG-285 actually hit:
+* **Two handlers can both claim one read.** Compose's horse read filters `status=eq.active`, the same
+  discriminator the dashboard handler used — so the dashboard branch swallowed it and returned rows
+  with no embedded `trainer`. When you add a branch, check no EARLIER branch already matches its
+  query. All `/rest/v1/horse` branches now live in one ordered block for that reason.
+* **Match the table name exactly, not by prefix.** `startsWith("/rest/v1/horse")` also catches a
+  future `horse_*` table (`startsWith("/rest/v1/race")` already mis-captures `race_horse`, and
+  `/rest/v1/trainer` catches `trainer_contact`). Use `url.pathname === "/rest/v1/<table>"`.
+* **A catch-all fallback hides broken branches.** A fallback serving the good fixtures keeps the suite
+  green even when the branch above it is broken — a mutation test proved it absorbed the break
+  silently. Keep the fallback (it stops stub rows leaking) but make it `console.warn` loudly.
+
+## A visibility-only e2e assertion proves nothing about content
+`expect(page.locator(".horse-card-adm").first()).toBeVisible()` passed against 24 EMPTY cards for two
+epics. Assert content (a fixture name, the trainer, the expected row count), not just presence — and
+verify the assertion by mutation: break the mock deliberately, confirm the suite goes red, restore.

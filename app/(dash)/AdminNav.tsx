@@ -19,6 +19,10 @@ const PRIMARY: NavItem[] = [
 const LIBRARY: NavItem[] = [
   { href: "/horses", label: "Horses", icon: "horseHead" },
   { href: "/trainers", label: "Trainers", icon: "user" },
+  // RF4 (ENG-296). Reuses the horseHead glyph rather than adding one: icons.tsx
+  // is outside this ticket's surface and is a shared file the responsive epic
+  // also touches. Swap in a dedicated glyph when that lands.
+  { href: "/racing-matches", label: "Racing matches", icon: "horseHead" },
 ];
 
 function isActive(pathname: string, href: string): boolean {

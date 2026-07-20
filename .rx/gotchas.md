@@ -291,3 +291,39 @@ should render height 0 — a hairline stub reads as real data. Axis labels must 
 mockup's "+18% vs prior 30 days" tile deltas are NOT computable, and Subscribers/On-trial are
 point-in-time counts that do not move with the period toggle. Don't fabricate a delta to match the
 mockup — label honestly ("as of today") and raise a follow-up for a prior-period query.
+
+## `page.screenshot({path})` OVERWRITES its baseline — e2e asserts nothing visual
+The specs under `e2e/` capture *to* the committed PNG, so the suite passes regardless of visual
+regression and `npm run e2e` always leaves a dirty tree. Two consequences:
+1. **Never blanket-commit regenerated PNGs** — a blanket refresh is what got PR #18 rejected first
+   time round. Justify any baseline you do commit, individually.
+2. **A visual fix needs a non-visual guard.** The `gap={26}` trials-bar fix (AnalyticsScreen.tsx)
+   had none: `barLayout(series, gap = 5)` takes gap as a DEFAULTED param, so a `chart.ts` unit test
+   passes on the broken code — the defect was that no CALLER passed one. Only the rendered `rect`
+   width proves it. See the "bar geometry" block in `AnalyticsScreen.test.tsx`; mutation-verify any
+   replacement (drop `gap={26}` → must fail `expected 65 to be 44`).
+   Assert the *expression* (`420 / 14 - 5`), not a literal, for charts that ride the default — the
+   mockup draws 24 where we render 25, so a literal pins a known off-spec value and cries wolf.
+
+## Which e2e baselines churn on every run (do NOT read these as regressions)
+- `02-dashboard.png`, `02-dashboard-shell.png`, `10-post-analytics.png` — fixtures in
+  `e2e/mock-supabase.mjs` are `Date.now()`-relative (+2h/+4h/+6h), so these differ on every capture.
+- `05-horses-list.png` — churns too, and is easy to mistake for a real diff because it is ~5x larger
+  (~3.2k px). It is a 1px vertical text-baseline jitter confined to the single "Winx" card
+  (bbox x 520-741, y 473-764); content, data and layout are identical. Renderer nondeterminism.
+Quantify before judging: `magick compare -metric AE old.png new.png /tmp/d.png`, then crop the bbox
+and look. Don't eyeball full-page shots.
+
+## `06-compose-preview.png` is committed in an UNPAINTED state
+The preview modal is screenshotted before its blob-URL `<img>` elements decode, so the baseline shows
+`.postMedia`'s brand-green-dark background instead of the photos. Reproduces deterministically under
+`next start` (the old `next dev` harness's extra latency hid it). Harness timing, NOT a product bug —
+but the committed baseline is misleading evidence. Fix when touched: `await img.decode()` + a double
+`requestAnimationFrame` before the shot in `e2e/compose.spec.ts`.
+
+## Gate tickets: check the integration branch's own ancestry before PR-ing to main
+`stablepass-be`'s `feature/analytics-v1` turned out to be `feature/member-api-v1` + ONE commit, and
+member-api-v1's gate PR was still open — so an analytics-v1 → main PR silently carries the whole of
+the other epic (5.4k lines). Run `git merge-base --is-ancestor origin/feature/<other> HEAD` and
+`git log --oneline origin/main..HEAD` before opening a gate PR, and put the merge-order call at the
+TOP of the body. `git diff --stat` alone will badly mislead you about what a gate PR contains.

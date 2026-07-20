@@ -19,6 +19,7 @@ const PRIMARY: NavItem[] = [
 const LIBRARY: NavItem[] = [
   { href: "/horses", label: "Horses", icon: "horseHead" },
   { href: "/trainers", label: "Trainers", icon: "user" },
+  { href: "/racing-manual", label: "Manual races", icon: "bookmark" },
 ];
 
 function isActive(pathname: string, href: string): boolean {

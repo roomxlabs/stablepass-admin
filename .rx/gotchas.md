@@ -327,3 +327,24 @@ member-api-v1's gate PR was still open — so an analytics-v1 → main PR silent
 the other epic (5.4k lines). Run `git merge-base --is-ancestor origin/feature/<other> HEAD` and
 `git log --oneline origin/main..HEAD` before opening a gate PR, and put the merge-order call at the
 TOP of the body. `git diff --stat` alone will badly mislead you about what a gate PR contains.
+
+## `docs/specs/database.sql` lags migrations that land in stablepass-be
+Migrations live in **stablepass-be**, not here; this file is a hand-maintained copy, so
+it goes stale the moment a BE migration merges. RF1 (ENG-293) added `race.manual_override`,
+`race_horse.entry_status` (CHECK `nominated|confirmed|ran|scratched|not_accepted`), the
+`horse_match_proposal` table and `race_update` on `notification.type` — none of which were
+reflected here until ENG-180 backfilled the two race columns. Symptom: three independent
+reviewers all called a correct diff a blocker ("column does not exist"), because the doc is
+the only schema evidence in this repo and `lib/testing/supabase-fake.ts` returns whatever a
+test scripts, so column names are unfalsifiable locally. Do-this: before building against a
+column, check the be repo's `supabase/migrations/` — not just this file — and backfill this
+file in the same PR when you find drift.
+
+## The vitest fake ignores filters — a scoped write needs its own reasoning
+`makeFakeClient`'s `eq/in/is/...` are all `() => b`, so `.eq("status","upcoming")` or
+`.in("entry_status", [...])` are recorded nowhere and constrain nothing. A test therefore
+CANNOT prove a compare-and-swap guard works; it can only prove the update was issued. Write
+the guard as a scoped update anyway (it is what protects production), and assert the
+surrounding behaviour — but don't mistake a green test for proof of atomicity. `calls.mutations`
+(added by ENG-180) records insert/update/delete payloads, which is what makes "never writes an
+odds field" and "sets manual_override" assertable at all.

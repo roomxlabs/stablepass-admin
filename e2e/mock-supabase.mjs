@@ -284,6 +284,24 @@ const DASH_RACES = [
   { id: "r3", venue: "Rosehill", race_number: 7, race_class: "G2", scheduled_at: new Date(Date.now() + 6 * 36e5).toISOString(), race_horse: [{ horse_id: "h2", horse: { display_name: "Black Caviar", racing_name: "BLACK CAVIAR (AUS)", trainer: { name: "Peter Moody", display_name: "Peter Moody" } } }] },
 ];
 
+// Manual races (ENG-180 / RF6) fixtures. Deliberately mixed provenance, because
+// the screen exists to make provenance legible: a hand-entered race, an untouched
+// feed race, and a feed race a human has corrected (manual_override=true, so the
+// RF3 poll leaves it alone). `manual_override` in the select is the discriminator
+// that separates these reads from the dashboard's race-day read of DASH_RACES.
+const MANUAL_RACES = [
+  { id: "mr1", venue: "Randwick", race_date: "2026-08-01", race_number: 5, race_class: "BM78", distance_m: 1400, scheduled_at: new Date(Date.now() + 3 * 36e5).toISOString(), status: "upcoming", source: "manual", manual_override: false, finished_at: null },
+  { id: "mr2", venue: "Flemington", race_date: "2026-07-26", race_number: 2, race_class: "Maiden", distance_m: 1200, scheduled_at: new Date(Date.now() + 26 * 36e5).toISOString(), status: "upcoming", source: "api", manual_override: true, finished_at: null },
+  { id: "mr3", venue: "Caulfield", race_date: "2026-07-11", race_number: 7, race_class: "G2", distance_m: 1600, scheduled_at: new Date(Date.now() - 9 * 864e5).toISOString(), status: "finished", source: "api", manual_override: false, finished_at: new Date(Date.now() - 9 * 864e5).toISOString() },
+];
+
+// Runners on mr1: one still confirmed (result form open), one already ran (its
+// result is read-only, because the career counters have already moved).
+const MANUAL_RUNNERS = [
+  { id: "mrh1", race_id: "mr1", horse_id: "h1", barrier: 4, jockey: "T. Berry", result: null, finish_position: null, entry_status: "confirmed", horse: { display_name: "Mahogany", racing_name: "MAHOGANY (AUS)" } },
+  { id: "mrh2", race_id: "mr1", horse_id: "h2", barrier: 9, jockey: "J. McDonald", result: "2nd of 12", finish_position: 2, entry_status: "ran", horse: { display_name: "Black Caviar", racing_name: "BLACK CAVIAR (AUS)" } },
+];
+
 // Compose (ENG-176 / T6) pickable horses. Distinct from DASH_HORSES: compose
 // needs the embedded `trainer` (its byline auto-fills from the horse's trainer,
 // asserted by compose.spec.ts) and `stable_name`. DASH_HORSES has neither, so
@@ -421,6 +439,36 @@ export function startMockSupabase() {
       if (p.startsWith("/rest/v1/reaction")) { sendTable(res, req.method, [], 3420); return; }
       if (p.startsWith("/rest/v1/bookmark")) { sendTable(res, req.method, [], 612); return; }
       if (p.startsWith("/rest/v1/subscription")) { sendTable(res, req.method, [], 412); return; }
+      // Manual races (ENG-180 / RF6) — MUST precede the `/rest/v1/race` prefix
+      // match below, which is over-broad and would otherwise swallow both the
+      // race_horse table and these reads (the same shadowing bug class the horse
+      // block below documents). Each branch names its discriminator.
+      //
+      // (a) runners on a race: exact table match on race_horse.
+      if (url.pathname === "/rest/v1/race_horse") {
+        const raceId = url.searchParams.get("race_id");
+        const rows = raceId?.startsWith("eq.")
+          ? MANUAL_RUNNERS.filter((r) => r.race_id === raceId.slice(3))
+          : MANUAL_RUNNERS;
+        sendTable(res, req.method, rows, rows.length);
+        return;
+      }
+      // (b) the manual-races list + detail reads, identified by `manual_override`
+      // in the select — the dashboard's race-day read never asks for it.
+      if (url.pathname === "/rest/v1/race" && qs.includes("manual_override")) {
+        const accept = req.headers["accept"] ?? "";
+        const idParam = url.searchParams.get("id");
+        // Detail page uses .eq("id", id).maybeSingle(); per the note in the horse
+        // block, maybeSingle does not set the pgrst.object Accept header in this
+        // postgrest-js version, so honour the id filter regardless of Accept.
+        if (idParam?.startsWith("eq.")) {
+          const match = MANUAL_RACES.find((r) => r.id === idParam.slice(3)) ?? null;
+          sendJson(res, 200, accept.includes("pgrst.object") ? match : match ? [match] : []);
+          return;
+        }
+        sendTable(res, req.method, MANUAL_RACES, MANUAL_RACES.length);
+        return;
+      }
       if (p.startsWith("/rest/v1/race")) { sendTable(res, req.method, DASH_RACES, DASH_RACES.length); return; }
       if (p.startsWith("/rest/v1/post") && qs.includes("status=eq.published")) {
         sendTable(res, req.method, DASH_POSTS, 68); // 68 = posts-this-week tile

@@ -19,7 +19,15 @@ export type FakeState = {
   functions: Record<string, { data?: any; error?: any }>;
   rpcs: Record<string, { data?: any; error?: any }>;
   storage: { signed?: { data?: any; error?: any } };
-  calls: { functions: { name: string; body: any }[]; or: string[]; from: string[]; rpc: { name: string; args: any }[] };
+  calls: {
+    functions: { name: string; body: any }[];
+    or: string[];
+    from: string[];
+    rpc: { name: string; args: any }[];
+    // Payloads passed to .insert()/.update()/.delete(), so a test can assert what a
+    // route actually wrote (e.g. that a correction set race.manual_override).
+    mutations: { table: string; op: "insert" | "update" | "delete"; payload: any }[];
+  };
 };
 
 type Builder = {
@@ -53,9 +61,9 @@ function makeBuilder(state: FakeState, table: string): Builder {
   const pick = (): ScriptResult => (op === "mutate" ? script().mutate : script().select) ?? {};
   const b: Builder = {
     select: () => b,
-    insert: () => { op = "mutate"; return b; },
-    update: () => { op = "mutate"; return b; },
-    delete: () => { op = "mutate"; return b; },
+    insert: (payload?: any) => { op = "mutate"; state.calls.mutations.push({ table, op: "insert", payload }); return b; },
+    update: (payload?: any) => { op = "mutate"; state.calls.mutations.push({ table, op: "update", payload }); return b; },
+    delete: () => { op = "mutate"; state.calls.mutations.push({ table, op: "delete", payload: null }); return b; },
     eq: () => b,
     neq: () => b,
     is: () => b,
@@ -118,6 +126,6 @@ export function blankState(): FakeState {
     functions: {},
     rpcs: {},
     storage: {},
-    calls: { functions: [], or: [], from: [], rpc: [] },
+    calls: { functions: [], or: [], from: [], rpc: [], mutations: [] },
   };
 }

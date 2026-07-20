@@ -79,6 +79,20 @@ describe("POST /api/admin/races/:id/runners — attach a runner", () => {
     expect(raceUpdates()).toHaveLength(0);
   });
 
+  // The runner already exists by the time the pin runs, so a pin failure must not turn a
+  // 201 into an error — but it must not vanish either. Without this test the whole error
+  // branch is uncovered: the other pin tests script no `mutate`, so pinErr is always null.
+  it("still 201s but reports pinned:false when the pin fails", async () => {
+    asAdmin();
+    state.tables.race = { select: { single: { id: "r1", source: "api" } } };
+    state.tables.race_horse = { mutate: { single: { id: "rh1", race_id: "r1", horse_id: "h1" } } };
+    // The race table's mutate script is the pin's result.
+    state.tables.race.mutate = { error: { message: "pin boom" } };
+    const r = await POST(postReq({ horseId: "h1" }), ctx("r1"));
+    expect(r.status).toBe(201);
+    expect((await r.json()).data).toMatchObject({ id: "rh1", pinned: false });
+  });
+
   it("scopes the pin to this race only", async () => {
     asAdmin();
     state.tables.race = { select: { single: { id: "r1", source: "api" } } };

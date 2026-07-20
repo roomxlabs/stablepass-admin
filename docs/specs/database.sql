@@ -249,7 +249,7 @@ create table race_horse (
     -- RF1 (ENG-293, stablepass-be migration 20260720120000_racing_feed.sql):
     -- the runner lifecycle. Only 'confirmed'/'nominated' may be given a result
     -- (a scratched horse never ran, so it must not earn a career start).
-    entry_status    text        not null default 'confirmed'
+    entry_status    text        not null default 'nominated'
                         check (entry_status in
                             ('nominated','confirmed','ran','scratched','not_accepted')),
     created_at      timestamptz not null default now(),

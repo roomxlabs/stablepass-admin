@@ -29,7 +29,12 @@ function seedHappyPath() {
     select: { single: { id: "rh1", race_id: "r1", horse_id: "h1", entry_status: "confirmed" } },
     mutate: { single: { id: "rh1", race_id: "r1", horse_id: "h1", result: "1st of 12", finish_position: 1, entry_status: "ran" } },
   };
-  state.tables.race = { mutate: { single: { id: "r1" } } };
+  // Script `source` explicitly: an unscripted read yields {data: null} which the route
+  // now (correctly) treats as unknown provenance and pins. RF6's own races are manual.
+  state.tables.race = {
+    select: { single: { id: "r1", source: "manual" } },
+    mutate: { single: { id: "r1" } },
+  };
   state.tables.horse = {
     select: { single: { starts: 4, wins: 1, places: 2, prize_money_cents: 500_000 } },
     mutate: { single: { id: "h1" } },
@@ -220,9 +225,10 @@ describe("PATCH /api/admin/race-horses/:id/result", () => {
     expect(raceUpdates()[0].values).not.toHaveProperty("manual_override");
   });
 
-  // Fail safe: if the source read errors we cannot tell api from manual, and a missing
-  // pin on an api race guarantees a double-count. The flag is inert on a manual race.
-  it("pins when the source read fails (fail-safe)", async () => {
+  // Fail safe on UNKNOWN provenance. Both branches matter and they fail differently:
+  // a read error is loud, a null row is silent — and the silent one is what an RLS
+  // regression produces, since SELECT policies filter rather than error.
+  it("pins when the source read ERRORS (fail-safe)", async () => {
     seedHappyPath();
     state.tables.race = {
       select: { error: { message: "read boom" } },
@@ -230,6 +236,47 @@ describe("PATCH /api/admin/race-horses/:id/result", () => {
     };
     await PATCH(patchReq({ result: "1st of 12", finishPosition: 1 }), ctx("rh1"));
     expect(raceUpdates()[0].values).toEqual({ manual_override: true });
+  });
+
+  it("pins when the race row is NOT VISIBLE — an RLS filter returns null, not an error", async () => {
+    seedHappyPath();
+    state.tables.race = {
+      select: { single: null },
+      mutate: { single: { id: "r1" } },
+    };
+    await PATCH(patchReq({ result: "1st of 12", finishPosition: 1 }), ctx("rh1"));
+    expect(raceUpdates()[0].values).toEqual({ manual_override: true });
+  });
+
+  // The pin runs BEFORE the CAS precisely so a pin failure mutates nothing. Assert both
+  // halves: the 400, and that no runner/horse write happened.
+  it("400s and mutates nothing when the pin itself fails", async () => {
+    seedHappyPath();
+    state.tables.race = {
+      select: { single: { id: "r1", source: "api" } },
+      mutate: { error: { message: "pin boom" } },
+    };
+    const r = await PATCH(patchReq({ result: "1st of 12", finishPosition: 1 }), ctx("rh1"));
+    expect(r.status).toBe(400);
+    expect(state.calls.mutations.some((m) => m.table === "race_horse")).toBe(false);
+    expect(state.calls.mutations.some((m) => m.table === "horse")).toBe(false);
+    expect(state.calls.functions).toHaveLength(0);
+  });
+
+  // The pin is a bare UPDATE with no natural guard, so an unscoped one would set
+  // manual_override on EVERY race and freeze the entire feed. Count-bound (see
+  // .rx/gotchas.md): read + pin + finish all emit race/eq/id.
+  it("scopes the pin to this race only", async () => {
+    seedHappyPath();
+    state.tables.race = {
+      select: { single: { id: "r1", source: "api" } },
+      mutate: { single: { id: "r1" } },
+    };
+    await PATCH(patchReq({ result: "1st of 12", finishPosition: 1 }), ctx("rh1"));
+    const raceIdFilters = state.calls.filters.filter(
+      (f) => f.table === "race" && f.op === "eq" && f.column === "id" && f.value === "r1",
+    );
+    expect(raceIdFilters).toHaveLength(3); // read + pin + finish
   });
 
   // A horse that never left the barrier must not earn a career start. The guard is

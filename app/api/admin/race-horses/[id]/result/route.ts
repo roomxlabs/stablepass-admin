@@ -82,18 +82,29 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
   //     `.eq("status","upcoming")`, so on a race already 'finished' it matches zero rows
   //     and the pin is silently dropped — reachable from the UI, because RaceDetail gates
   //     the Record control on entry_status alone, never on race status.
-  //   * BEFORE the compare-and-swap, not after. Failing here must leave NOTHING mutated
-  //     so the whole action is retryable; a 400 raised after the CAS would strand the
-  //     runner at 'ran' with no result and counters unmoved, and every retry would 409.
+  //   * BEFORE the compare-and-swap, not after. A failure OF THE PIN ITSELF then leaves
+  //     nothing mutated and the action is retryable. Note this does NOT make the whole
+  //     handler atomic: a failure AFTER the pin (a lost CAS, a transient error) leaves the
+  //     race pinned with no correction recorded, and nothing in this repo ever writes
+  //     manual_override back to false — RF3 skips it permanently and only direct DB access
+  //     can undo it. That is the accepted trade: one frozen race is recoverable by a human,
+  //     silent counter corruption is not.
   const { data: raceRow, error: raceReadErr } = await sb
     .from("race")
     .select("source")
     .eq("id", runner.race_id)
     .maybeSingle();
-  // A failed read can't distinguish 'api' from 'manual'. Pin anyway: the flag is inert on
-  // a manual race (the poll never looks at it), while a missing flag on an api race
-  // guarantees a double-count. Fail safe.
-  if (raceReadErr || raceRow?.source === "api") {
+  // Unknown provenance => pin. Both a read ERROR and a null ROW mean we cannot tell 'api'
+  // from 'manual', and the null-row case is the dangerous one: an RLS SELECT policy
+  // FILTERS rather than erroring, so a regression yields {data: null, error: null} — an
+  // api race would slip through unpinned and double-count. Same hazard the runner read
+  // guards against above.
+  //
+  // The cost of over-pinning is real but bounded: RF3's skip predicate is
+  // `manual_override = true` regardless of source, and its find-or-create dedups on
+  // (venue, race_date, race_number), so a wrongly-pinned MANUAL race is also frozen. That
+  // is a visible, human-fixable stall; an unpinned api race is silent corruption.
+  if (raceReadErr || !raceRow || raceRow.source === "api") {
     const { error: pinErr } = await sb
       .from("race")
       .update({ manual_override: true })

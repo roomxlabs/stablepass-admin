@@ -24,9 +24,14 @@ export type FakeState = {
     or: string[];
     from: string[];
     rpc: { name: string; args: any }[];
-    // Payloads passed to .insert()/.update()/.delete(), so a test can assert what a
-    // route actually wrote (e.g. that a correction set race.manual_override).
-    mutations: { table: string; op: "insert" | "update" | "delete"; payload: any }[];
+    // Recorded write payloads. Without these a test can only assert the
+    // RESPONSE it scripted itself, so "the route wrote X" is unprovable —
+    // e.g. ENG-296 must show a confirm actually sets horse.racing_api_id.
+    mutations: { table: string; op: "insert" | "update" | "delete"; values: any }[];
+    // Recorded filter predicates. `.eq()` etc are no-ops here, so without this
+    // a dropped WHERE clause is invisible to the suite — e.g. losing
+    // `.eq("status","pending")` would silently resurface resolved rows.
+    filters: { table: string; op: "eq" | "neq" | "is" | "in"; column: string; value: any }[];
   };
 };
 
@@ -61,13 +66,13 @@ function makeBuilder(state: FakeState, table: string): Builder {
   const pick = (): ScriptResult => (op === "mutate" ? script().mutate : script().select) ?? {};
   const b: Builder = {
     select: () => b,
-    insert: (payload?: any) => { op = "mutate"; state.calls.mutations.push({ table, op: "insert", payload }); return b; },
-    update: (payload?: any) => { op = "mutate"; state.calls.mutations.push({ table, op: "update", payload }); return b; },
-    delete: () => { op = "mutate"; state.calls.mutations.push({ table, op: "delete", payload: null }); return b; },
-    eq: () => b,
-    neq: () => b,
-    is: () => b,
-    in: () => b,
+    insert: (values?: any) => { op = "mutate"; state.calls.mutations.push({ table, op: "insert", values }); return b; },
+    update: (values?: any) => { op = "mutate"; state.calls.mutations.push({ table, op: "update", values }); return b; },
+    delete: () => { op = "mutate"; state.calls.mutations.push({ table, op: "delete", values: undefined }); return b; },
+    eq: (column?: any, value?: any) => { state.calls.filters.push({ table, op: "eq", column, value }); return b; },
+    neq: (column?: any, value?: any) => { state.calls.filters.push({ table, op: "neq", column, value }); return b; },
+    is: (column?: any, value?: any) => { state.calls.filters.push({ table, op: "is", column, value }); return b; },
+    in: (column?: any, value?: any) => { state.calls.filters.push({ table, op: "in", column, value }); return b; },
     ilike: () => b,
     or: (expr: string) => { state.calls.or.push(expr); return b; },
     order: () => b,
@@ -126,6 +131,6 @@ export function blankState(): FakeState {
     functions: {},
     rpcs: {},
     storage: {},
-    calls: { functions: [], or: [], from: [], rpc: [], mutations: [] },
+    calls: { functions: [], or: [], from: [], rpc: [], mutations: [], filters: [] },
   };
 }

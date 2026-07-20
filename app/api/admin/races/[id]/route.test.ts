@@ -48,8 +48,8 @@ describe("PATCH /api/admin/races/:id — correct a race", () => {
     };
     const r = await PATCH(patchReq({ venue: "Rosehill" }), ctx("r1"));
     expect(r.status).toBe(200);
-    expect(raceUpdate()?.payload).toEqual({ venue: "Rosehill" });
-    expect(raceUpdate()?.payload).not.toHaveProperty("manual_override");
+    expect(raceUpdate()?.values).toEqual({ venue: "Rosehill" });
+    expect(raceUpdate()?.values).not.toHaveProperty("manual_override");
   });
 
   // The acceptance criterion: a correction to a feed row pins it so the RF3 poll
@@ -62,7 +62,7 @@ describe("PATCH /api/admin/races/:id — correct a race", () => {
     };
     const r = await PATCH(patchReq({ venue: "Rosehill" }), ctx("r1"));
     expect(r.status).toBe(200);
-    expect(raceUpdate()?.payload).toMatchObject({ venue: "Rosehill", manual_override: true });
+    expect(raceUpdate()?.values).toMatchObject({ venue: "Rosehill", manual_override: true });
     const j = await r.json();
     expect(j.data.manual_override).toBe(true);
   });
@@ -74,7 +74,7 @@ describe("PATCH /api/admin/races/:id — correct a race", () => {
       mutate: { single: { id: "r1", manual_override: true } },
     };
     await PATCH(patchReq({ venue: "Rosehill", manualOverride: false }), ctx("r1"));
-    expect(raceUpdate()?.payload.manual_override).toBe(true);
+    expect(raceUpdate()?.values.manual_override).toBe(true);
   });
 
   it("never lets the client rewrite server-owned provenance (source)", async () => {
@@ -84,7 +84,7 @@ describe("PATCH /api/admin/races/:id — correct a race", () => {
       mutate: { single: { id: "r1" } },
     };
     await PATCH(patchReq({ venue: "Rosehill", source: "manual" }), ctx("r1"));
-    expect(raceUpdate()?.payload).not.toHaveProperty("source");
+    expect(raceUpdate()?.values).not.toHaveProperty("source");
   });
 
   // `patch.status != null` would let an explicit null through into a NOT NULL column.

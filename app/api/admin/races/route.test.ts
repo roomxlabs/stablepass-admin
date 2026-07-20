@@ -66,7 +66,7 @@ describe("POST /api/admin/races — create a manual race", () => {
     expect(j.data.source).toBe("manual");
 
     const insert = state.calls.mutations.find((m) => m.table === "race" && m.op === "insert");
-    expect(insert?.payload).toMatchObject({
+    expect(insert?.values).toMatchObject({
       venue: "Randwick",
       race_date: "2026-08-01",
       race_number: 5,
@@ -119,7 +119,7 @@ describe("POST /api/admin/races — create a manual race", () => {
     state.tables.race = { mutate: { single: { id: "r1" } } };
     await POST(postReq({ ...VALID, odds: "5.50", bookmaker: "x", wager: 10 }));
     const insert = state.calls.mutations.find((m) => m.table === "race" && m.op === "insert");
-    const keys = Object.keys(insert?.payload ?? {});
+    const keys = Object.keys(insert?.values ?? {});
     expect(keys).not.toContain("odds");
     expect(keys).not.toContain("bookmaker");
     expect(keys).not.toContain("wager");

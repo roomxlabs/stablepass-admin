@@ -68,17 +68,17 @@ describe("PATCH /api/admin/race-horses/:id/result", () => {
     );
     expect(r.status).toBe(200);
 
-    expect(runnerUpdate()?.payload).toMatchObject({
+    expect(runnerUpdate()?.values).toMatchObject({
       result: "1st of 12",
       finish_position: 1,
       entry_status: "ran",
     });
 
-    expect(raceUpdate()?.payload.status).toBe("finished");
-    expect(raceUpdate()?.payload.finished_at).toBeTruthy();
+    expect(raceUpdate()?.values.status).toBe("finished");
+    expect(raceUpdate()?.values.finished_at).toBeTruthy();
 
     // 4 starts -> 5, a win, a place (top 3), prize accrues in cents.
-    expect(horseUpdate()?.payload).toEqual({
+    expect(horseUpdate()?.values).toEqual({
       starts: 5,
       wins: 2,
       places: 3,
@@ -92,7 +92,7 @@ describe("PATCH /api/admin/race-horses/:id/result", () => {
   it("counts a 5th placing as a start but not a win or a place", async () => {
     seedHappyPath();
     await PATCH(patchReq({ result: "5th of 12", finishPosition: 5 }), ctx("rh1"));
-    expect(horseUpdate()?.payload).toEqual({
+    expect(horseUpdate()?.values).toEqual({
       starts: 5,
       wins: 1,
       places: 2,
@@ -136,7 +136,7 @@ describe("PATCH /api/admin/race-horses/:id/result", () => {
     await PATCH(patchReq({ result: "1st of 12", finishPosition: 1 }), ctx("rh1"));
     // `in` is recorded by the fake as a no-op, so assert the guard exists by its
     // effect: the update is issued and the route reached the counter write.
-    expect(runnerUpdate()?.payload.entry_status).toBe("ran");
+    expect(runnerUpdate()?.values.entry_status).toBe("ran");
     expect(horseUpdate()).toBeDefined();
   });
 
@@ -164,14 +164,14 @@ describe("PATCH /api/admin/race-horses/:id/result", () => {
     };
     const r = await PATCH(patchReq({ result: "3rd of 9", finishPosition: 3 }), ctx("rh1"));
     expect(r.status).toBe(200);
-    expect(horseUpdate()?.payload.places).toBe(3);
+    expect(horseUpdate()?.values.places).toBe(3);
   });
 
   // A later runner on the same race must not rewrite finished_at.
   it("scopes the race transition to an upcoming race", async () => {
     seedHappyPath();
     await PATCH(patchReq({ result: "1st of 12", finishPosition: 1 }), ctx("rh1"));
-    expect(raceUpdate()?.payload).toMatchObject({ status: "finished" });
+    expect(raceUpdate()?.values).toMatchObject({ status: "finished" });
   });
 
   // The runner is already flipped to 'ran' by this point, so a silently-skipped
@@ -194,7 +194,7 @@ describe("PATCH /api/admin/race-horses/:id/result", () => {
     seedHappyPath();
     const r = await POST(patchReq({ result: "1st of 12", finishPosition: 1 }), ctx("rh1"));
     expect(r.status).toBe(200);
-    expect(horseUpdate()?.payload.starts).toBe(5);
+    expect(horseUpdate()?.values.starts).toBe(5);
   });
 
   it("404s when the runner is missing", async () => {
@@ -229,7 +229,7 @@ describe("PATCH /api/admin/race-horses/:id/result", () => {
   it("never writes an odds or betting field (guardrail §6)", async () => {
     seedHappyPath();
     await PATCH(patchReq({ result: "1st", finishPosition: 1, odds: "2.10", wager: 50 }), ctx("rh1"));
-    const keys = Object.keys(runnerUpdate()?.payload ?? {});
+    const keys = Object.keys(runnerUpdate()?.values ?? {});
     expect(keys).not.toContain("odds");
     expect(keys).not.toContain("wager");
   });

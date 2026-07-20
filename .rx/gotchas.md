@@ -348,3 +348,52 @@ the guard as a scoped update anyway (it is what protects production), and assert
 surrounding behaviour — but don't mistake a green test for proof of atomicity. `calls.mutations`
 (added by ENG-180) records insert/update/delete payloads, which is what makes "never writes an
 odds field" and "sets manual_override" assertable at all.
+## Nav items live in `AdminNav.tsx`, NOT `layout.tsx` — ticket surfaces say otherwise
+Every grilled ticket that adds a screen declares `app/(dash)/layout.tsx — nav entry append only`, but
+`layout.tsx` only renders `<AdminNav />`; the `PRIMARY`/`LIBRARY` `NavItem[]` arrays live in
+`app/(dash)/AdminNav.tsx`. Append there instead and note the drift on the issue (ENG-296 did).
+Related: a new glyph means editing `app/(dash)/icons.tsx` (`IconName` union + `PATHS`), a shared file
+the responsive epic also touches — reuse an existing icon rather than widening into it for one nav row.
+
+## Adding ONE nav item re-renders EVERY `(dash)` e2e baseline
+The sidebar is in every screenshot, so a single nav row makes all ~18 committed PNGs differ. That is a
+legitimate diff, not churn — but blanket-committing them is what got PR #18 rejected. ENG-296 committed
+only its own two new PNGs and left the rest stale (they assert nothing; `page.screenshot({path})`
+overwrites its own baseline). Note it in the PR so a reviewer doesn't read the stale sidebar as a bug.
+
+## `lib/testing/supabase-fake.ts`: `.eq()` was a no-op, so writes and WHERE clauses were unprovable
+The fake returned scripted results but recorded neither the update payload nor the filters, so
+"the route WROTE x" and "the read is scoped to status=pending" could not be asserted — a test could only
+echo the response it scripted itself. ENG-296 extended `state.calls` additively with `mutations`
+({table,op,values} on insert/update/delete) and `filters` ({table,op,column,value} on eq/neq/is/in).
+Use them: mutation testing showed three real defects (confirm skipping the write, writing the wrong
+value, reject clobbering the horse link) are caught ONLY by `calls.mutations`, and a dropped
+`.eq("status","pending")` is caught ONLY by `calls.filters`.
+
+## Read-then-write on a guardrail check is a TOCTOU — use a compare-and-swap
+ENG-296's "horse already linked to a different feed id -> 409" first read the horse, then updated it
+with only `.eq("id", …)`. Two proposals for one horse confirmed concurrently both read `null` and both
+wrote, silently re-pointing the horse — the exact outcome the 409 exists to prevent, with no DB
+constraint to backstop it (the migration's unique is on the *proposal* table). Fix: put the precondition
+in the WHERE (`.is("racing_api_id", null)`, `.eq("status","pending")`) and treat zero affected rows as
+the conflict. Two independent reviewers flagged this; the single-admin-team argument is not a defence.
+
+## e2e PII assertions: use `page.content()`, and SEED the leak you claim to block
+`expect(await page.locator("body").innerText()).not.toContain("owner")` is doubly worthless: (1) if the
+fixture has no owner key, nothing ever tried to leak and the assertion is vacuously green; (2)
+`innerText` excludes the inlined RSC flight payload — the very path props leak through. Proven by
+mutation on ENG-296: breaking the BFF allowlist put the owner string in a `<script>` tag while the
+rendered text stayed clean. Seed real markers into the mock fixture's `evidence` and assert against
+`page.content()`.
+
+## RF1's `no_owner_pii` CHECK is CASE-SENSITIVE — the BFF allowlist is the real gate
+`jsonb_path_exists(evidence,'$.**.owner')` does not match a `"Owner"` key, so a cased variant stores
+fine. Do not treat the DB constraint as the backstop for guardrail 4: project an explicit allowlist in
+the BFF (`pickEvidence` in `app/(dash)/racing-matches/data.ts`) that iterates the ALLOWED keys and
+indexes into the row — never iterate the row's own keys, or casing/nesting walks straight through.
+
+## CLAUDE.md's "never commit" vs the implement loop
+`CLAUDE.md` says "Never commit or offer to commit. Stop at `git add` + `git status`." That rule is for
+interactive sessions; the rx implement loop's whole contract is to land a ticket on a branch and open a
+PR (this repo already has agent-authored PRs, e.g. #18). Loop workers commit + push their own ticket
+branch and never merge. Don't stall a run on this line.

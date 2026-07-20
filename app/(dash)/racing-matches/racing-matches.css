@@ -1,0 +1,227 @@
+/* ====================================================================
+   Racing match queue (RF4 / ENG-296).
+
+   No mockup exists for this screen (.rx/mockups.md has no racing entry),
+   so it is composed from the admin design system: every value below is a
+   token from app/globals.css (--brand-green, --line, --cream-dark, …) or
+   a primitive ported verbatim from the shared design system, matching the
+   horses / dashboard screens. Scoped here rather than added to
+   app/globals.css, which this ticket does not own (see .rx/gotchas.md).
+   ==================================================================== */
+
+/* Card / pill primitives — identical values to dashboard.css + horses.css.
+   Duplicated deliberately: a screen ticket must not edit globals.css. */
+.rm-card {
+  background: var(--white);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  overflow: hidden;
+}
+.rm-card + .rm-card {
+  margin-top: 16px;
+}
+
+.rm-card-head {
+  padding: 16px 22px;
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.rm-card-head h2 {
+  font-family: var(--font-serif);
+  font-size: 19px;
+  font-weight: 600;
+  margin: 0;
+  letter-spacing: -0.01em;
+}
+.rm-card-head .rm-sub {
+  color: var(--muted);
+  font-size: 12.5px;
+  margin-top: 2px;
+}
+.rm-head-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.rm-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11.5px;
+  font-weight: 600;
+  padding: 3px 9px;
+  border-radius: 100px;
+  background: var(--cream-dark);
+  color: var(--muted);
+  letter-spacing: 0.02em;
+}
+.rm-pill.green {
+  background: var(--brand-green-soft);
+  color: var(--brand-green-dark);
+}
+.rm-pill.amber {
+  background: #fbf1d6;
+  color: #8a6712;
+}
+.rm-pill.mono {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum";
+}
+
+/* Side-by-side comparison ------------------------------------------- */
+/* Three columns: field label | what StablePass holds | what the feed sent.
+   Aligning them on one row per attribute is what makes a mismatch obvious
+   at a glance, which is the whole job of this screen. */
+.rm-compare {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+}
+.rm-compare th,
+.rm-compare td {
+  text-align: left;
+  padding: 10px 14px;
+  font-size: 13.5px;
+  border-bottom: 1px solid var(--line);
+  vertical-align: middle;
+}
+.rm-compare tr:last-child td {
+  border-bottom: none;
+}
+.rm-compare th:first-child,
+.rm-compare td:first-child {
+  padding-left: 22px;
+  width: 140px;
+}
+.rm-compare th:last-child,
+.rm-compare td:last-child {
+  padding-right: 22px;
+}
+.rm-compare thead th {
+  background: var(--cream);
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+}
+/* The feed side gets a hairline so the two sources read as two columns. */
+.rm-compare th.rm-feed-col,
+.rm-compare td.rm-feed-col {
+  border-left: 1px solid var(--line);
+}
+.rm-field {
+  font-size: 11.5px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+}
+.rm-value {
+  font-weight: 500;
+  color: var(--ink);
+}
+.rm-value.rm-blank {
+  color: var(--muted-light);
+  font-weight: 400;
+  font-style: italic;
+}
+
+/* A disagreeing attribute is tinted amber on BOTH sides — the operator is
+   deciding whether the difference is benign (a stable name vs racing name)
+   or means this is the wrong horse. Not red: a mismatch is a prompt to
+   look, not an error. */
+.rm-row-diff td.rm-value,
+.rm-row-diff td.rm-feed-col,
+.rm-row-diff th.rm-field {
+  background: rgba(201, 165, 111, 0.16);
+}
+.rm-row-diff .rm-field {
+  color: #8a6712;
+}
+/* A left accent so a disagreement is findable by shape, not colour alone —
+   the tint has to survive a colourblind operator and a greyscale print. */
+.rm-row-diff th.rm-field {
+  box-shadow: inset 3px 0 0 var(--gold);
+}
+
+/* Actions ----------------------------------------------------------- */
+.rm-actions {
+  padding: 14px 22px;
+  border-top: 1px solid var(--line);
+  background: var(--cream);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.rm-agree {
+  font-size: 12.5px;
+  color: var(--muted);
+}
+.rm-agree strong {
+  color: var(--ink);
+  font-weight: 600;
+}
+.rm-buttons {
+  display: flex;
+  gap: 10px;
+}
+/* Compact variants of the global .btn — same shape, screen-appropriate size. */
+.rm-btn {
+  padding: 9px 20px;
+  font-size: 13.5px;
+}
+.rm-btn-light {
+  background: var(--white);
+  color: var(--ink);
+  border: 1px solid var(--line-dark);
+}
+.rm-btn-light:hover:not(:disabled) {
+  background: var(--cream-dark);
+}
+
+.rm-error {
+  background: rgba(200, 74, 62, 0.08);
+  border: 1px solid rgba(200, 74, 62, 0.35);
+  color: var(--red);
+  font-size: 13px;
+  padding: 10px 14px;
+  border-radius: var(--radius-sm);
+  margin-bottom: 16px;
+}
+
+/* Empty state ------------------------------------------------------- */
+.rm-empty {
+  background: var(--white);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 56px 40px;
+  text-align: center;
+}
+.rm-empty h2 {
+  font-family: var(--font-serif);
+  font-size: 22px;
+  font-weight: 600;
+  margin: 0 0 8px;
+}
+.rm-empty p {
+  color: var(--muted);
+  font-size: 14px;
+  margin: 0 auto;
+  max-width: 420px;
+}
+
+/* Intro note above the queue ---------------------------------------- */
+.rm-note {
+  color: var(--muted);
+  font-size: 13.5px;
+  margin: 0 0 18px;
+  max-width: 720px;
+}

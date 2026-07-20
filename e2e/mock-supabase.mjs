@@ -71,6 +71,39 @@ const H = 3600e3;
 const D = 24 * H;
 const ago = (ms) => new Date(Date.now() - ms).toISOString();
 
+// Racing match queue (RF4 / ENG-296). The horses behind the pending proposals,
+// shaped for the screen's own select (which is what routes them here — see the
+// `racing_api_id` branch in the /rest/v1/horse block). trainer_id points at the
+// TRAINER_SEED ids so the trainer name resolves through the generic DB reader.
+const RACING_MATCH_HORSES = [
+  { id: "h4", display_name: "Northern Star", racing_name: null, sire: "Snitzel", dam: "Aurora", foaling_year: 2022, sex: "gelding", colour: "Brown", trainer_id: "t2", racing_api_id: null },
+  { id: "h7", display_name: "Magic Time", racing_name: null, sire: "Fastnet Rock", dam: "Illusion", foaling_year: 2021, sex: "mare", colour: "Grey", trainer_id: "t2", racing_api_id: null },
+];
+
+// Two pending proposals: one where every field lines up (the easy confirm) and
+// one with name/dam/trainer disagreements (the reason the screen shows the two
+// sources side by side). `evidence` carries ONLY the seven allowlisted racing
+// fields — never the feed's owner (RF1's CHECK + the BFF allowlist).
+const RACING_MATCH_PROPOSALS = [
+  {
+    id: "p1", horse_id: "h4", racing_api_id: "RA-88213", created_at: "2026-07-20T22:10:00Z",
+    evidence: { name: "Northern Star", sire: "Snitzel", dam: "Aurora", age: 4, sex: "Gelding", colour: "Brown", trainer: "Peter Moody" },
+  },
+  {
+    id: "p2", horse_id: "h7", racing_api_id: "RA-90455", created_at: "2026-07-20T23:40:00Z",
+    // This fixture deliberately carries owner PII and an odds field that a
+    // real feed might smuggle in. RF1's CHECK is case-sensitive, so a cased
+    // "Owner" key WOULD store — which makes the BFF allowlist the only thing
+    // standing between it and a browser. The spec asserts none of these
+    // strings reach the page, so if pickEvidence ever regresses, e2e goes red.
+    evidence: {
+      name: "Magic Times", sire: "Fastnet Rock", dam: "Delusion", age: 5, sex: "Mare", colour: "Grey", trainer: "P. Moody",
+      owner: "PIILEAKOWNER", Owner: "PIILEAKCASED", owner_email: "leak@example.com",
+      odds: "PIILEAKODDS", profile: { owner: "PIILEAKNESTED" },
+    },
+  },
+];
+
 const TRAINER_SEED = [
   { id: "t1", name: "Chris Waller", stable_name: "Chris Waller Racing", location: "Rosehill, NSW", status: "active", horses: 12, email: "chris@wallerstable.com.au", lastPost: 2 * H },
   { id: "t2", name: "Peter Moody", stable_name: "Moody Racing", location: "Caulfield, VIC", status: "active", horses: 4, email: "peter@moody.com.au", lastPost: 6 * H },
@@ -512,6 +545,14 @@ export function startMockSupabase() {
         return;
       }
 
+      // (e2) Racing match queue (RF4 / ENG-296): unique marker `racing_api_id`.
+      // No other screen selects that column (grep-verified), and this read
+      // carries no status filter, so it cannot collide with (f) below.
+      if (select.includes("racing_api_id")) {
+        sendTable(res, req.method, RACING_MATCH_HORSES, RACING_MATCH_HORSES.length);
+        return;
+      }
+
       // (f) Dashboard quiet-horse check: status=eq.active with none of the above
       // markers. HEAD returns the Content-Range count for `count: 'exact'` tiles.
       if (qs.includes("status=eq.active")) {
@@ -531,6 +572,27 @@ export function startMockSupabase() {
         `[mock-supabase] unrouted /rest/v1/horse read — serving HORSE_FIXTURES. Add an explicit branch keyed on this query: ${decodeURIComponent(qs)}`,
       );
       sendTable(res, req.method, HORSE_FIXTURES, HORSE_FIXTURES.length);
+      return;
+    }
+
+    // /rest/v1/horse_match_proposal (RF4 / ENG-296). Exact table match, ahead of
+    // the generic DB reader (which would not claim it today — the table is not a
+    // DB key — but would the moment anyone adds one). Honours the /__control
+    // empty toggle so one spec captures both the populated queue and the
+    // "No pending matches." empty state.
+    if ((req.method === "GET" || req.method === "HEAD") && url.pathname === "/rest/v1/horse_match_proposal") {
+      // ANALYTICS_EMPTY is the shared /__control toggle (misnamed — it is the
+      // whole mock's empty flag, set by setEmpty()).
+      const rows = ANALYTICS_EMPTY ? [] : RACING_MATCH_PROPOSALS;
+      sendTable(res, req.method, rows, rows.length);
+      return;
+    }
+
+    // PATCH /rest/v1/horse_match_proposal — confirm/reject writes go through the
+    // BFF route, which is exercised by its unit tests; here the write just needs
+    // to succeed so the card leaves the queue.
+    if (req.method === "PATCH" && url.pathname.startsWith("/rest/v1/horse_match_proposal")) {
+      sendJson(res, 200, [{ id: "p1", status: "confirmed", resolved_at: new Date().toISOString() }]);
       return;
     }
 

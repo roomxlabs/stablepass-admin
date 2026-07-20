@@ -51,33 +51,20 @@ function firstEmbed<T>(v: T | T[] | null | undefined): T | null {
   return Array.isArray(v) ? (v[0] ?? null) : v;
 }
 
-/** "2h ago" / "yesterday" / "3 days ago" / "5 Jul" — relative to `now`. */
-export function relTime(iso: string, now: Date = new Date()): string {
-  const then = new Date(iso).getTime();
-  if (Number.isNaN(then)) return "—";
-  const mins = Math.round((now.getTime() - then) / 60000);
-  if (mins < 1) return "just now";
-  if (mins < 60) return `${mins}m ago`;
-  const hrs = Math.round(mins / 60);
-  if (hrs < 24) return `${hrs}h ago`;
-  const days = Math.round(hrs / 24);
-  if (days === 1) return "yesterday";
-  if (days < 7) return `${days} days ago`;
-  return new Date(iso).toLocaleDateString("en-AU", { day: "numeric", month: "short" });
-}
-
-/** Future schedule label, e.g. "Sat 6:00am". */
-export function schedLabel(iso: string): string {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "—";
-  return d.toLocaleString("en-AU", { weekday: "short", hour: "numeric", minute: "2-digit" });
-}
-
-export function whenLabel(row: Pick<PostRow, "status" | "published_at" | "scheduled_for">): string {
-  if (row.status === "scheduled") return row.scheduled_for ? schedLabel(row.scheduled_for) : "—";
-  if (row.status === "published" || row.status === "unpublished")
-    return row.published_at ? relTime(row.published_at) : "—";
-  return "—";
+/**
+ * Which instant the "Published" column shows, by status:
+ *   - scheduled              → its `scheduledFor`
+ *   - published/unpublished  → its `publishedAt`
+ *   - draft (or missing)     → none (the row renders "—")
+ *
+ * This is the status→field *mapping* only. The wall-clock formatting that used
+ * to live here (`relTime`/`schedLabel`, hardcoded "en-AU" + server TZ) now lives
+ * in <LocalTime kind="when">, which renders `iso` in the operator's browser TZ.
+ */
+export function whenIso(v: Pick<PostView, "status" | "publishedAt" | "scheduledFor">): string | null {
+  if (v.status === "scheduled") return v.scheduledFor;
+  if (v.status === "published" || v.status === "unpublished") return v.publishedAt;
+  return null;
 }
 
 export function mapPostRow(row: PostRow): PostView {
@@ -96,7 +83,9 @@ export function mapPostRow(row: PostRow): PostView {
     status: row.status,
     statusLabel: meta.label,
     statusPillClass: meta.pill,
-    whenLabel: whenLabel(row),
+    // Raw instants — formatted client-side in the browser TZ by <LocalTime>.
+    publishedAt: row.published_at,
+    scheduledFor: row.scheduled_for,
     likeCount: engaged ? row.like_count ?? 0 : null,
     // Editing a post happens in Compose (T6); the PATCH endpoint is T5's.
     editHref: `/compose?id=${row.id}`,

@@ -46,6 +46,9 @@ export type CreateDraftResponse = {
  * covers `body` (caption) + `source_trainer_id` (byline), so horse and media
  * are shown read-only. `mediaUrl` is a signed photo URL for photos, or a
  * signed Mux HLS URL for videos (null → asset still processing → placeholder).
+ * `scheduledFor` is the post's current schedule as a UTC ISO instant (null when
+ * the post has never been scheduled) — the edit-mode Schedule section prefills
+ * its Date+Time pair from it, converted to the browser's timezone.
  */
 export type EditInitial = {
   id: string;
@@ -55,5 +58,6 @@ export type EditInitial = {
   title: string;
   caption: string;
   bylineId: string;
+  scheduledFor: string | null;
   horse: HorseOption;
 };

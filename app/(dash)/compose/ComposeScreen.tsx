@@ -1,9 +1,10 @@
 "use client";
 
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Icon } from "../icons";
+import LocalTime from "../LocalTime";
 import HlsVideo from "./HlsVideo";
 import PreviewModal from "./PreviewModal";
 import type { PostPreviewData } from "./PostPreview";
@@ -43,6 +44,50 @@ function humanSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+const pad2 = (n: number) => String(n).padStart(2, "0");
+
+/**
+ * A UTC instant → the browser-local `<input type="date">` + `<input type="time">`
+ * values that display it. Uses the local `Date` getters, so the split reflects
+ * the operator's timezone (computed after mount to stay hydration-safe).
+ */
+function splitLocal(iso: string): { date: string; time: string } {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return { date: "", time: "" };
+  return {
+    date: `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`,
+    time: `${pad2(d.getHours())}:${pad2(d.getMinutes())}`,
+  };
+}
+
+/**
+ * The local Date/Time pair → the absolute `Date`. `new Date("YYYY-MM-DDTHH:MM")`
+ * (no offset, with a time part) is parsed in the browser's timezone, so
+ * `.toISOString()` gives the correct UTC instant for the operator's local pick —
+ * the exact conversion the single `datetime-local` used before. Returns null
+ * until both halves are present/valid so the schedule action can stay disabled.
+ */
+function combineLocal(date: string, time: string): Date | null {
+  if (!date || !time) return null;
+  const d = new Date(`${date}T${time}`);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+/**
+ * Map a schedule endpoint failure to a human inline message. Reads the envelope
+ * error `code` structurally (the `schedulePost` ApiError carries it) so a 409
+ * `invalid_status` gets a refresh hint and a past time its own line; anything
+ * else falls back to the endpoint's message.
+ */
+function scheduleErrorMessage(e: unknown): string {
+  const code =
+    e && typeof e === "object" && "code" in e ? (e as { code?: string }).code : undefined;
+  if (code === "invalid_status")
+    return "This post can no longer be scheduled — it may have just published. Refresh and try again.";
+  if (code === "scheduled_for_in_past") return "That time is in the past — pick a future time.";
+  return e instanceof Error && e.message ? e.message : "Couldn’t schedule the post.";
+}
+
 export default function ComposeScreen({
   horses,
   trainers,
@@ -71,9 +116,27 @@ export default function ComposeScreen({
 
   const router = useRouter();
   const [mode, setMode] = useState<PublishMode>("publish");
-  const [scheduledFor, setScheduledFor] = useState("");
+  // The schedule pick as two browser-local halves. Start empty so the server
+  // render and the first client paint match; the edit-mode prefill from
+  // `scheduled_for` is filled after mount (browser TZ) — same deferred-hydration
+  // discipline as <LocalTime> — so there is no hydration mismatch.
+  const [scheduleDate, setScheduleDate] = useState("");
+  const [scheduleTime, setScheduleTime] = useState("");
   const [previewOpen, setPreviewOpen] = useState(false);
   const [action, setAction] = useState<ActionState>({ kind: "idle" });
+
+  useEffect(() => {
+    if (!initial?.scheduledFor) return;
+    // Deferred-hydration prefill (same discipline as <LocalTime>): the browser
+    // timezone is unavailable during SSR, so the pick stays empty through the
+    // server render + first client paint and is filled once, after mount.
+    const { date, time } = splitLocal(initial.scheduledFor);
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setScheduleDate(date);
+    setScheduleTime(time);
+    // Mount-only prefill from the loaded post's schedule.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -90,6 +153,11 @@ export default function ComposeScreen({
 
   const draftReady = !!draft && upload.state === "done";
   const busy = action.kind === "working";
+  // Both halves of the pick are required before the schedule action is allowed.
+  const canSchedule = !!scheduleDate && !!scheduleTime;
+  // Only draft/scheduled posts expose the edit-mode Schedule section — mirrors
+  // the endpoint's lifecycle rule (guardrail §2); no client-side status bypass.
+  const canReschedule = isEdit && (initial!.status === "draft" || initial!.status === "scheduled");
 
   function selectHorse(h: HorseOption) {
     setHorse(h);
@@ -173,13 +241,13 @@ export default function ComposeScreen({
     // Validate the schedule BEFORE any network round-trip.
     let when: Date | null = null;
     if (next === "schedule") {
-      when = new Date(scheduledFor);
-      if (!scheduledFor || Number.isNaN(when.getTime())) {
-        setAction({ kind: "error", message: "Pick a valid date & time to schedule." });
+      when = combineLocal(scheduleDate, scheduleTime);
+      if (!when) {
+        setAction({ kind: "error", message: "Pick a date and time to schedule." });
         return;
       }
       if (when.getTime() <= Date.now()) {
-        setAction({ kind: "error", message: "Schedule a time in the future." });
+        setAction({ kind: "error", message: "That time is in the past — pick a future time." });
         return;
       }
     }
@@ -207,7 +275,12 @@ export default function ComposeScreen({
       router.push("/posts");
       router.refresh();
     } catch (e) {
-      setAction({ kind: "error", message: (e as Error).message });
+      // Schedule failures get the per-code inline message (e.g. a clock-skew
+      // past time the client guard let through); other actions surface raw.
+      setAction({
+        kind: "error",
+        message: next === "schedule" ? scheduleErrorMessage(e) : (e as Error).message,
+      });
     }
   }
 
@@ -264,6 +337,41 @@ export default function ComposeScreen({
       router.refresh();
     } catch (e) {
       setAction({ kind: "error", message: (e as Error).message });
+    }
+  }
+
+  // Edit mode, draft or scheduled only: persist the field edits (same order as
+  // the publish path), then (re)schedule via the endpoint — which itself enforces
+  // the draft/scheduled lifecycle rule and the future-time constraint. Endpoint
+  // errors (scheduled_for_in_past / validation_failed / invalid_status) surface
+  // inline via `scheduleErrorMessage`.
+  async function scheduleEdit() {
+    if (!initial) return;
+    const when = combineLocal(scheduleDate, scheduleTime);
+    if (!when) {
+      setAction({ kind: "error", message: "Pick a date and time to schedule." });
+      return;
+    }
+    if (when.getTime() <= Date.now()) {
+      setAction({ kind: "error", message: "That time is in the past — pick a future time." });
+      return;
+    }
+    setAction({ kind: "working" });
+    try {
+      await patchPost(initial.id, {
+        title: title.trim() || null,
+        body: caption,
+        sourceTrainerId: bylineId,
+      });
+      await schedulePost(initial.id, when.toISOString());
+      setAction({
+        kind: "ok",
+        message: initial.status === "scheduled" ? "Schedule updated." : "Scheduled.",
+      });
+      router.push("/posts");
+      router.refresh();
+    } catch (e) {
+      setAction({ kind: "error", message: scheduleErrorMessage(e) });
     }
   }
 
@@ -675,13 +783,35 @@ export default function ComposeScreen({
                 </span>
               </label>
               {mode === "schedule" ? (
-                <input
-                  className={`${styles.input} ${styles.scheduleInput}`}
-                  type="datetime-local"
-                  value={scheduledFor}
-                  data-testid="schedule-input"
-                  onChange={(e) => setScheduledFor(e.target.value)}
-                />
+                <div className={styles.dateTimeRow}>
+                  <div className={styles.dateTimeField}>
+                    <label className={styles.subLabel} htmlFor="schedule-date">
+                      Date
+                    </label>
+                    <input
+                      id="schedule-date"
+                      className={styles.input}
+                      type="date"
+                      value={scheduleDate}
+                      data-testid="schedule-date"
+                      onChange={(e) => setScheduleDate(e.target.value)}
+                    />
+                  </div>
+                  <div className={styles.dateTimeField}>
+                    <label className={styles.subLabel} htmlFor="schedule-time">
+                      Time
+                    </label>
+                    <input
+                      id="schedule-time"
+                      className={styles.input}
+                      type="time"
+                      step={60}
+                      value={scheduleTime}
+                      data-testid="schedule-time"
+                      onChange={(e) => setScheduleTime(e.target.value)}
+                    />
+                  </div>
+                </div>
               ) : null}
 
               <label className={styles.radioRow}>
@@ -705,7 +835,11 @@ export default function ComposeScreen({
                   className="btn btn-primary btn-block"
                   data-testid="primary-action"
                   onClick={isEdit ? saveEdit : () => runAction(mode)}
-                  disabled={isEdit ? busy : !draftReady || busy}
+                  disabled={
+                    isEdit
+                      ? busy
+                      : !draftReady || busy || (mode === "schedule" && !canSchedule)
+                  }
                 >
                   {busy ? (isEdit ? "Saving…" : "Working…") : isEdit ? "Save changes" : primaryLabel}
                 </button>
@@ -742,6 +876,68 @@ export default function ComposeScreen({
                 </div>
               )}
             </div>
+
+            {/* Edit-mode scheduling — drafts + scheduled posts only. Published /
+                unpublished posts show no scheduling UI (guardrail §2). */}
+            {canReschedule ? (
+              <div className={styles.side} data-testid="edit-schedule">
+                <h4 className={styles.sideTitle}>Schedule</h4>
+                {initial!.scheduledFor ? (
+                  <div className={styles.row}>
+                    <span className={styles.rowLbl}>Scheduled for</span>
+                    <span className={styles.rowVal} data-testid="current-schedule">
+                      <LocalTime iso={initial!.scheduledFor} kind="when" />
+                    </span>
+                  </div>
+                ) : null}
+                <div className={styles.dateTimeRow} style={{ marginTop: 14 }}>
+                  <div className={styles.dateTimeField}>
+                    <label className={styles.subLabel} htmlFor="edit-schedule-date">
+                      Date
+                    </label>
+                    <input
+                      id="edit-schedule-date"
+                      className={styles.input}
+                      type="date"
+                      value={scheduleDate}
+                      data-testid="schedule-date"
+                      onChange={(e) => setScheduleDate(e.target.value)}
+                    />
+                  </div>
+                  <div className={styles.dateTimeField}>
+                    <label className={styles.subLabel} htmlFor="edit-schedule-time">
+                      Time
+                    </label>
+                    <input
+                      id="edit-schedule-time"
+                      className={styles.input}
+                      type="time"
+                      step={60}
+                      value={scheduleTime}
+                      data-testid="schedule-time"
+                      onChange={(e) => setScheduleTime(e.target.value)}
+                    />
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  className="btn btn-primary btn-block"
+                  data-testid="schedule-action"
+                  style={{ marginTop: 12 }}
+                  onClick={scheduleEdit}
+                  disabled={!canSchedule || busy}
+                >
+                  {busy
+                    ? "Saving…"
+                    : initial!.status === "scheduled"
+                      ? "Update schedule"
+                      : "Schedule"}
+                </button>
+                <div className={styles.help} style={{ marginTop: 8 }}>
+                  Shown in your timezone. Goes live automatically at the time you set.
+                </div>
+              </div>
+            ) : null}
 
             {/* Inline mini preview */}
             <div className={styles.side}>

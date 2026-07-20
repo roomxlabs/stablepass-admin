@@ -51,13 +51,39 @@ export async function publishPost(id: string): Promise<void> {
   await readData(res);
 }
 
+/** An Error carrying the envelope's error `code` so the UI can branch per code. */
+export class ApiError extends Error {
+  code?: string;
+  status: number;
+  constructor(message: string, status: number, code?: string) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+    this.code = code;
+  }
+}
+
+/**
+ * Schedule (or re-schedule) a draft/scheduled post. Surfaces the endpoint's
+ * error `code` (`scheduled_for_in_past`, `validation_failed`, `invalid_status`)
+ * on the thrown `ApiError` so Compose can render a per-code inline message.
+ */
 export async function schedulePost(id: string, scheduledFor: string): Promise<void> {
   const res = await fetch(`/api/admin/posts/${id}/schedule`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ scheduledFor }),
   });
-  await readData(res);
+  if (!res.ok) {
+    const json = (await res.json().catch(() => null)) as
+      | { error?: { code?: string; message?: string } }
+      | null;
+    throw new ApiError(
+      json?.error?.message ?? `Schedule failed (${res.status}).`,
+      res.status,
+      json?.error?.code,
+    );
+  }
 }
 
 /** Discard a draft (hard delete, draft-only per guardrail §2). DELETE → 204. */

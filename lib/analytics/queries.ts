@@ -238,7 +238,7 @@ export async function getClicks(sb: SupabaseClient, since: string | null): Promi
 
 // ---- Trials -----------------------------------------------------------------
 
-type SubscriptionUserEmbed = { name: string | null; email: string | null };
+type SubscriptionUserEmbed = { name: string | null; email: string | null; is_admin?: boolean | null };
 type SubscriptionRow = {
   status: string;
   trial_ends_at: string | null;
@@ -256,11 +256,17 @@ export async function getTrials(sb: SupabaseClient): Promise<Trials> {
     callRpc<TrialsByMonthRow>(sb, "admin_trials_by_month"),
     sb
       .from("subscription")
-      .select("status,trial_ends_at,created_at,user:user_id(name,email)")
+      .select("status,trial_ends_at,created_at,user:user_id(name,email,is_admin)")
       .order("created_at", { ascending: false }),
   ]);
 
-  const rows = (unwrap(subsRes, "trials subscriptions query") ?? []) as SubscriptionRow[];
+  // Every signup gets a trial subscription — including operators, who are just
+  // app_user rows promoted to is_admin afterwards (ENG-314). The trials list /
+  // CSV is member data, so staff accounts are filtered out here; the by-month
+  // RPC applies the same exclusion BE-side.
+  const rows = ((unwrap(subsRes, "trials subscriptions query") ?? []) as SubscriptionRow[]).filter(
+    (r) => !one(r.user)?.is_admin,
+  );
 
   return {
     byMonth: byMonthRows.map((r) => ({

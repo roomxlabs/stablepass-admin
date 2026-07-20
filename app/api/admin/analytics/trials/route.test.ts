@@ -70,6 +70,47 @@ describe("GET /api/admin/analytics/trials", () => {
     });
   });
 
+  it("excludes operator (is_admin) accounts from the list and the CSV (ENG-314)", async () => {
+    asAdmin();
+    state.rpcs.admin_trials_by_month = { data: [] };
+    state.tables.subscription = {
+      select: {
+        rows: [
+          {
+            status: "trial",
+            trial_ends_at: "2026-08-01T00:00:00.000Z",
+            created_at: "2026-07-15T00:00:00.000Z",
+            user: { name: "Real Member", email: "member@example.com", is_admin: false },
+          },
+          {
+            status: "trial",
+            trial_ends_at: "2026-08-10T00:00:00.000Z",
+            created_at: "2026-07-11T00:00:00.000Z",
+            user: { name: "Op Account", email: "operator@stablepass.co", is_admin: true },
+          },
+          {
+            // array-shaped PostgREST embed must be filtered too
+            status: "trial",
+            trial_ends_at: "2026-08-12T00:00:00.000Z",
+            created_at: "2026-07-10T00:00:00.000Z",
+            user: [{ name: "Op Embedded", email: "op2@stablepass.co", is_admin: true }],
+          },
+        ],
+      },
+    };
+
+    const r = await GET(new Request("http://localhost/api/admin/analytics/trials"));
+    const j = await r.json();
+    expect(j.data.list).toHaveLength(1);
+    expect(j.data.list[0].email).toBe("member@example.com");
+
+    const csv = await GET(new Request("http://localhost/api/admin/analytics/trials?format=csv"));
+    const body = await csv.text();
+    expect(body).toContain("member@example.com");
+    expect(body).not.toContain("operator@stablepass.co");
+    expect(body).not.toContain("op2@stablepass.co");
+  });
+
   it("computes daysLeft: a future trial_ends_at is positive, an expired one is clamped to 0", async () => {
     vi.setSystemTime(new Date("2026-07-20T00:00:00.000Z"));
     asAdmin();

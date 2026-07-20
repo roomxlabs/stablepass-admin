@@ -88,11 +88,30 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
   if (!updated)
     return fail("result_already_recorded", "This runner's result is already recorded.", 409);
 
+  // A result recorded by hand is a correction to whatever the feed would say, so an
+  // `api` race must be pinned here — not just on PATCH /races/:id. Without the pin the
+  // next RF3 poll treats the race as unpinned feed-owned data, re-opens it, and
+  // re-ingests the official result, incrementing the career counters below a SECOND
+  // time. Counters are never decremented, so the horse's record is corrupted
+  // permanently. The poll never touches source='manual', so only 'api' needs pinning.
+  const { data: raceRow, error: raceReadErr } = await sb
+    .from("race")
+    .select("source")
+    .eq("id", runner.race_id)
+    .maybeSingle();
+  if (raceReadErr) return fail("read_failed", raceReadErr.message, 400);
+
+  const racePatch: Record<string, unknown> = {
+    status: "finished",
+    finished_at: new Date().toISOString(),
+  };
+  if (raceRow?.source === "api") racePatch.manual_override = true;
+
   // The race is over once a result is in. Scope the write to a race that isn't already
   // finished, so a later runner on the same race can't rewrite finished_at.
   const { error: raceErr } = await sb
     .from("race")
-    .update({ status: "finished", finished_at: new Date().toISOString() })
+    .update(racePatch)
     .eq("id", runner.race_id)
     .eq("status", "upcoming");
   if (raceErr) return fail("update_failed", raceErr.message, 400);

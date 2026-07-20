@@ -43,7 +43,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
 
   const { data: race, error: raceErr } = await sb
     .from("race")
-    .select("id")
+    .select("id, source")
     .eq("id", id)
     .maybeSingle();
   // Don't let a failed read masquerade as a missing race.
@@ -68,5 +68,14 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
       return fail("runner_exists", "That horse is already entered in this race.", 409);
     return fail("insert_failed", error.message, 400);
   }
+
+  // Attaching a runner by hand to an `api` race is a correction to feed-owned data, so
+  // pin it for the same reason the result path does: an unpinned race gets its runner
+  // set rewritten by the next poll, silently dropping this entry. Best-effort — the
+  // runner is already created and a failed pin must not turn a 201 into an error.
+  if (race.source === "api") {
+    await sb.from("race").update({ manual_override: true }).eq("id", id);
+  }
+
   return created(data);
 }

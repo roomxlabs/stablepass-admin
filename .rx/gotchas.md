@@ -340,14 +340,30 @@ test scripts, so column names are unfalsifiable locally. Do-this: before buildin
 column, check the be repo's `supabase/migrations/` — not just this file — and backfill this
 file in the same PR when you find drift.
 
-## The vitest fake ignores filters — a scoped write needs its own reasoning
-`makeFakeClient`'s `eq/in/is/...` are all `() => b`, so `.eq("status","upcoming")` or
-`.in("entry_status", [...])` are recorded nowhere and constrain nothing. A test therefore
-CANNOT prove a compare-and-swap guard works; it can only prove the update was issued. Write
-the guard as a scoped update anyway (it is what protects production), and assert the
-surrounding behaviour — but don't mistake a green test for proof of atomicity. `calls.mutations`
-(added by ENG-180) records insert/update/delete payloads, which is what makes "never writes an
-odds field" and "sets manual_override" assertable at all.
+## Assert scoped writes through `calls.filters` — a green test is not proof of a guard
+`makeFakeClient` records **both** halves of a write: `calls.mutations` captures
+insert/update/delete payloads as `{table, op, values}`, and `calls.filters` captures every
+`eq/neq/is/in` as `{table, op, column, value}`. Both arrived with ENG-296 (RF4); an earlier
+draft of ENG-180 shipped a `mutations`-only version keyed on `payload`, and the RF4/RF6
+integrate merge adopted RF4's as canonical.
+
+This matters because `eq/in` are otherwise no-ops in the fake, so a compare-and-swap or a
+scoped delete is **invisible** to a test that only checks the mutation. ENG-180 shipped
+exactly that hole: deleting both `.in("entry_status", RESULTABLE)` and
+`.eq("status","upcoming")` from the result route left the whole suite green, and so did
+removing `.eq("id", …)` from a `race` delete that would otherwise wipe every race.
+
+Do this: for any write whose **scope predicate is load-bearing** — an idempotency guard, a
+row-targeting `.eq("id", …)`, a status gate — assert the predicate itself:
+
+```js
+expect(state.calls.filters).toContainEqual({
+  table: "race_horse", op: "in", column: "entry_status", value: ["confirmed", "nominated"],
+});
+```
+
+Then prove it by mutation: delete the predicate from the route and confirm the test goes RED.
+A guardrail test nobody has seen fail is not evidence.
 ## Nav items live in `AdminNav.tsx`, NOT `layout.tsx` — ticket surfaces say otherwise
 Every grilled ticket that adds a screen declares `app/(dash)/layout.tsx — nav entry append only`, but
 `layout.tsx` only renders `<AdminNav />`; the `PRIMARY`/`LIBRARY` `NavItem[]` arrays live in

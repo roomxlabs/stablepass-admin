@@ -148,6 +148,14 @@ describe("DELETE /api/admin/races/:id", () => {
     const r = await DELETE(new Request("http://t"), ctx("r1"));
     expect(r.status).toBe(204);
     expect(state.calls.mutations.some((m) => m.table === "race" && m.op === "delete")).toBe(true);
+    // Blast radius: without this predicate the delete removes EVERY race, cascading
+    // every race_horse. Assert the scope, not just that a delete was issued.
+    expect(state.calls.filters).toContainEqual({
+      table: "race",
+      op: "eq",
+      column: "id",
+      value: "r1",
+    });
   });
 
   it("404s when the race is missing", async () => {

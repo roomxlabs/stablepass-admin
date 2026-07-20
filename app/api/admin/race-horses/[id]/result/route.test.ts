@@ -134,10 +134,69 @@ describe("PATCH /api/admin/race-horses/:id/result", () => {
   it("scopes the runner update to the resultable statuses (compare-and-swap)", async () => {
     seedHappyPath();
     await PATCH(patchReq({ result: "1st of 12", finishPosition: 1 }), ctx("rh1"));
-    // `in` is recorded by the fake as a no-op, so assert the guard exists by its
-    // effect: the update is issued and the route reached the counter write.
     expect(runnerUpdate()?.values.entry_status).toBe("ran");
-    expect(horseUpdate()).toBeDefined();
+    // The predicate IS the idempotency guard, so assert it directly. Asserting only the
+    // effect passed with the guard deleted — `calls.filters` is what closes that hole.
+    expect(state.calls.filters).toContainEqual({
+      table: "race_horse",
+      op: "in",
+      column: "entry_status",
+      value: ["confirmed", "nominated"],
+    });
+  });
+
+  it("scopes the race finish to an upcoming race, so a later runner can't rewrite finished_at", async () => {
+    seedHappyPath();
+    await PATCH(patchReq({ result: "1st of 12", finishPosition: 1 }), ctx("rh1"));
+    expect(state.calls.filters).toContainEqual({
+      table: "race",
+      op: "eq",
+      column: "status",
+      value: "upcoming",
+    });
+  });
+
+  it("targets exactly one horse row when incrementing career counters", async () => {
+    seedHappyPath();
+    await PATCH(patchReq({ result: "1st of 12", finishPosition: 1 }), ctx("rh1"));
+    // Without the predicate on the UPDATE, the counter write hits every horse row
+    // visible to the admin's RLS.
+    //
+    // `calls.filters` is a FLAT list with no statement association, so a plain
+    // toContainEqual here is satisfied by the horse READ's own `.eq("id", …)` two
+    // statements earlier and proves nothing — verified: deleting the update's predicate
+    // left that version green. Counting both occurrences is what actually binds this to
+    // the update. Brittle if a third horse query is added; the count is the point.
+    const horseIdFilters = state.calls.filters.filter(
+      (f) => f.table === "horse" && f.op === "eq" && f.column === "id" && f.value === "h1",
+    );
+    expect(horseIdFilters).toHaveLength(2); // read + update
+  });
+
+  // GUARDRAIL: recording a result by hand on a FEED race must pin it, or the next RF3
+  // poll re-opens the race, re-ingests the official result, and the career counters
+  // increment a second time. Counters are never decremented.
+  it("pins an api race with manual_override when a result is recorded", async () => {
+    seedHappyPath();
+    state.tables.race = {
+      select: { single: { id: "r1", source: "api" } },
+      mutate: { single: { id: "r1" } },
+    };
+    await PATCH(patchReq({ result: "1st of 12", finishPosition: 1 }), ctx("rh1"));
+    expect(raceUpdate()?.values).toMatchObject({
+      status: "finished",
+      manual_override: true,
+    });
+  });
+
+  it("does NOT set manual_override on a manual race (the poll never touches it)", async () => {
+    seedHappyPath();
+    state.tables.race = {
+      select: { single: { id: "r1", source: "manual" } },
+      mutate: { single: { id: "r1" } },
+    };
+    await PATCH(patchReq({ result: "1st of 12", finishPosition: 1 }), ctx("rh1"));
+    expect(raceUpdate()?.values).not.toHaveProperty("manual_override");
   });
 
   // A horse that never left the barrier must not earn a career start. The guard is

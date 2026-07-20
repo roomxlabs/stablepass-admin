@@ -41,6 +41,8 @@ describe("GET /api/admin/subscribers", () => {
           { status: "active" },
           { status: "trial" },
           { status: "canceled" },
+          // Operator's signup trial — excluded from every tally (ENG-315).
+          { status: "trial", user: { is_admin: true } },
         ],
       },
     };

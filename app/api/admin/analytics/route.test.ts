@@ -45,7 +45,17 @@ describe("GET /api/admin/analytics", () => {
     };
     state.tables.reaction = { select: { count: 3420 } };
     state.tables.bookmark = { select: { count: 612 } };
-    state.tables.subscription = { select: { count: 412 } };
+    state.tables.subscription = {
+      select: {
+        rows: [
+          { status: "trial", user: { is_admin: false } },
+          { status: "active", user: { is_admin: false } },
+          { status: "active", user: [{ is_admin: false }] },
+          // Operator's own signup trial — must NOT count as a member (ENG-315).
+          { status: "trial", user: { is_admin: true } },
+        ],
+      },
+    };
     state.tables.horse = {
       select: {
         rows: [
@@ -62,7 +72,7 @@ describe("GET /api/admin/analytics", () => {
     expect(j.data.postsThisWeek).toBe(68);
     expect(j.data.reactions).toBe(3420);
     expect(j.data.saves).toBe(612);
-    expect(j.data.members).toBe(412);
+    expect(j.data.members).toBe(3); // 4 subscription rows, one is staff (excluded)
 
     // h1 posted within the week → NOT quiet. h6 (stale 20d) + h8 (never) are.
     const quiet = j.data.quietHorses as { id: string; daysSinceLastPost: number | null; name: string }[];

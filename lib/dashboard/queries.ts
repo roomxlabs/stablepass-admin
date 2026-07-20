@@ -38,6 +38,16 @@ type HorseRow = {
   training_status: string | null;
   photo_url: string | null;
 };
+
+// Every signup gets a trial subscription — operators included, since an admin
+// is an app_user promoted to is_admin after signup (ENG-315). Any "members"
+// count over `subscription` must therefore exclude staff rows. PostgREST
+// returns a to-one embed as an object or a 1-element array.
+type SubscriptionUserEmbed = { is_admin?: boolean | null };
+type SubscriptionWithUser = { status: string; user: SubscriptionUserEmbed | SubscriptionUserEmbed[] | null };
+function isStaff(user: SubscriptionWithUser["user"]): boolean {
+  return !!(Array.isArray(user) ? user[0] : user)?.is_admin;
+}
 type PostRecency = { horse_id: string; published_at: string | null };
 
 function horseName(h: { racing_name: string | null; display_name: string }): string {
@@ -70,10 +80,12 @@ export async function getAnalytics(sb: SupabaseClient, now: Date = new Date()): 
         .from("bookmark")
         .select("post_id", { count: "exact", head: true })
         .gte("created_at", weekAgo),
-      // Members = subscriptions currently in trial or active.
+      // Members = subscriptions currently in trial or active, excluding
+      // operator accounts (see isStaff above). Row fetch instead of a head
+      // count so the staff filter can apply; the embed carries no PII.
       sb
         .from("subscription")
-        .select("id", { count: "exact", head: true })
+        .select("status,user:user_id(is_admin)")
         .in("status", ["trial", "active"]),
       // Active (visible) horses — the pool the quiet-horse check runs over.
       sb
@@ -117,7 +129,8 @@ export async function getAnalytics(sb: SupabaseClient, now: Date = new Date()): 
     postsThisWeek: postsRes.count ?? 0,
     reactions: reactionsRes.count ?? 0,
     saves: savesRes.count ?? 0,
-    members: membersRes.count ?? 0,
+    members: ((membersRes.data ?? []) as SubscriptionWithUser[]).filter((r) => !isStaff(r.user))
+      .length,
     quietHorses,
   };
 }
@@ -250,10 +263,11 @@ export async function getSubscribers(
   sb: SupabaseClient,
   status?: string | null,
 ): Promise<Subscribers> {
-  let q = sb.from("subscription").select("status");
+  let q = sb.from("subscription").select("status,user:user_id(is_admin)");
   if (status) q = q.eq("status", status);
   const { data } = await q;
-  const rows = (data ?? []) as { status: string }[];
+  // Staff excluded (ENG-315); only `status` is tallied — still no member PII.
+  const rows = ((data ?? []) as SubscriptionWithUser[]).filter((r) => !isStaff(r.user));
   const byStatus: Record<string, number> = {};
   for (const r of rows) byStatus[r.status] = (byStatus[r.status] ?? 0) + 1;
   return { total: rows.length, byStatus };

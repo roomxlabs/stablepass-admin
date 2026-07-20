@@ -229,3 +229,37 @@ describe("AnalyticsScreen — empty states", () => {
     expect(screen.queryByTestId("opens-by-day")).toBeNull();
   });
 });
+
+describe("AnalyticsScreen — bar geometry", () => {
+  // Regression guard for the trials-bar slab defect (ENG-276 review).
+  //
+  // This MUST assert at the COMPONENT level. `barLayout(series, gap)` already
+  // honoured a `gap` argument before the fix, so a chart.ts-only test passes on
+  // the broken code too — the defect was that no CALLER ever passed one. Only
+  // the rendered `rect` width proves the caller does. Delete `gap={26}` from
+  // AnalyticsScreen and this test fails.
+  //
+  // Nothing else guards it: `page.screenshot({ path })` OVERWRITES its baseline,
+  // so the e2e specs assert nothing visual and a geometry regression would ship.
+  // Peak bars render class="bar peak", which `rect.bar` already matches.
+  const widthOf = (testId: string) =>
+    Number(screen.getByTestId(testId).querySelector("rect.bar")?.getAttribute("width"));
+
+  it("renders the sparse trials chart at the mockup's bar width, not a default slab", () => {
+    const months = Array.from({ length: 6 }, (_, i) => ({ label: `m${i}`, value: 10 + i }));
+    const days = Array.from({ length: 14 }, (_, i) => ({ label: `d${i}`, value: 10 + i }));
+    render(<AnalyticsScreen view={view({ trialsByMonth: months, opensByDay: days })} />);
+
+    // 6 buckets on the 420 viewBox: step 420/6 = 70, gap 26 -> width 44, which
+    // is exactly the bar width 09-analytics.html draws. At the DEFAULT gap of 5
+    // this is 65 — the reported "slab" defect. The literal 44 is a design
+    // contract lifted from the mockup, so pinning it exactly is deliberate.
+    expect(widthOf("trials-by-month")).toBe(44);
+
+    // The dense chart passes no gap and so must still sit at the default. Asserted
+    // as the EXPRESSION, not a literal: the mockup draws 24 here and we render 25,
+    // so a literal would pin a known off-spec value and cry wolf if that 1px drift
+    // is ever legitimately fixed. What this guards is "this caller opts out".
+    expect(widthOf("opens-by-day")).toBe(420 / 14 - 5);
+  });
+});

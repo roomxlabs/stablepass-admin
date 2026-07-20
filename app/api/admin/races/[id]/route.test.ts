@@ -149,13 +149,17 @@ describe("DELETE /api/admin/races/:id", () => {
     expect(r.status).toBe(204);
     expect(state.calls.mutations.some((m) => m.table === "race" && m.op === "delete")).toBe(true);
     // Blast radius: without this predicate the delete removes EVERY race, cascading
-    // every race_horse. Assert the scope, not just that a delete was issued.
-    expect(state.calls.filters).toContainEqual({
-      table: "race",
-      op: "eq",
-      column: "id",
-      value: "r1",
-    });
+    // every race_horse.
+    //
+    // COUNT, don't toContainEqual. The route reads the race before deleting it and both
+    // statements emit an identical race/eq/id filter, so a bare toContainEqual is
+    // satisfied by the READ alone — verified: deleting the predicate from the delete left
+    // the whole suite green. `calls.filters` is flat with no statement association, so
+    // the pair count is what binds this to the delete.
+    const raceIdFilters = state.calls.filters.filter(
+      (f) => f.table === "race" && f.op === "eq" && f.column === "id" && f.value === "r1",
+    );
+    expect(raceIdFilters).toHaveLength(2); // read + delete
   });
 
   it("404s when the race is missing", async () => {

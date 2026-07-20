@@ -70,6 +70,37 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
       409,
     );
 
+  // Pin an `api` race BEFORE anything else is written.
+  //
+  // A result recorded by hand is a correction to whatever the feed would say, so the
+  // race must stop being feed-owned — otherwise the next RF3 poll re-opens it, re-ingests
+  // the official result, and increments the career counters below a SECOND time. Counters
+  // are never decremented, so the horse's record is corrupted permanently.
+  //
+  // Two ordering constraints, both learned the hard way:
+  //   * NOT folded into the status transition below. That update is scoped
+  //     `.eq("status","upcoming")`, so on a race already 'finished' it matches zero rows
+  //     and the pin is silently dropped — reachable from the UI, because RaceDetail gates
+  //     the Record control on entry_status alone, never on race status.
+  //   * BEFORE the compare-and-swap, not after. Failing here must leave NOTHING mutated
+  //     so the whole action is retryable; a 400 raised after the CAS would strand the
+  //     runner at 'ran' with no result and counters unmoved, and every retry would 409.
+  const { data: raceRow, error: raceReadErr } = await sb
+    .from("race")
+    .select("source")
+    .eq("id", runner.race_id)
+    .maybeSingle();
+  // A failed read can't distinguish 'api' from 'manual'. Pin anyway: the flag is inert on
+  // a manual race (the poll never looks at it), while a missing flag on an api race
+  // guarantees a double-count. Fail safe.
+  if (raceReadErr || raceRow?.source === "api") {
+    const { error: pinErr } = await sb
+      .from("race")
+      .update({ manual_override: true })
+      .eq("id", runner.race_id);
+    if (pinErr) return fail("update_failed", pinErr.message, 400);
+  }
+
   // Compare-and-swap: the status scope on the UPDATE is the real idempotency guard.
   // The check above only exists to return a precise error message.
   const { data: updated, error: runnerErr } = await sb
@@ -88,30 +119,12 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
   if (!updated)
     return fail("result_already_recorded", "This runner's result is already recorded.", 409);
 
-  // A result recorded by hand is a correction to whatever the feed would say, so an
-  // `api` race must be pinned here — not just on PATCH /races/:id. Without the pin the
-  // next RF3 poll treats the race as unpinned feed-owned data, re-opens it, and
-  // re-ingests the official result, incrementing the career counters below a SECOND
-  // time. Counters are never decremented, so the horse's record is corrupted
-  // permanently. The poll never touches source='manual', so only 'api' needs pinning.
-  const { data: raceRow, error: raceReadErr } = await sb
-    .from("race")
-    .select("source")
-    .eq("id", runner.race_id)
-    .maybeSingle();
-  if (raceReadErr) return fail("read_failed", raceReadErr.message, 400);
-
-  const racePatch: Record<string, unknown> = {
-    status: "finished",
-    finished_at: new Date().toISOString(),
-  };
-  if (raceRow?.source === "api") racePatch.manual_override = true;
-
   // The race is over once a result is in. Scope the write to a race that isn't already
-  // finished, so a later runner on the same race can't rewrite finished_at.
+  // finished, so a later runner on the same race can't rewrite finished_at. The
+  // manual_override pin is deliberately NOT part of this patch — see above.
   const { error: raceErr } = await sb
     .from("race")
-    .update(racePatch)
+    .update({ status: "finished", finished_at: new Date().toISOString() })
     .eq("id", runner.race_id)
     .eq("status", "upcoming");
   if (raceErr) return fail("update_failed", raceErr.message, 400);

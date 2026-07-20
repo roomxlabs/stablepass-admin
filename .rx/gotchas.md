@@ -362,8 +362,28 @@ expect(state.calls.filters).toContainEqual({
 });
 ```
 
+**`toContainEqual` is only safe when the predicate is UNIQUE in the route.** `calls.filters`
+is a flat list with no statement association, so if the same table+column is also filtered
+by a *read* earlier in the handler, the read alone satisfies the assertion and it proves
+nothing about the write. This bit ENG-180 twice — the horse counter update and the race
+delete both sit behind a read on the same id, and in both cases deleting the write's
+predicate (which in production updates every horse / deletes every race) left the suite
+green. Count instead:
+
+```js
+const f = state.calls.filters.filter(
+  (x) => x.table === "race" && x.op === "eq" && x.column === "id" && x.value === "r1",
+);
+expect(f).toHaveLength(2); // read + delete
+```
+
 Then prove it by mutation: delete the predicate from the route and confirm the test goes RED.
-A guardrail test nobody has seen fail is not evidence.
+A guardrail test nobody has seen fail is not evidence — and one that stays green under the
+mutation it was written for is worse than none, because it reads as coverage.
+
+(The real fix is a monotonic statement `seq` on both `calls.filters` and `calls.mutations`
+so predicates bind to their statement. That is a shared-surface change to
+`lib/testing/supabase-fake.ts`; worth a ticket rather than a drive-by.)
 ## Nav items live in `AdminNav.tsx`, NOT `layout.tsx` — ticket surfaces say otherwise
 Every grilled ticket that adds a screen declares `app/(dash)/layout.tsx — nav entry append only`, but
 `layout.tsx` only renders `<AdminNav />`; the `PRIMARY`/`LIBRARY` `NavItem[]` arrays live in

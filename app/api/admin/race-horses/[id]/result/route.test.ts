@@ -176,17 +176,37 @@ describe("PATCH /api/admin/race-horses/:id/result", () => {
   // GUARDRAIL: recording a result by hand on a FEED race must pin it, or the next RF3
   // poll re-opens the race, re-ingests the official result, and the career counters
   // increment a second time. Counters are never decremented.
-  it("pins an api race with manual_override when a result is recorded", async () => {
+  const raceUpdates = () =>
+    state.calls.mutations.filter((m) => m.table === "race" && m.op === "update");
+
+  it("pins an api race with manual_override, as its OWN id-scoped write", async () => {
     seedHappyPath();
     state.tables.race = {
       select: { single: { id: "r1", source: "api" } },
       mutate: { single: { id: "r1" } },
     };
     await PATCH(patchReq({ result: "1st of 12", finishPosition: 1 }), ctx("rh1"));
-    expect(raceUpdate()?.values).toMatchObject({
-      status: "finished",
-      manual_override: true,
-    });
+    // Two separate race updates: the pin, then the status transition. They must NOT be
+    // merged — the transition is scoped .eq("status","upcoming"), so folding the pin into
+    // it drops the pin silently on a race that is already finished.
+    expect(raceUpdates()).toHaveLength(2);
+    expect(raceUpdates()[0].values).toEqual({ manual_override: true });
+    expect(raceUpdates()[1].values).toMatchObject({ status: "finished" });
+    expect(raceUpdates()[1].values).not.toHaveProperty("manual_override");
+  });
+
+  // The case that made the pin its own statement: a feed race can already be 'finished'
+  // when the first manual result is recorded (partial feed, or a late RF4 match), and
+  // RaceDetail gates the Record control on entry_status alone — never on race status.
+  // The status transition matches zero rows there; the pin must still land.
+  it("pins an ALREADY-FINISHED api race even though the status transition matches nothing", async () => {
+    seedHappyPath();
+    state.tables.race = {
+      select: { single: { id: "r1", source: "api", status: "finished" } },
+      mutate: { single: null }, // the .eq("status","upcoming") update matches no row
+    };
+    await PATCH(patchReq({ result: "2nd of 12", finishPosition: 2 }), ctx("rh1"));
+    expect(raceUpdates()[0].values).toEqual({ manual_override: true });
   });
 
   it("does NOT set manual_override on a manual race (the poll never touches it)", async () => {
@@ -196,7 +216,20 @@ describe("PATCH /api/admin/race-horses/:id/result", () => {
       mutate: { single: { id: "r1" } },
     };
     await PATCH(patchReq({ result: "1st of 12", finishPosition: 1 }), ctx("rh1"));
-    expect(raceUpdate()?.values).not.toHaveProperty("manual_override");
+    expect(raceUpdates()).toHaveLength(1); // status transition only
+    expect(raceUpdates()[0].values).not.toHaveProperty("manual_override");
+  });
+
+  // Fail safe: if the source read errors we cannot tell api from manual, and a missing
+  // pin on an api race guarantees a double-count. The flag is inert on a manual race.
+  it("pins when the source read fails (fail-safe)", async () => {
+    seedHappyPath();
+    state.tables.race = {
+      select: { error: { message: "read boom" } },
+      mutate: { single: { id: "r1" } },
+    };
+    await PATCH(patchReq({ result: "1st of 12", finishPosition: 1 }), ctx("rh1"));
+    expect(raceUpdates()[0].values).toEqual({ manual_override: true });
   });
 
   // A horse that never left the barrier must not earn a career start. The guard is

@@ -70,12 +70,21 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   }
 
   // Attaching a runner by hand to an `api` race is a correction to feed-owned data, so
-  // pin it for the same reason the result path does: an unpinned race gets its runner
-  // set rewritten by the next poll, silently dropping this entry. Best-effort — the
-  // runner is already created and a failed pin must not turn a 201 into an error.
+  // pin it for the same reason the result path does: an unpinned race gets its runner set
+  // rewritten by the next poll, silently dropping this entry.
+  //
+  // The runner already exists, so a failed pin must not turn a 201 into an error — but it
+  // must not vanish either. Surface it in the response so the caller knows the entry is
+  // at risk rather than being told everything is fine.
+  let pinned: boolean | undefined;
   if (race.source === "api") {
-    await sb.from("race").update({ manual_override: true }).eq("id", id);
+    const { error: pinErr } = await sb
+      .from("race")
+      .update({ manual_override: true })
+      .eq("id", id);
+    pinned = !pinErr;
+    if (pinErr) console.error("[racing-manual] failed to pin api race %s: %s", id, pinErr.message);
   }
 
-  return created(data);
+  return created(pinned === false ? { ...data, pinned: false } : data);
 }

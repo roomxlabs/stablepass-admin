@@ -54,6 +54,43 @@ describe("POST /api/admin/races/:id/runners — attach a runner", () => {
     expect(r.status).toBe(401);
   });
 
+  // GUARDRAIL: attaching a runner by hand to a FEED race is a correction to feed-owned
+  // data. Unpinned, the next RF3 poll rewrites the runner set and silently drops this
+  // entry — the exact failure the pin exists to prevent.
+  const raceUpdates = () =>
+    state.calls.mutations.filter((m) => m.table === "race" && m.op === "update");
+
+  it("pins an api race with manual_override when a runner is attached", async () => {
+    asAdmin();
+    state.tables.race = { select: { single: { id: "r1", source: "api" } } };
+    state.tables.race_horse = { mutate: { single: { id: "rh1", race_id: "r1", horse_id: "h1" } } };
+    const r = await POST(postReq({ horseId: "h1" }), ctx("r1"));
+    expect(r.status).toBe(201);
+    expect(raceUpdates()).toHaveLength(1);
+    expect(raceUpdates()[0].values).toEqual({ manual_override: true });
+  });
+
+  it("does NOT pin a manual race (the poll never touches it)", async () => {
+    asAdmin();
+    state.tables.race = { select: { single: { id: "r1", source: "manual" } } };
+    state.tables.race_horse = { mutate: { single: { id: "rh1", race_id: "r1", horse_id: "h1" } } };
+    const r = await POST(postReq({ horseId: "h1" }), ctx("r1"));
+    expect(r.status).toBe(201);
+    expect(raceUpdates()).toHaveLength(0);
+  });
+
+  it("scopes the pin to this race only", async () => {
+    asAdmin();
+    state.tables.race = { select: { single: { id: "r1", source: "api" } } };
+    state.tables.race_horse = { mutate: { single: { id: "rh1", race_id: "r1", horse_id: "h1" } } };
+    await POST(postReq({ horseId: "h1" }), ctx("r1"));
+    // read + pin, both race/eq/id — count binds this to the pin (see races/[id] tests).
+    const raceIdFilters = state.calls.filters.filter(
+      (f) => f.table === "race" && f.op === "eq" && f.column === "id" && f.value === "r1",
+    );
+    expect(raceIdFilters).toHaveLength(2);
+  });
+
   // Manual rows must be indistinguishable downstream: entry_status='confirmed' is
   // what the race-day sweep and the pushes key off.
   it("attaches with entry_status='confirmed' → 201", async () => {

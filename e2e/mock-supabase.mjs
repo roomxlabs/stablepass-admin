@@ -98,8 +98,136 @@ function buildDb(seed) {
 }
 
 let DB = buildDb(TRAINER_SEED);
+// Analytics (ENG-276) shares the /__control empty toggle so one spec captures
+// both the populated and the empty (new-platform, all-zeros) states.
+let ANALYTICS_EMPTY = false;
 function setEmpty(empty) {
   DB = empty ? { trainer: [], horse: [], post: [], trainer_contact: [] } : buildDb(TRAINER_SEED);
+  ANALYTICS_EMPTY = empty;
+}
+
+// ---- Analytics fixtures (ENG-276 / A4) --------------------------------------
+// Seeded, fake data only. Shapes are the snake_case rows the A3 RPCs return
+// (see lib/analytics/queries.ts), NOT the camelCase response types.
+
+function isoDaysAgo(n) {
+  return new Date(Date.now() - n * 864e5).toISOString().slice(0, 10);
+}
+
+// 14 days of opens, with two race-day peaks matching the mockup's shape.
+const OPENS_BY_DAY = [
+  480, 620, 400, 730, 540, 940, 780, 460, 600, 380, 680, 560, 900, 720,
+].map((opens, i) => ({ day: isoDaysAgo(13 - i), opens }));
+
+// UTC hours. The screen buckets these into 12 two-hour AEST buckets, so the
+// 6-8am and 6-8pm AEST peaks live at UTC 20-21 and UTC 08-09.
+const OPENS_BY_HOUR = [
+  { hour: 20, opens: 820 }, { hour: 21, opens: 640 },
+  { hour: 8, opens: 940 }, { hour: 9, opens: 700 },
+  { hour: 22, opens: 500 }, { hour: 23, opens: 360 },
+  { hour: 0, opens: 440 }, { hour: 1, opens: 580 },
+  { hour: 2, opens: 660 }, { hour: 3, opens: 300 },
+  { hour: 12, opens: 140 }, { hour: 14, opens: 80 },
+];
+
+const TRAINER_ENGAGEMENT = [
+  { trainer_id: "t1", name: "Chris Waller", horses: 12, posts: 38, opens: 4120, reactions: 4882, saves: 964, website_clicks: 210 },
+  { trainer_id: "t2", name: "Peter Moody", horses: 6, posts: 24, opens: 2905, reactions: 3246, saves: 701, website_clicks: 146 },
+  { trainer_id: "t3", name: "Gai Waterhouse", horses: 4, posts: 17, opens: 1844, reactions: 2010, saves: 438, website_clicks: 98 },
+  { trainer_id: "t4", name: "Ciaron Maher", horses: 2, posts: 9, opens: 991, reactions: 1066, saves: 268, website_clicks: 34 },
+];
+
+const HORSE_ENGAGEMENT = [
+  { horse_id: "h1", name: "Mahogany", trainer_name: "Chris Waller", posts: 11, opens: 1682, reactions: 1913, saves: 402 },
+  { horse_id: "h2", name: "Black Caviar", trainer_name: "Peter Moody", posts: 8, opens: 1347, reactions: 1588, saves: 344 },
+  { horse_id: "h3", name: "Verry Elleegant", trainer_name: "Chris Waller", posts: 9, opens: 1120, reactions: 1204, saves: 287 },
+  { horse_id: "h4", name: "Anamoe", trainer_name: "Gai Waterhouse", posts: 6, opens: 846, reactions: 922, saves: 198 },
+];
+
+const TOP_POSTS = [
+  { post_id: "pa1", title: "Last fast gallop before Saturday", horse_name: "Mahogany", type: "video", opens: 598, reactions: 142, saves: 28 },
+  { post_id: "pa2", title: "Track session - three furlongs strong", horse_name: "Black Caviar", type: "photo", opens: 431, reactions: 89, saves: 19 },
+  { post_id: "pa3", title: "Routine day - barrier trial complete", horse_name: "Verry Elleegant", type: "voice", opens: 302, reactions: 56, saves: 11 },
+];
+
+const TRIALS_BY_MONTH = [
+  { month: "2026-02", started: 24, converted: 9 },
+  { month: "2026-03", started: 32, converted: 14 },
+  { month: "2026-04", started: 48, converted: 21 },
+  { month: "2026-05", started: 60, converted: 28 },
+  { month: "2026-06", started: 76, converted: 41 },
+  { month: "2026-07", started: 96, converted: 58 },
+];
+
+const CLICKS_BY_TRAINER = TRAINER_ENGAGEMENT.map((t) => ({
+  trainer_id: t.trainer_id, name: t.name, clicks: t.website_clicks, last_click: null,
+}));
+
+// Subscription rows for the trials list. `user` is the embedded select alias.
+// Fake members only — never real subscriber data.
+function trialSub(name, email, startedDaysAgo, endsInDays, status) {
+  return {
+    status,
+    created_at: new Date(Date.now() - startedDaysAgo * 864e5).toISOString(),
+    trial_ends_at: new Date(Date.now() + endsInDays * 864e5).toISOString(),
+    user: { name, email },
+  };
+}
+const TRIAL_SUBSCRIPTIONS = [
+  trialSub("Sarah Mitchell", "sarah.m@example.test", 26, 5, "trial"),
+  trialSub("Tom Nguyen", "tom.nguyen@example.test", 22, 9, "trial"),
+  trialSub("Rebecca Hartley", "bec.hartley@example.test", 14, 17, "trial"),
+  trialSub("David Okafor", "d.okafor@example.test", 5, 26, "trial"),
+  trialSub("Alex Reid", "alex.reid@example.test", 90, -60, "active"),
+  trialSub("Jo Bennett", "jo.bennett@example.test", 120, -90, "active"),
+];
+
+// Per-post screen fixtures, keyed by the top-post ids above.
+const POST_ANALYTICS_POSTS = [
+  {
+    id: "pa1",
+    title: "Last fast gallop before Saturday",
+    type: "video",
+    published_at: new Date(Date.now() - 4 * 864e5).toISOString(),
+    horse_id: "h1",
+    horse: { display_name: "Mahogany", racing_name: "Mahogany" },
+    trainer: { name: "Chris Waller", display_name: "Chris Waller" },
+  },
+];
+
+const POST_OPENS_BY_DAY = [312, 148, 74, 41, 23].map((opens, i) => ({
+  day: isoDaysAgo(4 - i),
+  opens,
+}));
+
+// Deliberately NOT the canonical set — the screen must render whatever the API
+// returns, since the final reaction set is still due from the client.
+const POST_REACTIONS = [
+  { emoji: "👍", count: 58 },
+  { emoji: "❤️", count: 39 },
+  { emoji: "👏", count: 21 },
+  { emoji: "🔥", count: 13 },
+  { emoji: "🐎", count: 7 },
+  { emoji: "💪", count: 3 },
+  { emoji: "🙏", count: 1 },
+];
+
+function analyticsRpc(fn) {
+  if (ANALYTICS_EMPTY) return [];
+  switch (fn) {
+    case "admin_opens_by_day": return OPENS_BY_DAY;
+    case "admin_opens_by_hour": return OPENS_BY_HOUR;
+    case "admin_trainer_engagement": return TRAINER_ENGAGEMENT;
+    case "admin_horse_engagement": return HORSE_ENGAGEMENT;
+    case "admin_top_posts": return TOP_POSTS;
+    case "admin_trials_by_month": return TRIALS_BY_MONTH;
+    case "admin_clicks_by_trainer": return CLICKS_BY_TRAINER;
+    case "admin_post_opens_by_day": return POST_OPENS_BY_DAY;
+    case "admin_post_reactions": return POST_REACTIONS;
+    default:
+      console.log(`[mock-supabase] unhandled rpc ${fn}`);
+      return [];
+  }
 }
 
 function corsHeaders() {
@@ -208,6 +336,75 @@ export function startMockSupabase() {
       }
       setEmpty(empty);
       sendJson(res, 200, { ok: true, empty });
+      return;
+    }
+
+    // ---- Analytics (ENG-276 / A4) -------------------------------------------
+    // These MUST stay ahead of the dashboard reads and the generic DB reader
+    // below: the dashboard's /rest/v1/subscription handler returns an empty
+    // list, and the generic reader shadows /rest/v1/post with trainer-shaped
+    // stubs (see .rx/gotchas.md). Each is discriminated by a query signature
+    // unique to the analytics reads so the other screens are untouched.
+
+    // Postgres RPCs (PostgREST serves them as POST /rest/v1/rpc/<name>). The
+    // base mock had no RPC handler at all, so these fell through to the
+    // catch-all `200 {}` and every chart rendered blank.
+    if (req.method === "POST" && url.pathname.startsWith("/rest/v1/rpc/")) {
+      const fn = url.pathname.slice("/rest/v1/rpc/".length);
+      sendJson(res, 200, analyticsRpc(fn));
+      return;
+    }
+
+    // Trials list: getTrials() selects trial_ends_at, which no other screen does.
+    if (
+      (req.method === "GET" || req.method === "HEAD") &&
+      url.pathname.startsWith("/rest/v1/subscription") &&
+      url.search.includes("trial_ends_at")
+    ) {
+      const rows = ANALYTICS_EMPTY ? [] : TRIAL_SUBSCRIPTIONS;
+      sendTable(res, req.method, rows, rows.length);
+      return;
+    }
+
+    // Per-post analytics reads the post by PK. Two traps here, both hit during
+    // this ticket:
+    //  1. The `id=eq.` filter must be ANCHORED — unanchored it also matches
+    //     `horse_id=eq.` (the posts library's horse filter) and hijacks it.
+    //  2. url.search is PERCENT-ENCODED, so `:` arrives as `%3A` and a raw
+    //     substring test for an embed alias never fires. Decode first.
+    // The select signature must also be analytics-only: `trainer:source_trainer_id`
+    // alone is shared with the posts library and the preview route, so key on
+    // the full `(name,display_name)` embed, which only this read uses.
+    // `.maybeSingle()` fetches as a LIST and enforces cardinality client side,
+    // so return exactly the one matching row (see .rx/gotchas.md).
+    const decodedSearch = decodeURIComponent(url.search);
+    if (
+      req.method === "GET" &&
+      url.pathname.startsWith("/rest/v1/post") &&
+      /[?&]id=eq\./.test(url.search) &&
+      decodedSearch.includes("trainer:source_trainer_id(name,display_name)")
+    ) {
+      const id = decodeURIComponent(url.search.match(/[?&]id=eq\.([^&]+)/)?.[1] ?? "");
+      const row = POST_ANALYTICS_POSTS.find((p) => p.id === id) ?? null;
+      const accept = req.headers["accept"] ?? "";
+      if (accept.includes("pgrst.object")) sendJson(res, 200, row);
+      else sendJson(res, 200, row ? [row] : []);
+      return;
+    }
+
+    // Saves + reach counts for the per-post screen (head:true count queries —
+    // the total rides Content-Range, so an absent header renders 0).
+    if ((req.method === "GET" || req.method === "HEAD") && url.search.includes("post_id=eq.")) {
+      if (url.pathname.startsWith("/rest/v1/bookmark")) {
+        sendTable(res, req.method, [], ANALYTICS_EMPTY ? 0 : 28);
+        return;
+      }
+    }
+    if (
+      (req.method === "GET" || req.method === "HEAD") &&
+      url.pathname.startsWith("/rest/v1/follow")
+    ) {
+      sendTable(res, req.method, [], ANALYTICS_EMPTY ? 0 : 204);
       return;
     }
 

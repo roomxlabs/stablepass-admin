@@ -75,4 +75,14 @@ describe("GET /api/admin/analytics/clicks", () => {
     expect(row).not.toHaveProperty("user_id");
     expect(row).not.toHaveProperty("email");
   });
+
+  it("500s with a generic message when an rpc errors (no schema/SQL leakage)", async () => {
+    asAdmin();
+    state.rpcs.admin_clicks_by_trainer = { error: { message: 'relation "trainer_website_click" does not exist' } };
+    const r = await GET(new Request("http://localhost/api/admin/analytics/clicks?period=7d"));
+    expect(r.status).toBe(500);
+    const j = await r.json();
+    expect(j.error.code).toBe("query_failed");
+    expect(JSON.stringify(j)).not.toMatch(/relation|does not exist/);
+  });
 });

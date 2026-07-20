@@ -93,4 +93,14 @@ describe("GET /api/admin/analytics/engagement", () => {
     const topPostsCall = state.calls.rpc.find((c) => c.name === "admin_top_posts");
     expect(topPostsCall?.args).toEqual({ p_since: null, p_limit: 10 });
   });
+
+  it("500s with a generic message when an rpc errors (no schema/SQL leakage)", async () => {
+    asAdmin();
+    state.rpcs.admin_trainer_engagement = { error: { message: 'relation "impression" does not exist' } };
+    const r = await GET(new Request("http://localhost/api/admin/analytics/engagement?period=7d"));
+    expect(r.status).toBe(500);
+    const j = await r.json();
+    expect(j.error.code).toBe("query_failed");
+    expect(JSON.stringify(j)).not.toMatch(/relation|does not exist/);
+  });
 });

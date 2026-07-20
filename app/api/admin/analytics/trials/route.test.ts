@@ -127,4 +127,14 @@ describe("GET /api/admin/analytics/trials", () => {
     expect(lines[0]).toBe("name,email,trial_start,trial_end,status");
     expect(lines[1]).toBe("Jo Bloggs,jo@example.com,2026-07-15T00:00:00.000Z,2026-08-01T00:00:00.000Z,trial");
   });
+
+  it("500s with a generic message when an rpc errors (no schema/SQL leakage)", async () => {
+    asAdmin();
+    state.rpcs.admin_trials_by_month = { error: { message: 'relation "subscription" does not exist' } };
+    const r = await GET(new Request("http://localhost/api/admin/analytics/trials"));
+    expect(r.status).toBe(500);
+    const j = await r.json();
+    expect(j.error.code).toBe("query_failed");
+    expect(JSON.stringify(j)).not.toMatch(/relation|does not exist/);
+  });
 });

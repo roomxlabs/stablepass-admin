@@ -114,4 +114,14 @@ describe("GET /api/admin/analytics/posts/:id", () => {
     expect(j.data.reach).toBe(0);
     expect(state.calls.from).not.toContain("follow");
   });
+
+  it("500s with a generic message when the post read errors (no schema/SQL leakage)", async () => {
+    asAdmin();
+    state.tables.post = { select: { error: { message: 'relation "post" does not exist' } } };
+    const r = await GET(new Request("http://localhost/api/admin/analytics/posts/p1"), ctx());
+    expect(r.status).toBe(500);
+    const j = await r.json();
+    expect(j.error.code).toBe("query_failed");
+    expect(JSON.stringify(j)).not.toMatch(/relation|does not exist/);
+  });
 });

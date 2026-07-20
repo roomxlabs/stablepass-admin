@@ -264,3 +264,30 @@ Extending the dispatcher gotcha above with what ENG-285 actually hit:
 `expect(page.locator(".horse-card-adm").first()).toBeVisible()` passed against 24 EMPTY cards for two
 epics. Assert content (a fixture name, the trainer, the expected row count), not just presence — and
 verify the assertion by mutation: break the mock deliberately, confirm the suite goes red, restore.
+## mock-supabase discriminators: ANCHOR the filter and DECODE the search (ENG-276)
+Two ways a new `/rest/v1/<table>` handler silently hijacks another screen, both hit on ENG-276:
+1. **Unanchored filter.** `url.search.includes("id=eq.")` is ALSO true for `horse_id=eq.` — so a
+   by-PK handler steals the posts library's horse-filtered list read (and its chip-count query), which
+   then renders empty with all-zero counts. Use `/[?&]id=eq\./` and extract with the same anchored
+   pattern, or the regex pulls the *horse* id out of `horse_id=eq.<uuid>`.
+2. **`url.search` is PERCENT-ENCODED.** A PostgREST embed alias arrives as `trainer%3Asource_trainer_id`,
+   so a raw `includes("trainer:source_trainer_id")` never fires and the handler is dead code — the read
+   falls through to the generic dispatcher and returns wrong-shaped rows. `decodeURIComponent(url.search)`
+   before any select-signature test.
+Also: an embed alias is rarely unique. `trainer:source_trainer_id` is used by the posts library, the
+posts API route, the preview route and dashboard queries; only the full `(name,display_name)` arg list
+is analytics-only. Grep every caller before keying on a select fragment.
+
+## Charts: hand-rolled inline SVG, no library — geometry belongs in a pure module
+ENG-276 built the analytics charts as inline SVG matching the mockups' 420x150 viewBox (grid at
+y=20/70/120, bars up from y=120, axis labels at y=136). Keep the maths in a pure `chart.ts`
+(`barLayout`/`lineLayout`/`axisTicks`) so it unit-tests without a DOM, and guard the two cases real
+data hits immediately: `max === 0` (a new platform) would make every ratio NaN, and an exact-zero bar
+should render height 0 — a hairline stub reads as real data. Axis labels must be SHORT: 12 labels on a
+420-unit viewBox clip at the edges, so put the long form in a `<title>` tooltip instead.
+
+## The analytics BFF has no prior-period query
+`getOpens/getEngagement/getClicks` take a single `since`; `getTrials()` takes none at all. So the
+mockup's "+18% vs prior 30 days" tile deltas are NOT computable, and Subscribers/On-trial are
+point-in-time counts that do not move with the period toggle. Don't fabricate a delta to match the
+mockup — label honestly ("as of today") and raise a follow-up for a prior-period query.

@@ -1,0 +1,221 @@
+/* Analytics screens (ENG-276) — 09-analytics.html + 10-post-analytics.html.
+ *
+ * Values are ported VERBATIM from the shared design system
+ * `06-stage1-design/mockups/web/style.css` plus the two screens' own <style>
+ * blocks. Scoped to this screen rather than added to globals.css: the shell
+ * subset in globals.css is shared by every (dash) screen, and editing it from a
+ * screen ticket collides with siblings (see .rx/gotchas.md).
+ */
+
+/* Cards ------------------------------------------------------------- */
+.adm-card {
+  background: var(--white);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  overflow: hidden;
+}
+.adm-card-head {
+  padding: 18px 22px;
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.adm-card-head h2 {
+  font-family: var(--font-serif);
+  font-size: 19px;
+  font-weight: 600;
+  margin: 0;
+  letter-spacing: -0.01em;
+}
+.adm-card-head .sub { color: var(--muted); font-size: 13px; margin-top: 2px; }
+
+/* Stat tiles -------------------------------------------------------- */
+.adm-stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin-bottom: 24px; }
+.adm-stat {
+  background: var(--white);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 18px 20px;
+}
+.adm-stat .label {
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.adm-stat .num {
+  font-family: var(--font-serif);
+  font-size: 30px;
+  font-weight: 600;
+  margin-top: 6px;
+  line-height: 1;
+  color: var(--ink);
+}
+.adm-stat .delta { font-size: 12px; color: var(--brand-green); margin-top: 4px; font-weight: 500; }
+/* 5 summary tiles on one row (adm-stats defaults to 4-up and orphans the 5th) */
+.adm-stats.five { grid-template-columns: repeat(5, 1fr); }
+
+/* Two-column grid --------------------------------------------------- */
+.adm-grid-2 { display: grid; grid-template-columns: 1.4fr 1fr; gap: 20px; }
+.adm-grid-2.even { grid-template-columns: 1fr 1fr; }
+.adm-mt { margin-top: 24px; }
+
+/* Pills -------------------------------------------------------------- */
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11.5px;
+  font-weight: 600;
+  padding: 3px 9px;
+  border-radius: 100px;
+  background: var(--cream-dark);
+  color: var(--muted);
+  letter-spacing: 0.02em;
+}
+.pill.amber { background: #FBF1D6; color: #8A6712; }
+
+/* Tables ------------------------------------------------------------- */
+.adm-table { width: 100%; border-collapse: collapse; table-layout: auto; }
+.adm-table th, .adm-table td {
+  text-align: left;
+  padding: 12px 14px;
+  font-size: 13px;
+  border-bottom: 1px solid var(--line);
+  vertical-align: middle;
+}
+.adm-table th:first-child, .adm-table td:first-child { padding-left: 22px; }
+.adm-table th:last-child, .adm-table td:last-child { padding-right: 22px; }
+.adm-table th {
+  background: var(--cream);
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+  border-bottom: 1px solid var(--line);
+}
+.adm-table tr:hover td { background: rgba(40, 93, 80, 0.025); }
+.adm-table td .row-thumb {
+  width: 36px;
+  height: 36px;
+  border-radius: 8px;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+.adm-table td .row-thumb img { width: 100%; height: 100%; object-fit: cover; }
+.adm-table td.with-thumb { display: flex; align-items: center; gap: 12px; }
+.adm-table td .row-name { font-weight: 500; font-size: 14px; }
+.adm-table td .row-sub { font-size: 12px; color: var(--muted); margin-top: 1px; }
+/* Right-aligned tabular numerics (09-analytics.html) */
+.adm-table td.num, .adm-table th.num { text-align: right; font-variant-numeric: tabular-nums; }
+.adm-table td .row-name a { color: inherit; text-decoration: none; }
+.adm-table td .row-name a:hover { color: var(--brand-green); }
+
+/* Empty states ------------------------------------------------------- */
+.adm-empty {
+  padding: 56px 22px;
+  text-align: center;
+  color: var(--muted);
+}
+.adm-empty h3 {
+  font-family: var(--font-serif);
+  font-size: 20px;
+  font-weight: 600;
+  color: var(--ink);
+  margin: 0 0 6px;
+}
+.adm-empty p { font-size: 13.5px; margin: 0; }
+/* Quiet in-card empty for a chart/series slot */
+.chart-empty {
+  padding: 38px 22px;
+  text-align: center;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+/* Period toggle ------------------------------------------------------ */
+.period-toggle {
+  display: inline-flex;
+  background: var(--white);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-pill);
+  padding: 3px;
+  gap: 2px;
+}
+.period-toggle a {
+  padding: 6px 14px;
+  border-radius: var(--radius-pill);
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--muted);
+  text-decoration: none;
+}
+.period-toggle a.active { background: var(--brand-green); color: var(--white); }
+
+/* Charts (hand-rolled inline SVG — no chart library) ------------------ */
+.chart-wrap { padding: 6px 18px 16px; }
+.chart { width: 100%; height: auto; display: block; }
+.chart .grid { stroke: var(--line); stroke-width: 1; }
+.chart .bar { fill: var(--brand-green); }
+.chart .bar:hover { fill: var(--brand-green-dark); }
+.chart .bar.peak { fill: var(--brand-green-darker); }
+.chart .trend {
+  fill: none;
+  stroke: var(--brand-green);
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.chart .trend-dot { fill: var(--brand-green); stroke: var(--cream); stroke-width: 2; }
+.chart .axis-label { font-family: var(--font-sans); font-size: 10px; fill: var(--muted); }
+.chart .value-label { font-family: var(--font-sans); font-size: 10.5px; font-weight: 600; fill: var(--ink); }
+.chart-note { font-size: 12px; color: var(--muted); padding: 0 18px 14px; }
+.chart-note.pad-top { padding-top: 12px; }
+.chart-note strong { color: var(--ink); font-weight: 600; }
+
+/* Compliance note pill (engagement-by-trainer footer) ------------------ */
+.aggregate-note {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11.5px;
+  color: var(--muted);
+  background: var(--cream-dark);
+  border-radius: var(--radius-pill);
+  padding: 4px 10px;
+}
+
+/* Per-post screen (10-post-analytics.html) ---------------------------- */
+.post-hero { display: flex; gap: 14px; align-items: center; padding: 16px 18px; }
+.post-hero .row-thumb {
+  width: 72px;
+  height: 54px;
+  border-radius: 10px;
+  overflow: hidden;
+  flex: none;
+  background: var(--cream-dark);
+}
+.post-hero .row-thumb img { width: 100%; height: 100%; object-fit: cover; }
+.post-hero h2 { font-family: var(--font-serif); font-size: 21px; margin: 0 0 3px; }
+.post-hero .meta { font-size: 13px; color: var(--muted); }
+
+.emoji-bars { padding: 4px 18px 16px; display: grid; gap: 9px; }
+.emoji-row { display: grid; grid-template-columns: 84px 1fr 44px; gap: 10px; align-items: center; }
+.emoji-row .lbl { font-size: 13px; color: var(--ink); }
+.emoji-row .track { height: 14px; background: var(--cream-dark); border-radius: 7px; overflow: hidden; }
+.emoji-row .fill { height: 100%; background: var(--brand-green); border-radius: 7px; }
+.emoji-row .val {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--ink);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.back-link { font-size: 13px; color: var(--brand-green); font-weight: 500; text-decoration: none; }
+
+/* Topbar action buttons sized per the mockups */
+.btn-sm { padding: 7px 14px; font-size: 12.5px; }
+.btn-md { padding: 8px 16px; font-size: 13.5px; }

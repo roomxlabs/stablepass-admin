@@ -17,8 +17,9 @@ export type FakeState = {
   user: { id: string; email?: string } | null;
   tables: Record<string, TableScript>;
   functions: Record<string, { data?: any; error?: any }>;
+  rpcs: Record<string, { data?: any; error?: any }>;
   storage: { signed?: { data?: any; error?: any } };
-  calls: { functions: { name: string; body: any }[]; or: string[]; from: string[] };
+  calls: { functions: { name: string; body: any }[]; or: string[]; from: string[]; rpc: { name: string; args: any }[] };
 };
 
 type Builder = {
@@ -94,6 +95,10 @@ export function makeFakeClient(state: FakeState) {
         return state.functions[name] ?? { data: { notificationsSent: 0 }, error: null };
       },
     },
+    rpc: async (name: string, args?: any) => {
+      state.calls.rpc.push({ name, args });
+      return state.rpcs[name] ?? { data: [], error: null };
+    },
     storage: {
       from: (bucket: string) => ({
         createSignedUploadUrl: async (path: string) =>
@@ -111,7 +116,8 @@ export function blankState(): FakeState {
     user: null,
     tables: {},
     functions: {},
+    rpcs: {},
     storage: {},
-    calls: { functions: [], or: [], from: [] },
+    calls: { functions: [], or: [], from: [], rpc: [] },
   };
 }

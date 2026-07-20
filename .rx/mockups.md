@@ -13,5 +13,7 @@ Design system: `mockups/web/style.css` (shared with member web).
 | Add horse | `web/admin/screens/07-add-horse.html` |
 | Trainers DB | `web/admin/screens/06-trainers.html` |
 | Add trainer | `web/admin/screens/08-add-trainer.html` |
+| Analytics (period toggle, opens/trials/engagement) | `web/admin/screens/09-analytics.html` |
+| Per-post analytics | `web/admin/screens/10-post-analytics.html` |
 
 Every FE ticket carries a confirmed mockup reference; flag any requirement with no backing mockup.

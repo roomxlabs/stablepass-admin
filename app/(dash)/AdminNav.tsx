@@ -11,6 +11,7 @@ type NavItem = { href: string; label: string; icon: IconName };
 // shell renders none rather than fake ones.
 const PRIMARY: NavItem[] = [
   { href: "/", label: "Dashboard", icon: "home" },
+  { href: "/analytics", label: "Analytics", icon: "search" },
   { href: "/compose", label: "Compose", icon: "play" },
   { href: "/posts", label: "Posts", icon: "bookmark" },
 ];

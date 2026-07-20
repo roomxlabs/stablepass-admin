@@ -17,6 +17,25 @@ test("horses list — populated", async ({ page }) => {
   await signIn(page);
   await page.goto("/horses");
   await expect(page.locator(".horse-card-adm").first()).toBeVisible({ timeout: 30000 });
+
+  // Assert CARD CONTENT, not just that a card exists. Visibility alone passed
+  // against a grid of 24 empty cards for the whole of ENG-178 → ENG-285: the
+  // mock was serving bare `{ trainer_id }` stubs and nothing noticed. These
+  // assertions fail if the horse reads ever fall back to stub rows again.
+  const first = page.locator(".horse-card-adm").first();
+  await expect(first).toContainText("Mahogany");
+  await expect(first).toContainText("Chris Waller");
+  // Real follower/post counts, not the `0 followers · 0 posts` of a stub row.
+  await expect(first).not.toContainText("Unassigned trainer");
+  await expect(first).not.toContainText("0 followers");
+
+  // The named fixture set is 8 horses (not the 24 trainer-roster stubs), and
+  // the filter chips derive their counts from the same rows.
+  await expect(page.locator(".horse-card-adm")).toHaveCount(8);
+  await expect(page.getByText("Verry Elleegant")).toBeVisible();
+  await expect(page.getByText("Black Caviar")).toBeVisible();
+  await expect(page.getByText("Winx")).toBeVisible();
+
   await page.screenshot({ path: "e2e/__screenshots__/05-horses-list.png", fullPage: true });
 });
 

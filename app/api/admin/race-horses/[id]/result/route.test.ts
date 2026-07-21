@@ -446,4 +446,99 @@ describe("PATCH /api/admin/race-horses/:id/result", () => {
     expect(keys).not.toContain("odds");
     expect(keys).not.toContain("wager");
   });
+
+  // ---- Error-guard coverage (ENG-325) ----------------------------------------
+  // The fake returns `data: pick().single ?? null`, so scripting an `error` alone
+  // ALSO yields `data: null` and the neighbouring `!row` clause would satisfy the
+  // assertion instead of the error clause. Every test below scripts BOTH a non-null
+  // row AND an error, so ONLY the error guard can produce the asserted response.
+
+  it("400s read_failed when the runner read errors, rather than a misleading 404 (guard runnerReadErr)", async () => {
+    seedHappyPath();
+    // No `mutate` script: the handler must return before the CAS, and the
+    // assertion below proves it.
+    state.tables.race_horse = {
+      select: {
+        single: { id: "rh1", race_id: "r1", horse_id: "h1", entry_status: "confirmed" },
+        error: { message: "runner read boom" },
+      },
+    };
+    const r = await PATCH(patchReq({ result: "1st of 12", finishPosition: 1 }), ctx("rh1"));
+    expect(r.status).toBe(400);
+    const body = await r.json();
+    expect(body.error.code).toBe("read_failed");
+    expect(body.error.message).toBe("runner read boom");
+    // The runner row IS resultable, so without the guard the handler would sail on
+    // and 200. Nothing may be written.
+    expect(state.calls.mutations).toEqual([]);
+  });
+
+  it("400s update_failed when finishing the race errors (guard raceErr)", async () => {
+    seedHappyPath();
+    // `source: 'manual'` with a clean select keeps the manual_override PIN branch
+    // untaken. The fake shares ONE `mutate` script per table, so with the pin in
+    // play this error would be attributable to the pin update instead.
+    state.tables.race = {
+      select: { single: { id: "r1", source: "manual" } },
+      mutate: { error: { message: "race finish boom" } },
+    };
+    const r = await PATCH(patchReq({ result: "1st of 12", finishPosition: 1 }), ctx("rh1"));
+    expect(r.status).toBe(400);
+    const body = await r.json();
+    expect(body.error.code).toBe("update_failed");
+    expect(body.error.message).toBe("race finish boom");
+    // Attribute the failure to the race-finish write specifically: it is the only
+    // race mutation captured, and it carries the status transition.
+    const raceMutations = state.calls.mutations.filter((m) => m.table === "race");
+    expect(raceMutations).toHaveLength(1);
+    expect(raceMutations[0].values).toMatchObject({ status: "finished" });
+    expect(horseUpdate()).toBeUndefined();
+  });
+
+  it("400s read_failed when the horse read errors, rather than a misleading 404 (guard horseReadErr)", async () => {
+    seedHappyPath();
+    // No `mutate` script: the handler must return before the counter write.
+    state.tables.horse = {
+      select: {
+        single: { starts: 4, wins: 1, places: 2, prize_money_cents: 500_000 },
+        error: { message: "horse read boom" },
+      },
+    };
+    const r = await PATCH(patchReq({ result: "1st of 12", finishPosition: 1 }), ctx("rh1"));
+    expect(r.status).toBe(400);
+    const body = await r.json();
+    expect(body.error.code).toBe("read_failed");
+    expect(body.error.message).toBe("horse read boom");
+    // Past the CAS, stopped before the counter write.
+    expect(runnerUpdate()).toBeDefined();
+    expect(horseUpdate()).toBeUndefined();
+  });
+
+  it("does NOT return 200 when the career-counter update errors (guard horseErr)", async () => {
+    seedHappyPath();
+    state.tables.horse = {
+      select: { single: { starts: 4, wins: 1, places: 2, prize_money_cents: 500_000 } },
+      mutate: { error: { message: "counter write boom" } },
+    };
+    const r = await PATCH(
+      patchReq({ result: "1st of 12", finishPosition: 1, prizeCents: 250_000 }),
+      ctx("rh1"),
+    );
+    // The runner is already flipped to 'ran' here. A 200 would strand the counters
+    // permanently: they are never decremented and the CAS 409s every retry.
+    expect(r.status).not.toBe(200);
+    expect(r.status).toBe(400);
+    const body = await r.json();
+    expect(body.error.code).toBe("update_failed");
+    expect(body.error.message).toBe("counter write boom");
+    // Attribute it to the counter write: the attempted horse UPDATE carries the
+    // incremented values.
+    expect(horseUpdate()?.values).toEqual({
+      starts: 5,
+      wins: 2,
+      places: 2,
+      prize_money_cents: 750_000,
+    });
+    expect(body.data).toBeUndefined();
+  });
 });

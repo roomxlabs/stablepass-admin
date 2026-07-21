@@ -124,4 +124,80 @@ describe("POST /api/admin/races — create a manual race", () => {
     expect(keys).not.toContain("bookmaker");
     expect(keys).not.toContain("wager");
   });
+
+  // ENG-326. This route has FOUR 400 branches that all return `validation_failed`, so a test
+  // asserting only status+code is theatre — it passes with the guard deleted (ENG-324's lesson).
+  // Assert the MESSAGE, which is the only discriminator.
+  it.each([
+    ["venue", { ...VALID, venue: "" }, /venue is required and cannot be blank/],
+    ["venue (whitespace-only)", { ...VALID, venue: "   " }, /venue is required and cannot be blank/],
+    ["raceDate", { ...VALID, raceDate: "" }, /raceDate is required and cannot be blank/],
+    ["raceDate (whitespace-only)", { ...VALID, raceDate: "  " }, /raceDate is required and cannot be blank/],
+    ["raceNumber", { ...VALID, raceNumber: "" }, /raceNumber is required and cannot be blank/],
+    ["raceNumber (whitespace-only)", { ...VALID, raceNumber: "   " }, /raceNumber is required and cannot be blank/],
+    // Regression guard (ENG-326 review): the ORIGINAL create route used a falsy check
+    // (`if (!b?.venue)`), which rejected these. Routing through the shared helper must not
+    // loosen that — venue and race_date are string columns and a JSON number/boolean/object
+    // there is junk, not a natural key.
+    ["venue (number 0)", { ...VALID, venue: 0 }, /venue is required and cannot be blank/],
+    ["venue (boolean false)", { ...VALID, venue: false }, /venue is required and cannot be blank/],
+    ["venue (number 7)", { ...VALID, venue: 7 }, /venue is required and cannot be blank/],
+    ["venue (object)", { ...VALID, venue: { a: 1 } }, /venue is required and cannot be blank/],
+    ["venue (array)", { ...VALID, venue: [] }, /venue is required and cannot be blank/],
+    ["raceDate (number 0)", { ...VALID, raceDate: 0 }, /raceDate is required and cannot be blank/],
+    ["raceDate (boolean false)", { ...VALID, raceDate: false }, /raceDate is required and cannot be blank/],
+    ["venue (null)", { ...VALID, venue: null }, /venue is required and cannot be blank/],
+    ["raceDate (null)", { ...VALID, raceDate: null }, /raceDate is required and cannot be blank/],
+    ["raceNumber (null)", { ...VALID, raceNumber: null }, /raceNumber is required and cannot be blank/],
+  ])("400s on a blank natural-key component: %s", async (_label, body, message) => {
+    asAdmin();
+    state.tables.race = { mutate: { single: { id: "r1" } } };
+    const r = await POST(postReq(body));
+    expect(r.status).toBe(400);
+    const j = await r.json();
+    expect(j.error.code).toBe("validation_failed");
+    expect(j.error.message).toMatch(message);
+    expect(state.calls.mutations.filter((m) => m.table === "race")).toHaveLength(0);
+  });
+
+  // Trimming is integrity, not cosmetics: "  Rosehill  " and "Rosehill" are DISTINCT values
+  // under race_natural_key, so writing padding defeats dedup exactly the way a NULL does.
+  it("trims every natural-key string before the insert", async () => {
+    asAdmin();
+    state.tables.race = { mutate: { single: { id: "r1" } } };
+    const r = await POST(postReq({ venue: "  Rosehill  ", raceDate: "  2026-08-01  ", raceNumber: 5 }));
+    expect(r.status).toBe(201);
+    const insert = state.calls.mutations.find((m) => m.table === "race" && m.op === "insert");
+    expect(insert?.values).toMatchObject({
+      venue: "Rosehill",
+      race_date: "2026-08-01",
+      race_number: 5,
+    });
+  });
+
+  // The padded and the unpadded create must produce the SAME natural key — that identity is
+  // what lets the DB's unique index fire and return 409 instead of a second row.
+  it("a padded then an unpadded create collide on the natural key → 409, not two rows", async () => {
+    asAdmin();
+    state.tables.race = { mutate: { single: { id: "r1" } } };
+    const first = await POST(postReq({ venue: "  Rosehill  ", raceDate: "2026-08-01", raceNumber: 7 }));
+    expect(first.status).toBe(201);
+
+    // Script the DB's unique-violation for the second write. NB the fake cannot enforce
+    // uniqueness, so the 409 below is scripted, not proven — the load-bearing assertion is
+    // that BOTH inserts carry the IDENTICAL normalized key (checked at the end), which is
+    // what makes the real index fire. That assertion is the one that dies under the trim mutation.
+    state.tables.race = { mutate: { error: { code: "23505", message: "duplicate key" } } };
+    const second = await POST(postReq({ venue: "Rosehill", raceDate: "2026-08-01", raceNumber: 7 }));
+    expect(second.status).toBe(409);
+    expect((await second.json()).error.code).toBe("race_exists");
+
+    const inserts = state.calls.mutations.filter((m) => m.table === "race" && m.op === "insert");
+    expect(inserts).toHaveLength(2);
+    expect(inserts[0].values).toMatchObject({ venue: "Rosehill", race_date: "2026-08-01", race_number: 7 });
+    expect(inserts[1].values).toMatchObject({ venue: "Rosehill", race_date: "2026-08-01", race_number: 7 });
+    // Identical natural keys is the whole point: without the trim these differ and the DB
+    // would happily hold both rows.
+    expect(inserts[0].values).toEqual(inserts[1].values);
+  });
 });

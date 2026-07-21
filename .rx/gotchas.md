@@ -456,14 +456,26 @@ route already has four distinct 400 branches all returning `validation_failed`.
 (`expect(j.error.message).toMatch(/is required and cannot be blank/)`). It is the only discriminator.
 Mutation-test each guard individually and check the failure COUNT changes as expected — a mutation
 that kills fewer tests than you predicted is the tell (dropping the null clause killed 2, not 3).
+That "killed 2, not 3" count describes ENG-324's PRE-message-assertion draft; against the SHIPPED
+file (message assertions in place) the same mutation kills 3. Re-run it on HEAD and expect 3, not 2.
 
 ## Trimming a natural-key component is integrity, not cosmetics
 `race_natural_key UNIQUE (venue, race_date, race_number)`: `"  Rosehill  "` and `"Rosehill"` are
 distinct values, so storing padding defeats dedup exactly the way a NULL does. A guard that computes
 `v.trim()` only to test for blankness, then writes the untrimmed value, closes half the hole.
-→ Normalize server-side (`patch[column] = v.trim()`); never rely on the UI's own trim. Note the
-**create** route (`app/api/admin/races/route.ts:66`) still has this hole — `if (!b?.venue)` is a falsy
-check that lets `"   "` through and never trims. Same invariant, two implementations, will drift.
+→ Normalize server-side; never rely on the UI's own trim. The **create** route had the same hole —
+`if (!b?.venue)` was a falsy check that let `"   "` through and never trimmed (it was at
+`app/api/admin/races/route.ts:46` pre-ENG-326; cite the symbol, not a line number, which goes stale).
+ENG-326 closed the **blank/padding** case for both routes by extracting the invariant into
+`lib/racing/natural-key.ts` (`normalizeNaturalKeyValue`), so create and PATCH share ONE
+implementation instead of two that drift.
+Still OPEN (a duplicate row is creatable): **case** (`"rosehill"` vs `"Rosehill"`) and **zero-width
+space** U+200B, which `String.prototype.trim()` does NOT strip. NBSP U+00A0 IS stripped. Case-folding
+is a product decision (needs `citext` or a functional index) — do not read this entry as "the natural
+key is now airtight".
+Also open: PATCH still accepts a NON-STRING natural-key component (`{venue: 0}` writes `0`), because
+ENG-324 shipped the type-tolerant form and ENG-326 kept it to stay in scope. Create rejects them via
+`normalizeNaturalKeyValue(v, {stringOnly:true})`. Unify when something next touches PATCH.
 
 ## An `error` fixture in `supabase-fake` ALSO yields `data: null` — error-branch tests are not exclusive by default
 `single()`/`maybeSingle()` return `{ data: pick().single ?? null, error: pick().error ?? null }`. Script
@@ -486,3 +498,14 @@ apart. Do-this: steer the handler so only the write under test is reached (for t
 `select: { single: { source: "manual" } }` with no error keeps the pin branch untaken), AND assert the
 captured mutation, not just the status: `state.calls.mutations.filter(m => m.table === "race")` should
 have length 1 and carry `{ status: "finished" }`.
+
+## Mutation testing here needs `--no-cache` or it certifies guards that do not exist
+Vitest's transform cache is keyed on mtime with 1-second granularity, so a
+mutate → run → restore → mutate cycle completing inside the same second serves a STALE module.
+Three independent reviewers hit this on ENG-326 and it failed BOTH ways: one got a false GREEN
+(354/354 "passing" with the trim-before-write deleted — i.e. it certified a guard that was not
+there), another got phantom kills that inflated a mutation count from 4 to 6. Since this file
+elsewhere prescribes mutation-testing **by failure count**, that advice is unsafe as written.
+→ Always `npx vitest run --no-cache` for a mutation proof, or `rm -rf node_modules/.vite` between
+runs. Sanity-check the direction too: if a mutation you KNOW breaks the code reports green, suspect
+the cache before you believe the result.

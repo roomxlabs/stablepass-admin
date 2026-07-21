@@ -1,5 +1,6 @@
 import { requireAdmin } from "@/lib/auth/admin";
 import { ok, created, fail } from "@/lib/api/envelope";
+import { NATURAL_KEY, STRING_ONLY_COLUMNS, blankNaturalKeyMessage, normalizeNaturalKeyValue } from "@/lib/racing/natural-key";
 
 // Manual race override (RF6 / ENG-180). The Racing API feed (RF3) is the primary
 // source; these routes are the fallback for pre-API history, unmatched horses,
@@ -42,16 +43,25 @@ export async function POST(req: Request) {
   const { sb } = g;
 
   const b = await req.json().catch(() => ({}));
-  if (!b?.raceDate) return fail("validation_failed", "raceDate is required.", 400);
-  if (!b?.venue) return fail("validation_failed", "venue is required.", 400);
-  if (b?.raceNumber == null || b.raceNumber === "")
-    return fail("validation_failed", "raceNumber is required.", 400);
+
+  // Every natural-key component is required AND normalized before anything else. A falsy
+  // check (`if (!b?.venue)`) let "   " through untrimmed, so two "identical" races differing
+  // only by padding both inserted cleanly and the 409 below never fired. Shared with the PATCH
+  // route via lib/racing/natural-key.ts so the invariant has ONE implementation.
+  // NATURAL_KEY maps column -> the camelCase request field, so it is the ONLY list of the
+  // components; do not hand-roll a second one here or the two drift (which is this ticket).
+  const key: Record<string, unknown> = {};
+  for (const [column, field] of Object.entries(NATURAL_KEY)) {
+    const n = normalizeNaturalKeyValue(b?.[field], { stringOnly: STRING_ONLY_COLUMNS.has(column) });
+    if (!n.ok) return fail("validation_failed", blankNaturalKeyMessage(field), 400);
+    key[column] = n.value;
+  }
 
   // raceNumber MUST be a real integer. `Number("abc")` is NaN, which JSON-serialises
   // to null — and a NULL participates in no unique match, so an unvalidated value
   // would silently punch straight through the natural-key dedup this route exists to
   // enforce.
-  const raceNumber = Number(b.raceNumber);
+  const raceNumber = Number(key.race_number);
   if (!Number.isInteger(raceNumber) || raceNumber < 1)
     return fail("validation_failed", "raceNumber must be a positive integer.", 400);
 
@@ -63,8 +73,8 @@ export async function POST(req: Request) {
   const { data, error } = await sb
     .from("race")
     .insert({
-      venue: b.venue,
-      race_date: b.raceDate,
+      venue: key.venue,
+      race_date: key.race_date,
       race_number: raceNumber,
       race_class: b.raceClass ?? null,
       distance_m: distanceM,

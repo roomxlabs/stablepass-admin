@@ -1,5 +1,6 @@
 import { requireAdmin } from "@/lib/auth/admin";
 import { ok, noContent, fail } from "@/lib/api/envelope";
+import { NATURAL_KEY, blankNaturalKeyMessage, normalizeNaturalKeyValue } from "@/lib/racing/natural-key";
 
 // Correct / remove a race (RF6 / ENG-180). Works on BOTH `manual` and `api` rows.
 //
@@ -19,14 +20,6 @@ const FIELD_MAP: Record<string, string> = {
   distanceM: "distance_m",
   scheduledAt: "scheduled_at",
   status: "status",
-};
-
-// The components of `race_natural_key UNIQUE (venue, race_date, race_number)` — the only
-// thing guaranteeing one row per real race. Column → the camelCase field to name in errors.
-const NATURAL_KEY: Record<string, string> = {
-  venue: "venue",
-  race_date: "raceDate",
-  race_number: "raceNumber",
 };
 
 // PATCH /api/admin/races/:id — correct any field on any race.
@@ -58,10 +51,9 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
   // on the UI's own trim.
   for (const [column, field] of Object.entries(NATURAL_KEY)) {
     if (!(column in patch)) continue;
-    const v = patch[column];
-    if (v === null || v === undefined || (typeof v === "string" && v.trim() === ""))
-      return fail("validation_failed", `${field} is required and cannot be blank.`, 400);
-    if (typeof v === "string") patch[column] = v.trim();
+    const n = normalizeNaturalKeyValue(patch[column]);
+    if (!n.ok) return fail("validation_failed", blankNaturalKeyMessage(field), 400);
+    patch[column] = n.value;
   }
 
   // Same NaN-defeats-the-natural-key hazard as the create route.

@@ -82,11 +82,12 @@ describe("PATCH /api/admin/race-horses/:id/result", () => {
     expect(raceUpdate()?.values.status).toBe("finished");
     expect(raceUpdate()?.values.finished_at).toBeTruthy();
 
-    // 4 starts -> 5, a win, a place (top 3), prize accrues in cents.
+    // 4 starts -> 5, a win, prize accrues in cents. `places` does NOT move: wins and places
+    // are disjoint buckets (places = 2nd/3rd), so a win is not also a placing.
     expect(horseUpdate()?.values).toEqual({
       starts: 5,
       wins: 2,
-      places: 3,
+      places: 2,
       prize_money_cents: 750_000,
     });
 
@@ -346,6 +347,37 @@ describe("PATCH /api/admin/race-horses/:id/result", () => {
     const r = await PATCH(patchReq({ result: "3rd of 9", finishPosition: 3 }), ctx("rh1"));
     expect(r.status).toBe(200);
     expect(horseUpdate()?.values.places).toBe(3);
+  });
+
+  // places = 2nd/3rd only, per RF3. Wins and places are disjoint buckets, so 1st must NOT
+  // increment places — the whole boundary is pinned here so the rule cannot drift back to a
+  // top-3 reading without going red. Baseline is 4 starts / 1 win / 2 places.
+  it.each([
+    [1, { wins: 2, places: 2 }],
+    [2, { wins: 1, places: 3 }],
+    [3, { wins: 1, places: 3 }],
+    [4, { wins: 1, places: 2 }],
+  ])("counts a finish of %i into the right career bucket", async (finishPosition, expected) => {
+    seedHappyPath();
+    const r = await PATCH(patchReq({ result: `${finishPosition} of 12`, finishPosition }), ctx("rh1"));
+    expect(r.status).toBe(200);
+    expect(horseUpdate()?.values).toMatchObject({ starts: 5, ...expected });
+  });
+
+  // The UI posts finishPosition as a STRING (`RaceDetail.tsx` fills the draft from e.target.value),
+  // so the `Number()` at route.ts:46 is load-bearing: the bucket rule uses strict equality, and
+  // `"2" === 2` is false. Drop the coercion and every wins/places increment silently stops while
+  // the numeric tests above stay green. This pins the real wire shape.
+  it.each([
+    ["1", { wins: 2, places: 2 }],
+    ["2", { wins: 1, places: 3 }],
+    ["3", { wins: 1, places: 3 }],
+    ["4", { wins: 1, places: 2 }],
+  ])("buckets a string finishPosition of %s as the UI sends it", async (finishPosition, expected) => {
+    seedHappyPath();
+    const r = await PATCH(patchReq({ result: `${finishPosition} of 12`, finishPosition }), ctx("rh1"));
+    expect(r.status).toBe(200);
+    expect(horseUpdate()?.values).toMatchObject({ starts: 5, ...expected });
   });
 
   // A later runner on the same race must not rewrite finished_at.

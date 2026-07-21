@@ -433,3 +433,14 @@ indexes into the row — never iterate the row's own keys, or casing/nesting wal
 interactive sessions; the rx implement loop's whole contract is to land a ticket on a branch and open a
 PR (this repo already has agent-authored PRs, e.g. #18). Loop workers commit + push their own ticket
 branch and never merge. Don't stall a run on this line.
+
+## `places` counts 2nd/3rd ONLY — wins and places are disjoint buckets
+ENG-180 shipped `finishPosition <= 3`, reading "a win is also a placing" from the AU form convention.
+That is right for the vendor's `career_place_percent` but wrong for the integer triple: the form line
+renders "starts / wins / places", so counting a win in both double-reports it. RF3
+(`stablepass-be/.rx/specs/2026-07-20-racing-feed-rf3-poll-racing-api-design.md:33`) says "places =
+2nd/3rd", RF6's own spec defers to RF3's counter rules, and the merged e2e seed already encodes the
+exclusive rule — Black Caviar is `starts 25 / wins 25 / places 0`, impossible under a top-3 reading.
+Both RF3 and this route write the same `horse` rows, so a split rule corrupts careers by provenance and
+counters never decrement. The boundary (1st/2nd/3rd/4th) is pinned by an `it.each` in
+`app/api/admin/race-horses/[id]/result/route.test.ts`; reverting the rule goes red.

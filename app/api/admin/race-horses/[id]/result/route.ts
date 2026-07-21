@@ -168,8 +168,11 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
     .eq("status", "upcoming");
   if (raceErr) return fail("update_failed", raceErr.message, 400);
 
-  // Career counters — every recorded run is a start, 1st is a win, a top-3 finish is a
-  // place (AU form convention: a win is also a placing), prize money accrues in cents.
+  // Career counters — every recorded run is a start, 1st is a win, 2nd or 3rd is a place,
+  // prize money accrues in cents. Wins and places are disjoint buckets: the form line reads
+  // "starts / wins / places", so a win must not also count as a placing. This matches RF3
+  // (be `.rx/specs/2026-07-20-racing-feed-rf3-poll-racing-api-design.md`, "places = 2nd/3rd"),
+  // which this route's own spec defers to — the two write the same horse rows.
   const { data: horse, error: horseReadErr } = await sb
     .from("horse")
     .select("starts, wins, places, prize_money_cents")
@@ -185,7 +188,7 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
     .update({
       starts: (horse.starts ?? 0) + 1,
       wins: (horse.wins ?? 0) + (finishPosition === 1 ? 1 : 0),
-      places: (horse.places ?? 0) + (finishPosition != null && finishPosition <= 3 ? 1 : 0),
+      places: (horse.places ?? 0) + (finishPosition === 2 || finishPosition === 3 ? 1 : 0),
       prize_money_cents: (horse.prize_money_cents ?? 0) + prizeCents,
     })
     .eq("id", runner.horse_id);

@@ -464,3 +464,25 @@ distinct values, so storing padding defeats dedup exactly the way a NULL does. A
 → Normalize server-side (`patch[column] = v.trim()`); never rely on the UI's own trim. Note the
 **create** route (`app/api/admin/races/route.ts:66`) still has this hole — `if (!b?.venue)` is a falsy
 check that lets `"   "` through and never trims. Same invariant, two implementations, will drift.
+
+## An `error` fixture in `supabase-fake` ALSO yields `data: null` — error-branch tests are not exclusive by default
+`single()`/`maybeSingle()` return `{ data: pick().single ?? null, error: pick().error ?? null }`. Script
+only an `error` and you also get `data: null`, so the neighbouring `!row` clause (`if (!runner)`,
+`if (!horse)`) satisfies your assertion instead of the error clause — a test that passes while covering
+nothing. This burned TWO rounds on PR #22 before ENG-325 fixed it. Do-this: script **both**, so only the
+error clause can produce the response:
+```ts
+select: { single: { id: "r1", source: "manual" }, error: { message: "read boom" } },
+```
+Prove exclusivity behaviourally: delete only the NEIGHBOURING null-row guard and confirm your new test
+still passes. And mutation-check the guard itself (delete it → suite must go RED); a guard with no
+failing test on deletion is uncovered no matter how the test reads.
+
+## One `mutate` script per TABLE — a status-code assertion can be attributable to the wrong write
+`state.tables.<t>.mutate` is shared by every write to that table in the handler. The result route writes
+`race` twice (the `manual_override` pin at :126, then `status='finished'` at :164) and both fail as an
+identical `400 / update_failed / <same message>` — so response-level assertions alone cannot tell them
+apart. Do-this: steer the handler so only the write under test is reached (for the race-finish guard,
+`select: { single: { source: "manual" } }` with no error keeps the pin branch untaken), AND assert the
+captured mutation, not just the status: `state.calls.mutations.filter(m => m.table === "race")` should
+have length 1 and carry `{ status: "finished" }`.

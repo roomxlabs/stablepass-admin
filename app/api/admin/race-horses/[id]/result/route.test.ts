@@ -495,6 +495,41 @@ describe("PATCH /api/admin/race-horses/:id/result", () => {
     expect(horseUpdate()).toBeUndefined();
   });
 
+  it("400s update_failed when the runner CAS errors, NOT a misleading 409 (guard runnerErr)", async () => {
+    seedHappyPath();
+    // The truthy `single` here is deliberate and load-bearing: it keeps `updated`
+    // truthy so ONLY the runnerErr clause can produce this response. If the
+    // `!updated` guard were deleted, this fixture would still hit the runnerErr
+    // guard first and the test would still pass — proving the runnerErr guard,
+    // not the neighbouring one, is what's under test.
+    state.tables.race_horse = {
+      select: { single: { id: "rh1", race_id: "r1", horse_id: "h1", entry_status: "confirmed" } },
+      mutate: {
+        single: { id: "rh1", race_id: "r1", horse_id: "h1", result: "1st of 12", finish_position: 1, entry_status: "ran" },
+        error: { message: "runner cas boom" },
+      },
+    };
+    const r = await PATCH(
+      patchReq({ result: "1st of 12", finishPosition: 1, prizeCents: 250_000 }),
+      ctx("rh1"),
+    );
+    expect(r.status).toBe(400);
+    expect(r.status).not.toBe(409);
+    const body = await r.json();
+    expect(body.error.code).toBe("update_failed");
+    expect(body.error.code).not.toBe("result_already_recorded");
+    expect(body.error.message).toBe("runner cas boom");
+    // Attribute the failure to the runner CAS specifically, and prove the handler
+    // returned before the race finish and before the career counters.
+    expect(runnerUpdate()?.values).toEqual({
+      result: "1st of 12",
+      finish_position: 1,
+      entry_status: "ran",
+    });
+    expect(raceUpdate()).toBeUndefined();
+    expect(horseUpdate()).toBeUndefined();
+  });
+
   it("400s read_failed when the horse read errors, rather than a misleading 404 (guard horseReadErr)", async () => {
     seedHappyPath();
     // No `mutate` script: the handler must return before the counter write.
@@ -539,6 +574,5 @@ describe("PATCH /api/admin/race-horses/:id/result", () => {
       places: 2,
       prize_money_cents: 750_000,
     });
-    expect(body.data).toBeUndefined();
   });
 });

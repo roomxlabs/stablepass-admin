@@ -135,17 +135,19 @@ describe("POST /api/admin/races — create a manual race", () => {
     ["raceDate (whitespace-only)", { ...VALID, raceDate: "  " }, /raceDate is required and cannot be blank/],
     ["raceNumber", { ...VALID, raceNumber: "" }, /raceNumber is required and cannot be blank/],
     ["raceNumber (whitespace-only)", { ...VALID, raceNumber: "   " }, /raceNumber is required and cannot be blank/],
-    // Regression guard (ENG-326 review): the ORIGINAL create route used a falsy check
-    // (`if (!b?.venue)`), which rejected these. Routing through the shared helper must not
-    // loosen that — venue and race_date are string columns and a JSON number/boolean/object
-    // there is junk, not a natural key.
-    ["venue (number 0)", { ...VALID, venue: 0 }, /venue is required and cannot be blank/],
-    ["venue (boolean false)", { ...VALID, venue: false }, /venue is required and cannot be blank/],
-    ["venue (number 7)", { ...VALID, venue: 7 }, /venue is required and cannot be blank/],
-    ["venue (object)", { ...VALID, venue: { a: 1 } }, /venue is required and cannot be blank/],
-    ["venue (array)", { ...VALID, venue: [] }, /venue is required and cannot be blank/],
-    ["raceDate (number 0)", { ...VALID, raceDate: 0 }, /raceDate is required and cannot be blank/],
-    ["raceDate (boolean false)", { ...VALID, raceDate: false }, /raceDate is required and cannot be blank/],
+    // venue and race_date are string columns, so a JSON number/boolean/object there is junk, not a
+    // natural key. Two different guarantees below (ENG-328 corrected the labels):
+    //   - `0` / `false` were rejected by the ORIGINAL falsy check (`if (!b?.venue)`) too, so these
+    //     are genuine regression guards: routing through the shared helper must not loosen create.
+    //   - `7` / `{}` / `[]` are TRUTHY, so the original check let them through to the insert.
+    //     These lock in a deliberate tightening, not previously-existing behaviour.
+    ["venue (number 0) — also rejected by the original falsy check", { ...VALID, venue: 0 }, /venue is required and cannot be blank/],
+    ["venue (boolean false) — also rejected by the original falsy check", { ...VALID, venue: false }, /venue is required and cannot be blank/],
+    ["venue (number 7) — truthy, so NEWLY rejected (deliberate tightening)", { ...VALID, venue: 7 }, /venue is required and cannot be blank/],
+    ["venue (object) — truthy, so NEWLY rejected (deliberate tightening)", { ...VALID, venue: { a: 1 } }, /venue is required and cannot be blank/],
+    ["venue (array) — truthy, so NEWLY rejected (deliberate tightening)", { ...VALID, venue: [] }, /venue is required and cannot be blank/],
+    ["raceDate (number 0) — also rejected by the original falsy check", { ...VALID, raceDate: 0 }, /raceDate is required and cannot be blank/],
+    ["raceDate (boolean false) — also rejected by the original falsy check", { ...VALID, raceDate: false }, /raceDate is required and cannot be blank/],
     ["venue (null)", { ...VALID, venue: null }, /venue is required and cannot be blank/],
     ["raceDate (null)", { ...VALID, raceDate: null }, /raceDate is required and cannot be blank/],
     ["raceNumber (null)", { ...VALID, raceNumber: null }, /raceNumber is required and cannot be blank/],

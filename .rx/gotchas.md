@@ -499,13 +499,29 @@ apart. Do-this: steer the handler so only the write under test is reached (for t
 captured mutation, not just the status: `state.calls.mutations.filter(m => m.table === "race")` should
 have length 1 and carry `{ status: "finished" }`.
 
-## Mutation testing here needs `--no-cache` or it certifies guards that do not exist
-Vitest's transform cache is keyed on mtime with 1-second granularity, so a
-mutate → run → restore → mutate cycle completing inside the same second serves a STALE module.
-Three independent reviewers hit this on ENG-326 and it failed BOTH ways: one got a false GREEN
-(354/354 "passing" with the trim-before-write deleted — i.e. it certified a guard that was not
-there), another got phantom kills that inflated a mutation count from 4 to 6. Since this file
-elsewhere prescribes mutation-testing **by failure count**, that advice is unsafe as written.
-→ Always `npx vitest run --no-cache` for a mutation proof, or `rm -rf node_modules/.vite` between
-runs. Sanity-check the direction too: if a mutation you KNOW breaks the code reports green, suspect
-the cache before you believe the result.
+## Always run a NEGATIVE CONTROL before you trust a mutation run
+A mutation harness that is silently broken reports confident garbage in **both** directions — it
+will tell you a guard is covered when it is not, and that a guard is missing when it is there.
+Neither result announces itself, so the only defence is a control.
+→ **Before trusting any mutation run: mutate something you KNOW is covered and confirm the expected
+tests die.** If they do not, stop — your harness is lying and every number from it is worthless.
+
+Concrete example of a harness producing garbage: a Python mutation driver written as
+`open(p,"w").write(open(p).read().replace(...))` **truncates the file before it reads it**, because
+the `"w"` open is evaluated first. Every "mutation" then runs against an EMPTY file. One run of this
+reported everything killed, the next reported everything survived; both sets were fiction, and it was
+caught only by a negative control. Read the file, transform in memory, then write — never open for
+write in the same expression that reads.
+
+On vitest's transform cache specifically: it is keyed on mtime with 1-second granularity, so in
+principle a mutate → run → restore → mutate cycle completing inside the same second could serve a
+stale module. Treat this as a possibility, not an established mechanism. ENG-326 reported hitting it
+both ways (a false green, and phantom kills inflating a mutation count). ENG-328 then tried to
+reproduce it directly, with three consecutive same-second mutate→run cycles on
+`lib/racing/natural-key.ts` with the trim deleted and no `--no-cache`, and **all three correctly
+went red**, identical to the `--no-cache` run. So the report stands on the record but the mechanism
+is unconfirmed, which is exactly why the harness is the first thing to suspect. `--no-cache` remains
+a cheap belt-and-braces option (or `rm -rf node_modules/.vite` between runs), but it is not a
+known-necessary workaround here.
+→ Order of suspicion: **if a mutation you KNOW breaks the code reports green, suspect your harness
+first, then the cache.**

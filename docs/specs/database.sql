@@ -222,6 +222,10 @@ create table race (
     racing_api_ref  text,                                                    -- feed ref for the event; null while manual
     source          text        not null default 'manual'
                         check (source in ('manual','api')),
+    -- RF1 (ENG-293, stablepass-be migration 20260720120000_racing_feed.sql):
+    -- set true when a human corrects a feed row, so the RF3 poll stops
+    -- overwriting it and the correction sticks. Server-owned; never client-set.
+    manual_override boolean     not null default false,
     finished_at     timestamptz,                                             -- set when the race concludes
     created_at      timestamptz not null default now(),
     -- dedup key for the horse-first find-or-create (nulls don't dedup):
@@ -242,6 +246,16 @@ create table race_horse (
     result          text,                                                    -- free text, e.g. "2nd of 12"; null until run
     finish_position integer,                                                 -- optional numeric placing
     racing_api_ref  text,                                                    -- per-runner feed match (via horse.racing_api_id)
+    -- RF1 (ENG-293, stablepass-be migration 20260720120000_racing_feed.sql):
+    -- the runner lifecycle. Only 'confirmed'/'nominated' may be given a result
+    -- (a scratched horse never ran, so it must not earn a career start).
+    -- NOTE: the default below comes from ENG-313
+    -- (20260720120002_race_horse_entry_status_default.sql), NOT the RF1 migration cited
+    -- above — RF1 declares 'confirmed'. ENG-313 flipped it to the fail-safe direction so
+    -- an unset value cannot mean "confirmed, safe to push".
+    entry_status    text        not null default 'nominated'
+                        check (entry_status in
+                            ('nominated','confirmed','ran','scratched','not_accepted')),
     created_at      timestamptz not null default now(),
     constraint race_horse_unique unique (race_id, horse_id)                  -- a horse runs once per race
 );

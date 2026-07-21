@@ -23,6 +23,8 @@ const LIBRARY: NavItem[] = [
   // is outside this ticket's surface and is a shared file the responsive epic
   // also touches. Swap in a dedicated glyph when that lands.
   { href: "/racing-matches", label: "Racing matches", icon: "horseHead" },
+  // RF6 (ENG-180). The manual fallback, listed after the primary feed flow.
+  { href: "/racing-manual", label: "Manual races", icon: "bookmark" },
 ];
 
 function isActive(pathname: string, href: string): boolean {

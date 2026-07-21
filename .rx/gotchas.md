@@ -328,6 +328,62 @@ the other epic (5.4k lines). Run `git merge-base --is-ancestor origin/feature/<o
 `git log --oneline origin/main..HEAD` before opening a gate PR, and put the merge-order call at the
 TOP of the body. `git diff --stat` alone will badly mislead you about what a gate PR contains.
 
+## `docs/specs/database.sql` lags migrations that land in stablepass-be
+Migrations live in **stablepass-be**, not here; this file is a hand-maintained copy, so
+it goes stale the moment a BE migration merges. RF1 (ENG-293) added `race.manual_override`,
+`race_horse.entry_status` (CHECK `nominated|confirmed|ran|scratched|not_accepted`), the
+`horse_match_proposal` table and `race_update` on `notification.type` — none of which were
+reflected here until ENG-180 backfilled the two race columns. Symptom: three independent
+reviewers all called a correct diff a blocker ("column does not exist"), because the doc is
+the only schema evidence in this repo and `lib/testing/supabase-fake.ts` returns whatever a
+test scripts, so column names are unfalsifiable locally. Do-this: before building against a
+column, check the be repo's `supabase/migrations/` — not just this file — and backfill this
+file in the same PR when you find drift.
+
+## Assert scoped writes through `calls.filters` — a green test is not proof of a guard
+`makeFakeClient` records **both** halves of a write: `calls.mutations` captures
+insert/update/delete payloads as `{table, op, values}`, and `calls.filters` captures every
+`eq/neq/is/in` as `{table, op, column, value}`. Both arrived with ENG-296 (RF4); an earlier
+draft of ENG-180 shipped a `mutations`-only version keyed on `payload`, and the RF4/RF6
+integrate merge adopted RF4's as canonical.
+
+This matters because `eq/in` are otherwise no-ops in the fake, so a compare-and-swap or a
+scoped delete is **invisible** to a test that only checks the mutation. ENG-180 shipped
+exactly that hole: deleting both `.in("entry_status", RESULTABLE)` and
+`.eq("status","upcoming")` from the result route left the whole suite green, and so did
+removing `.eq("id", …)` from a `race` delete that would otherwise wipe every race.
+
+Do this: for any write whose **scope predicate is load-bearing** — an idempotency guard, a
+row-targeting `.eq("id", …)`, a status gate — assert the predicate itself:
+
+```js
+expect(state.calls.filters).toContainEqual({
+  table: "race_horse", op: "in", column: "entry_status", value: ["confirmed", "nominated"],
+});
+```
+
+**`toContainEqual` is only safe when the predicate is UNIQUE in the route.** `calls.filters`
+is a flat list with no statement association, so if the same table+column is also filtered
+by a *read* earlier in the handler, the read alone satisfies the assertion and it proves
+nothing about the write. This bit ENG-180 twice — the horse counter update and the race
+delete both sit behind a read on the same id, and in both cases deleting the write's
+predicate (which in production updates every horse / deletes every race) left the suite
+green. Count instead:
+
+```js
+const f = state.calls.filters.filter(
+  (x) => x.table === "race" && x.op === "eq" && x.column === "id" && x.value === "r1",
+);
+expect(f).toHaveLength(2); // read + delete
+```
+
+Then prove it by mutation: delete the predicate from the route and confirm the test goes RED.
+A guardrail test nobody has seen fail is not evidence — and one that stays green under the
+mutation it was written for is worse than none, because it reads as coverage.
+
+(The real fix is a monotonic statement `seq` on both `calls.filters` and `calls.mutations`
+so predicates bind to their statement. That is a shared-surface change to
+`lib/testing/supabase-fake.ts`; worth a ticket rather than a drive-by.)
 ## Nav items live in `AdminNav.tsx`, NOT `layout.tsx` — ticket surfaces say otherwise
 Every grilled ticket that adds a screen declares `app/(dash)/layout.tsx — nav entry append only`, but
 `layout.tsx` only renders `<AdminNav />`; the `PRIMARY`/`LIBRARY` `NavItem[]` arrays live in
@@ -377,3 +433,14 @@ indexes into the row — never iterate the row's own keys, or casing/nesting wal
 interactive sessions; the rx implement loop's whole contract is to land a ticket on a branch and open a
 PR (this repo already has agent-authored PRs, e.g. #18). Loop workers commit + push their own ticket
 branch and never merge. Don't stall a run on this line.
+
+## `places` counts 2nd/3rd ONLY — wins and places are disjoint buckets
+ENG-180 shipped `finishPosition <= 3`, reading "a win is also a placing" from the AU form convention.
+That is right for the vendor's `career_place_percent` but wrong for the integer triple: the form line
+renders "starts / wins / places", so counting a win in both double-reports it. RF3
+(`stablepass-be/.rx/specs/2026-07-20-racing-feed-rf3-poll-racing-api-design.md:33`) says "places =
+2nd/3rd", RF6's own spec defers to RF3's counter rules, and the merged e2e seed already encodes the
+exclusive rule — Black Caviar is `starts 25 / wins 25 / places 0`, impossible under a top-3 reading.
+Both RF3 and this route write the same `horse` rows, so a split rule corrupts careers by provenance and
+counters never decrement. The boundary (1st/2nd/3rd/4th) is pinned by an `it.each` in
+`app/api/admin/race-horses/[id]/result/route.test.ts`; reverting the rule goes red.

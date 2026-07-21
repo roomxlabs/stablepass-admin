@@ -1,0 +1,185 @@
+import { describe, it, expect, beforeEach, vi } from "vitest";
+import { makeFakeClient, blankState, type FakeState } from "@/lib/testing/supabase-fake";
+
+const state: FakeState = blankState();
+
+vi.mock("@/lib/supabase/server", () => ({
+  supabaseServer: async () => makeFakeClient(state),
+}));
+
+import { GET, POST } from "./route";
+
+function asAdmin() {
+  state.user = { id: "u1" };
+  state.tables.app_user = { select: { single: { is_admin: true } } };
+}
+function asNonAdmin() {
+  state.user = { id: "u1" };
+  state.tables.app_user = { select: { single: { is_admin: false } } };
+}
+const ctx = (id: string) => ({ params: Promise.resolve({ id }) });
+const postReq = (body: unknown) =>
+  new Request("http://t", { method: "POST", body: JSON.stringify(body) });
+
+beforeEach(() => {
+  Object.assign(state, blankState());
+});
+
+describe("GET /api/admin/races/:id/runners", () => {
+  it("403s for a non-admin (guardrail)", async () => {
+    asNonAdmin();
+    const r = await GET(new Request("http://t"), ctx("r1"));
+    expect(r.status).toBe(403);
+  });
+
+  it("lists runners for an admin", async () => {
+    asAdmin();
+    state.tables.race_horse = { select: { rows: [{ id: "rh1", horse_id: "h1" }] } };
+    const r = await GET(new Request("http://t"), ctx("r1"));
+    expect(r.status).toBe(200);
+    expect((await r.json()).data).toHaveLength(1);
+  });
+});
+
+describe("POST /api/admin/races/:id/runners — attach a runner", () => {
+  it("403s for a non-admin (guardrail)", async () => {
+    asNonAdmin();
+    const r = await POST(postReq({ horseId: "h1" }), ctx("r1"));
+    expect(r.status).toBe(403);
+  });
+
+  it("401s with no session (guardrail)", async () => {
+    state.user = null;
+    const r = await POST(postReq({ horseId: "h1" }), ctx("r1"));
+    expect(r.status).toBe(401);
+  });
+
+  // GUARDRAIL: attaching a runner by hand to a FEED race is a correction to feed-owned
+  // data. Unpinned, the next RF3 poll rewrites the runner set and silently drops this
+  // entry — the exact failure the pin exists to prevent.
+  const raceUpdates = () =>
+    state.calls.mutations.filter((m) => m.table === "race" && m.op === "update");
+
+  it("pins an api race with manual_override when a runner is attached", async () => {
+    asAdmin();
+    state.tables.race = {
+      select: { single: { id: "r1", source: "api" } },
+      mutate: { single: { id: "r1" } }, // the pin proves it landed via .select()
+    };
+    state.tables.race_horse = { mutate: { single: { id: "rh1", race_id: "r1", horse_id: "h1" } } };
+    const r = await POST(postReq({ horseId: "h1" }), ctx("r1"));
+    expect(r.status).toBe(201);
+    expect(raceUpdates()).toHaveLength(1);
+    expect(raceUpdates()[0].values).toEqual({ manual_override: true });
+  });
+
+  it("does NOT pin a manual race (the poll never touches it)", async () => {
+    asAdmin();
+    state.tables.race = { select: { single: { id: "r1", source: "manual" } } };
+    state.tables.race_horse = { mutate: { single: { id: "rh1", race_id: "r1", horse_id: "h1" } } };
+    const r = await POST(postReq({ horseId: "h1" }), ctx("r1"));
+    expect(r.status).toBe(201);
+    expect(raceUpdates()).toHaveLength(0);
+  });
+
+  // The pin now runs BEFORE the insert, so a pin failure aborts with nothing mutated
+  // rather than a 201 carrying a `pinned:false` field the caller discards. A pin ERROR is
+  // 400 (update_failed); a silently-filtered pin is 409 (pin_failed). Assert the status AND
+  // that no runner was written — the point of the reorder is retryability.
+  it("400s and inserts nothing when the pin ERRORS", async () => {
+    asAdmin();
+    state.tables.race = {
+      // BOTH single and error: the fake draws `data` from `single` independently of
+      // `error`, so an error-only fixture also yields data:null and the !pinnedRow clause
+      // alone would satisfy this. Scripting a row leaves only `pinErr` able to fire.
+      select: { single: { id: "r1", source: "api" } },
+      mutate: { single: { id: "r1" }, error: { message: "pin boom" } },
+    };
+    state.tables.race_horse = { mutate: { single: { id: "rh1", race_id: "r1", horse_id: "h1" } } };
+    const r = await POST(postReq({ horseId: "h1" }), ctx("r1"));
+    expect(r.status).toBe(400);
+    expect(state.calls.mutations.some((m) => m.table === "race_horse")).toBe(false);
+  });
+
+  // The silent case: the race reads back fine but the pin matches zero rows and returns
+  // no error. `!pinErr` alone reported success here; only the .select() catches it.
+  it("409s and inserts nothing when the pin is silently filtered (zero rows, no error)", async () => {
+    asAdmin();
+    state.tables.race = {
+      select: { single: { id: "r1", source: "api" } },
+      mutate: { single: null }, // UPDATE matched nothing, error is null
+    };
+    state.tables.race_horse = { mutate: { single: { id: "rh1", race_id: "r1", horse_id: "h1" } } };
+    const r = await POST(postReq({ horseId: "h1" }), ctx("r1"));
+    expect(r.status).toBe(409);
+    expect((await r.json()).error.code).toBe("pin_failed");
+    expect(state.calls.mutations.some((m) => m.table === "race_horse")).toBe(false);
+  });
+
+  it("scopes the pin to this race only", async () => {
+    asAdmin();
+    state.tables.race = { select: { single: { id: "r1", source: "api" } } };
+    state.tables.race_horse = { mutate: { single: { id: "rh1", race_id: "r1", horse_id: "h1" } } };
+    await POST(postReq({ horseId: "h1" }), ctx("r1"));
+    // read + pin, both race/eq/id — count binds this to the pin (see races/[id] tests).
+    const raceIdFilters = state.calls.filters.filter(
+      (f) => f.table === "race" && f.op === "eq" && f.column === "id" && f.value === "r1",
+    );
+    expect(raceIdFilters).toHaveLength(2);
+  });
+
+  // Manual rows must be indistinguishable downstream: entry_status='confirmed' is
+  // what the race-day sweep and the pushes key off.
+  it("attaches with entry_status='confirmed' → 201", async () => {
+    asAdmin();
+    state.tables.race = { select: { single: { id: "r1" } } };
+    state.tables.race_horse = {
+      mutate: { single: { id: "rh1", race_id: "r1", horse_id: "h1", entry_status: "confirmed" } },
+    };
+    const r = await POST(postReq({ horseId: "h1", barrier: 4, jockey: "T. Berry" }), ctx("r1"));
+    expect(r.status).toBe(201);
+
+    const insert = state.calls.mutations.find((m) => m.table === "race_horse" && m.op === "insert");
+    expect(insert?.values).toMatchObject({
+      race_id: "r1",
+      horse_id: "h1",
+      barrier: 4,
+      jockey: "T. Berry",
+      entry_status: "confirmed",
+    });
+    expect((await r.json()).data.entry_status).toBe("confirmed");
+  });
+
+  it("400s without a horseId", async () => {
+    asAdmin();
+    const r = await POST(postReq({}), ctx("r1"));
+    expect(r.status).toBe(400);
+  });
+
+  it("404s when the race is missing", async () => {
+    asAdmin();
+    state.tables.race = { select: { single: null } };
+    const r = await POST(postReq({ horseId: "h1" }), ctx("r1"));
+    expect(r.status).toBe(404);
+  });
+
+  it("409s when the horse is already entered (a horse runs once per race)", async () => {
+    asAdmin();
+    state.tables.race = { select: { single: { id: "r1" } } };
+    state.tables.race_horse = { mutate: { error: { code: "23505", message: "duplicate key" } } };
+    const r = await POST(postReq({ horseId: "h1" }), ctx("r1"));
+    expect(r.status).toBe(409);
+    expect((await r.json()).error.code).toBe("runner_exists");
+  });
+
+  it("never writes an odds or betting field (guardrail §6)", async () => {
+    asAdmin();
+    state.tables.race = { select: { single: { id: "r1" } } };
+    state.tables.race_horse = { mutate: { single: { id: "rh1" } } };
+    await POST(postReq({ horseId: "h1", odds: "3.20", bookmaker: "x" }), ctx("r1"));
+    const insert = state.calls.mutations.find((m) => m.table === "race_horse" && m.op === "insert");
+    const keys = Object.keys(insert?.values ?? {});
+    expect(keys).not.toContain("odds");
+    expect(keys).not.toContain("bookmaker");
+  });
+});

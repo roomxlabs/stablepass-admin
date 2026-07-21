@@ -444,3 +444,23 @@ exclusive rule — Black Caviar is `starts 25 / wins 25 / places 0`, impossible 
 Both RF3 and this route write the same `horse` rows, so a split rule corrupts careers by provenance and
 counters never decrement. The boundary (1st/2nd/3rd/4th) is pinned by an `it.each` in
 `app/api/admin/race-horses/[id]/result/route.test.ts`; reverting the rule goes red.
+
+## A new validation guard sharing an error code with an existing branch needs a MESSAGE assertion
+ENG-324 added a natural-key null/blank guard to `PATCH /races/:id` and tested it with
+`expect(r.status).toBe(400)` + `expect(j.error.code).toBe("validation_failed")` +
+`expect(raceUpdate()).toBeUndefined()`. All three assertions passed **with the new guard deleted**:
+`Number(null)` and `Number("")` are both `0`, so the pre-existing `n < 1` branch returns the same
+status, the same code, and also writes nothing. Two of the eight cases were pure theatre, and the
+route already has four distinct 400 branches all returning `validation_failed`.
+→ When a route has several branches sharing one error code, assert the **message**
+(`expect(j.error.message).toMatch(/is required and cannot be blank/)`). It is the only discriminator.
+Mutation-test each guard individually and check the failure COUNT changes as expected — a mutation
+that kills fewer tests than you predicted is the tell (dropping the null clause killed 2, not 3).
+
+## Trimming a natural-key component is integrity, not cosmetics
+`race_natural_key UNIQUE (venue, race_date, race_number)`: `"  Rosehill  "` and `"Rosehill"` are
+distinct values, so storing padding defeats dedup exactly the way a NULL does. A guard that computes
+`v.trim()` only to test for blankness, then writes the untrimmed value, closes half the hole.
+→ Normalize server-side (`patch[column] = v.trim()`); never rely on the UI's own trim. Note the
+**create** route (`app/api/admin/races/route.ts:66`) still has this hole — `if (!b?.venue)` is a falsy
+check that lets `"   "` through and never trims. Same invariant, two implementations, will drift.

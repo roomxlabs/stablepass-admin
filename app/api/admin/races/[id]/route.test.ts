@@ -111,6 +111,76 @@ describe("PATCH /api/admin/races/:id — correct a race", () => {
     expect(raceUpdate()).toBeUndefined();
   });
 
+  // ENG-324. The natural key (venue, race_date, race_number) is what makes race dedup
+  // work; a NULL component silently opts the row out of the UNIQUE constraint forever.
+  // Each case asserts the captured mutation — a bare status assertion here is
+  // attributable to the other 400 branches (see .rx/gotchas.md).
+  describe("natural-key fields reject null/blank (dedup integrity)", () => {
+    const cases: Array<[string, unknown]> = [
+      ["raceNumber null", { raceNumber: null }],
+      ["raceNumber empty string", { raceNumber: "" }],
+      ["venue null", { venue: null }],
+      ["venue empty string", { venue: "" }],
+      ["venue whitespace only", { venue: "   " }],
+      ["raceDate null", { raceDate: null }],
+      ["raceDate empty string", { raceDate: "" }],
+      ["raceDate whitespace only", { raceDate: "  " }],
+    ];
+
+    it.each(cases)("rejects %s with 400 and writes nothing", async (_label, body) => {
+      asAdmin();
+      state.tables.race = { select: { single: { source: "api" } } };
+      const r = await PATCH(patchReq(body), ctx("r1"));
+      expect(r.status).toBe(400);
+      const j = await r.json();
+      expect(j.error.code).toBe("validation_failed");
+      // Assert the MESSAGE, not just the code. `Number(null)` and `Number("")` are both 0,
+      // so the pre-existing `n < 1` branch also 400s on the raceNumber cases with the same
+      // code — those two cases would pass with this guard deleted. The message is the only
+      // thing that binds them to the natural-key guard.
+      expect(j.error.message).toMatch(/is required and cannot be blank/);
+      // And no UPDATE ever reached the race row.
+      expect(raceUpdate()).toBeUndefined();
+    });
+  });
+
+  // Padding defeats the unique index the same way a NULL does: "  Rosehill  " and
+  // "Rosehill" are distinct values, so two rows can exist for one real race.
+  it("normalizes a padded natural-key value before writing (dedup integrity)", async () => {
+    asAdmin();
+    state.tables.race = {
+      select: { single: { source: "manual" } },
+      mutate: { single: { id: "r1", venue: "Rosehill" } },
+    };
+    const r = await PATCH(patchReq({ venue: "  Rosehill  ", raceDate: " 2026-08-01 " }), ctx("r1"));
+    expect(r.status).toBe(200);
+    expect(raceUpdate()?.values).toMatchObject({ venue: "Rosehill", race_date: "2026-08-01" });
+  });
+
+  // Guard against over-correction: the fix must not break legitimate edits.
+  it("still accepts a legitimate raceNumber correction and still pins an `api` row", async () => {
+    asAdmin();
+    state.tables.race = {
+      select: { single: { source: "api" } },
+      mutate: { single: { id: "r1", race_number: 7, source: "api", manual_override: true } },
+    };
+    const r = await PATCH(patchReq({ raceNumber: 7 }), ctx("r1"));
+    expect(r.status).toBe(200);
+    expect(raceUpdate()?.values).toMatchObject({ race_number: 7, manual_override: true });
+  });
+
+  // distance_m is NOT part of the natural key — clearing it must stay legal.
+  it("still allows clearing the nullable distanceM", async () => {
+    asAdmin();
+    state.tables.race = {
+      select: { single: { source: "manual" } },
+      mutate: { single: { id: "r1", distance_m: null } },
+    };
+    const r = await PATCH(patchReq({ distanceM: null }), ctx("r1"));
+    expect(r.status).toBe(200);
+    expect(raceUpdate()?.values).toMatchObject({ distance_m: null });
+  });
+
   it("400s when no editable field is provided", async () => {
     asAdmin();
     const r = await PATCH(patchReq({ nonsense: 1 }), ctx("r1"));

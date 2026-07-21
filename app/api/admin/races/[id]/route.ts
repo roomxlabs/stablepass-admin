@@ -21,6 +21,14 @@ const FIELD_MAP: Record<string, string> = {
   status: "status",
 };
 
+// The components of `race_natural_key UNIQUE (venue, race_date, race_number)` — the only
+// thing guaranteeing one row per real race. Column → the camelCase field to name in errors.
+const NATURAL_KEY: Record<string, string> = {
+  venue: "venue",
+  race_date: "raceDate",
+  race_number: "raceNumber",
+};
+
 // PATCH /api/admin/races/:id — correct any field on any race.
 export async function PATCH(req: Request, { params }: { params: Promise<{ id: string }> }) {
   const g = await requireAdmin();
@@ -39,8 +47,25 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
   if ("status" in patch && !["upcoming", "finished"].includes(String(patch.status)))
     return fail("validation_failed", "status must be 'upcoming' or 'finished'.", 400);
 
+  // In Postgres a NULL participates in no unique match, so a single NULLed component
+  // permanently defeats `race_natural_key` for that row — and because correcting an `api`
+  // row also pins manual_override=true below, the row then becomes both unmatchable and
+  // unrecoverable from this app. Reject whenever the key was sent at all.
+  //
+  // Trimming is part of the same invariant, not cosmetics: "  Rosehill  " and "Rosehill"
+  // are DISTINCT values in the unique index, so storing padding defeats dedup exactly the
+  // way a NULL does. Normalize here (the server is the trust boundary) rather than relying
+  // on the UI's own trim.
+  for (const [column, field] of Object.entries(NATURAL_KEY)) {
+    if (!(column in patch)) continue;
+    const v = patch[column];
+    if (v === null || v === undefined || (typeof v === "string" && v.trim() === ""))
+      return fail("validation_failed", `${field} is required and cannot be blank.`, 400);
+    if (typeof v === "string") patch[column] = v.trim();
+  }
+
   // Same NaN-defeats-the-natural-key hazard as the create route.
-  if ("race_number" in patch && patch.race_number !== null) {
+  if ("race_number" in patch) {
     const n = Number(patch.race_number);
     if (!Number.isInteger(n) || n < 1)
       return fail("validation_failed", "raceNumber must be a positive integer.", 400);

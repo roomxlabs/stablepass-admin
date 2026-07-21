@@ -62,7 +62,10 @@ describe("POST /api/admin/races/:id/runners — attach a runner", () => {
 
   it("pins an api race with manual_override when a runner is attached", async () => {
     asAdmin();
-    state.tables.race = { select: { single: { id: "r1", source: "api" } } };
+    state.tables.race = {
+      select: { single: { id: "r1", source: "api" } },
+      mutate: { single: { id: "r1" } }, // the pin proves it landed via .select()
+    };
     state.tables.race_horse = { mutate: { single: { id: "rh1", race_id: "r1", horse_id: "h1" } } };
     const r = await POST(postReq({ horseId: "h1" }), ctx("r1"));
     expect(r.status).toBe(201);
@@ -79,18 +82,38 @@ describe("POST /api/admin/races/:id/runners — attach a runner", () => {
     expect(raceUpdates()).toHaveLength(0);
   });
 
-  // The runner already exists by the time the pin runs, so a pin failure must not turn a
-  // 201 into an error — but it must not vanish either. Without this test the whole error
-  // branch is uncovered: the other pin tests script no `mutate`, so pinErr is always null.
-  it("still 201s but reports pinned:false when the pin fails", async () => {
+  // The pin now runs BEFORE the insert, so a pin failure aborts with nothing mutated
+  // rather than a 201 carrying a `pinned:false` field the caller discards. A pin ERROR is
+  // 400 (update_failed); a silently-filtered pin is 409 (pin_failed). Assert the status AND
+  // that no runner was written — the point of the reorder is retryability.
+  it("400s and inserts nothing when the pin ERRORS", async () => {
     asAdmin();
-    state.tables.race = { select: { single: { id: "r1", source: "api" } } };
+    state.tables.race = {
+      // BOTH single and error: the fake draws `data` from `single` independently of
+      // `error`, so an error-only fixture also yields data:null and the !pinnedRow clause
+      // alone would satisfy this. Scripting a row leaves only `pinErr` able to fire.
+      select: { single: { id: "r1", source: "api" } },
+      mutate: { single: { id: "r1" }, error: { message: "pin boom" } },
+    };
     state.tables.race_horse = { mutate: { single: { id: "rh1", race_id: "r1", horse_id: "h1" } } };
-    // The race table's mutate script is the pin's result.
-    state.tables.race.mutate = { error: { message: "pin boom" } };
     const r = await POST(postReq({ horseId: "h1" }), ctx("r1"));
-    expect(r.status).toBe(201);
-    expect((await r.json()).data).toMatchObject({ id: "rh1", pinned: false });
+    expect(r.status).toBe(400);
+    expect(state.calls.mutations.some((m) => m.table === "race_horse")).toBe(false);
+  });
+
+  // The silent case: the race reads back fine but the pin matches zero rows and returns
+  // no error. `!pinErr` alone reported success here; only the .select() catches it.
+  it("409s and inserts nothing when the pin is silently filtered (zero rows, no error)", async () => {
+    asAdmin();
+    state.tables.race = {
+      select: { single: { id: "r1", source: "api" } },
+      mutate: { single: null }, // UPDATE matched nothing, error is null
+    };
+    state.tables.race_horse = { mutate: { single: { id: "rh1", race_id: "r1", horse_id: "h1" } } };
+    const r = await POST(postReq({ horseId: "h1" }), ctx("r1"));
+    expect(r.status).toBe(409);
+    expect((await r.json()).error.code).toBe("pin_failed");
+    expect(state.calls.mutations.some((m) => m.table === "race_horse")).toBe(false);
   });
 
   it("scopes the pin to this race only", async () => {

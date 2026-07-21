@@ -94,22 +94,50 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
     .select("source")
     .eq("id", runner.race_id)
     .maybeSingle();
-  // Unknown provenance => pin. Both a read ERROR and a null ROW mean we cannot tell 'api'
-  // from 'manual', and the null-row case is the dangerous one: an RLS SELECT policy
-  // FILTERS rather than erroring, so a regression yields {data: null, error: null} — an
-  // api race would slip through unpinned and double-count. Same hazard the runner read
-  // guards against above.
+  // Unknown provenance => pin. A read ERROR and a null ROW both mean we cannot tell 'api'
+  // from 'manual', and pinning a manual race is the cheap mistake: RF3 skips on
+  // `manual_override` regardless of source, so a wrong pin freezes a race visibly and a
+  // human can unstick it. An unpinned api race is silent counter corruption.
   //
-  // The cost of over-pinning is real but bounded: RF3's skip predicate is
-  // `manual_override = true` regardless of source, and its find-or-create dedups on
-  // (venue, race_date, race_number), so a wrongly-pinned MANUAL race is also frozen. That
-  // is a visible, human-fixable stall; an unpinned api race is silent corruption.
+  // The pin must PROVE it landed. `.update()` alone returns {error: null} when it matches
+  // zero rows, and zero rows is what RLS produces here.
+  //
+  // Two ways this UPDATE matches nothing, neither of which raises:
+  //   * the race was deleted between the source read above and this write.
+  //     race_horse_race_id_fkey is ON DELETE CASCADE, so the window is narrow — but the
+  //     runner row we already read would be gone too, and we would still proceed.
+  //   * a future RLS regression. `race` carries TWO permissive policies and they are not
+  //     symmetric — race_select_sub (SELECT, has_content_access) and race_all_admin (ALL,
+  //     is_admin) — so SELECT visibility is has_content_access OR is_admin while UPDATE
+  //     visibility is is_admin ALONE. Not reachable from THIS handler, since requireAdmin()
+  //     has already established is_admin; recorded because the asymmetry is real and the
+  //     next reader should not have to rediscover it.
+  //
+  // Either way `.update()` alone returns {error: null} on zero rows, so without the
+  // `.select()` the handler sails on to the counters and the push believing it pinned,
+  // and the next poll double-counts.
+  //
+  // ⚠ `.select("id")` below is load-bearing, NOT dead code. Without it supabase-js returns
+  // {data: null} even on a successful update, so `pinnedRow` is always null and every
+  // api/unknown-provenance result 409s — a total outage. The fake does not model
+  // `Prefer: return=representation`, so no test catches its removal (see ENG-321). Do not
+  // "simplify" it away.
   if (raceReadErr || !raceRow || raceRow.source === "api") {
-    const { error: pinErr } = await sb
+    const { data: pinnedRow, error: pinErr } = await sb
       .from("race")
       .update({ manual_override: true })
-      .eq("id", runner.race_id);
+      .eq("id", runner.race_id)
+      .select("id")
+      .maybeSingle();
     if (pinErr) return fail("update_failed", pinErr.message, 400);
+    // Refuse rather than record a result that the next poll would double-count. Nothing
+    // is mutated yet at this point, so the whole action stays retryable.
+    if (!pinnedRow)
+      return fail(
+        "pin_failed",
+        "Could not pin the race; refusing to record a result that could be double-counted.",
+        409,
+      );
   }
 
   // Compare-and-swap: the status scope on the UPDATE is the real idempotency guard.

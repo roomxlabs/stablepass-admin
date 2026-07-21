@@ -50,6 +50,46 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   if (raceErr) return fail("read_failed", raceErr.message, 400);
   if (!race) return fail("not_found", "Race not found.", 404);
 
+  // Pin BEFORE inserting the runner, mirroring the result path's ordering.
+  //
+  // Attaching a runner by hand to an `api` race is a correction to feed-owned data; left
+  // unpinned, the next RF3 poll rewrites the runner set and silently drops this entry.
+  // Pinning afterwards meant a failed pin could only be reported in the response body —
+  // and the sole caller (RaceDetail's `call()`) discards the body on 201, so the operator
+  // was told everything was fine while the entry was at risk. Pinning first turns that
+  // into a 409 with NOTHING mutated, which is retryable and actually visible.
+  //
+  // The `.select()` is what makes the failure detectable at all: a filtered UPDATE
+  // matches zero rows and returns no error, so `!pinErr` alone would report success.
+  //
+  // Cost of the reorder, stated plainly: a race pinned by a request whose insert then
+  // 23505s stays pinned with no runner attached, and NOTHING in this repo writes
+  // manual_override back to false — undoing it needs direct DB access. RaceDetail filters
+  // out already-attached horses, so a fresh page cannot hit it; a stale page or a
+  // concurrent RF3 insert can, and the operator sees "already entered" while the race has
+  // been frozen. Accepted because the other ordering's failure is worse: an unpinned api
+  // race silently double-counts career stats forever.
+  //
+  // ⚠ `.select("id")` below is load-bearing, NOT dead code. Without it supabase-js returns
+  // {data: null} even on a successful update, so `pinnedRow` is always null and every api
+  // attach 409s — a total outage. The fake does not model `Prefer: return=representation`,
+  // so no test catches its removal (see ENG-321). Do not "simplify" it away.
+  if (race.source === "api") {
+    const { data: pinnedRow, error: pinErr } = await sb
+      .from("race")
+      .update({ manual_override: true })
+      .eq("id", id)
+      .select("id")
+      .maybeSingle();
+    if (pinErr) return fail("update_failed", pinErr.message, 400);
+    if (!pinnedRow)
+      return fail(
+        "pin_failed",
+        "Could not pin the race; refusing to attach a runner the next poll would drop.",
+        409,
+      );
+  }
+
   const { data, error } = await sb
     .from("race_horse")
     .insert({
@@ -69,22 +109,5 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     return fail("insert_failed", error.message, 400);
   }
 
-  // Attaching a runner by hand to an `api` race is a correction to feed-owned data, so
-  // pin it for the same reason the result path does: an unpinned race gets its runner set
-  // rewritten by the next poll, silently dropping this entry.
-  //
-  // The runner already exists, so a failed pin must not turn a 201 into an error — but it
-  // must not vanish either. Surface it in the response so the caller knows the entry is
-  // at risk rather than being told everything is fine.
-  let pinned: boolean | undefined;
-  if (race.source === "api") {
-    const { error: pinErr } = await sb
-      .from("race")
-      .update({ manual_override: true })
-      .eq("id", id);
-    pinned = !pinErr;
-    if (pinErr) console.error("[racing-manual] failed to pin api race %s: %s", id, pinErr.message);
-  }
-
-  return created(pinned === false ? { ...data, pinned: false } : data);
+  return created(data);
 }

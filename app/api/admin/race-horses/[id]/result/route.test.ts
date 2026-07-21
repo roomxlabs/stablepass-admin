@@ -129,6 +129,12 @@ describe("PATCH /api/admin/race-horses/:id/result", () => {
       select: { single: { id: "rh1", race_id: "r1", horse_id: "h1", entry_status: "confirmed" } },
       mutate: { single: null },
     };
+    // Script the race explicitly: unscripted, the source read returns null and this test
+    // silently exercises the unknown-provenance pin branch it was never written for.
+    state.tables.race = {
+      select: { single: { id: "r1", source: "manual" } },
+      mutate: { single: { id: "r1" } },
+    };
     const r = await PATCH(patchReq({ result: "1st of 12", finishPosition: 1 }), ctx("rh1"));
     expect(r.status).toBe(409);
     expect((await r.json()).error.code).toBe("result_already_recorded");
@@ -200,18 +206,50 @@ describe("PATCH /api/admin/race-horses/:id/result", () => {
     expect(raceUpdates()[1].values).not.toHaveProperty("manual_override");
   });
 
-  // The case that made the pin its own statement: a feed race can already be 'finished'
-  // when the first manual result is recorded (partial feed, or a late RF4 match), and
-  // RaceDetail gates the Record control on entry_status alone — never on race status.
-  // The status transition matches zero rows there; the pin must still land.
-  it("pins an ALREADY-FINISHED api race even though the status transition matches nothing", async () => {
+  // NOTE: an "already-finished api race" test was removed here rather than kept as
+  // reassurance. It was inert — mutating its fixture's `status` to a bogus value left the
+  // whole suite green, because the route reads only `source` and the fake does not model
+  // `.eq("status","upcoming")` matching zero rows. Its assertions were a strict subset of
+  // the test above. Modelling that case needs filter-aware zero-row matching in
+  // supabase-fake (see ENG-321); a test that cannot fail is worse than none, because it
+  // reads as coverage.
+
+  // GUARDRAIL: `race` has TWO permissive policies — race_select_sub (has_content_access)
+  // and race_all_admin (is_admin) — so SELECT visibility is strictly BROADER than UPDATE
+  // visibility. The dangerous case is a race that reads back cleanly and whose pin is
+  // then silently filtered, returning zero rows with no error. Without proving the pin
+  // landed, the handler proceeds to the counters and the push, and the next poll
+  // double-counts.
+  //
+  // This is the VISIBLE-race instance and it is the one that matters: scripting the read
+  // as null instead conflates "race invisible" with "pin filtered", and a refusal
+  // narrowed to `!pinnedRow && !raceRow` would still pass that weaker test while
+  // reopening the hole for every visible api race.
+  it("409s when a VISIBLE api race's pin is silently filtered", async () => {
     seedHappyPath();
     state.tables.race = {
-      select: { single: { id: "r1", source: "api", status: "finished" } },
-      mutate: { single: null }, // the .eq("status","upcoming") update matches no row
+      select: { single: { id: "r1", source: "api" } }, // fully visible, provenance known
+      mutate: { single: null }, // ...but the UPDATE matches 0 rows, no error
     };
-    await PATCH(patchReq({ result: "2nd of 12", finishPosition: 2 }), ctx("rh1"));
-    expect(raceUpdates()[0].values).toEqual({ manual_override: true });
+    const r = await PATCH(patchReq({ result: "1st of 12", finishPosition: 1 }), ctx("rh1"));
+    expect(r.status).toBe(409);
+    expect((await r.json()).error.code).toBe("pin_failed");
+    expect(state.calls.mutations.some((m) => m.table === "race_horse")).toBe(false);
+    expect(state.calls.mutations.some((m) => m.table === "horse")).toBe(false);
+    expect(state.calls.functions).toHaveLength(0);
+  });
+
+  it("409s and mutates nothing when an INVISIBLE race's pin matches zero rows", async () => {
+    seedHappyPath();
+    state.tables.race = {
+      select: { single: null }, // row not visible → unknown provenance → pin
+      mutate: { single: null }, // ...and the pin itself matches nothing, no error
+    };
+    const r = await PATCH(patchReq({ result: "1st of 12", finishPosition: 1 }), ctx("rh1"));
+    expect(r.status).toBe(409);
+    expect((await r.json()).error.code).toBe("pin_failed");
+    expect(state.calls.mutations.some((m) => m.table === "race_horse")).toBe(false);
+    expect(state.calls.functions).toHaveLength(0);
   });
 
   it("does NOT set manual_override on a manual race (the poll never touches it)", async () => {
@@ -231,7 +269,11 @@ describe("PATCH /api/admin/race-horses/:id/result", () => {
   it("pins when the source read ERRORS (fail-safe)", async () => {
     seedHappyPath();
     state.tables.race = {
-      select: { error: { message: "read boom" } },
+      // BOTH single and error. The fake returns `data: pick().single ?? null`, so an
+      // error-only fixture also yields data:null and `!raceRow` alone satisfies the
+      // branch — leaving `raceReadErr` with zero exclusive coverage. Scripting a visible
+      // row means only the error clause can be what fires here.
+      select: { single: { id: "r1", source: "manual" }, error: { message: "read boom" } },
       mutate: { single: { id: "r1" } },
     };
     await PATCH(patchReq({ result: "1st of 12", finishPosition: 1 }), ctx("rh1"));

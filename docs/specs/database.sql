@@ -249,6 +249,10 @@ create table race_horse (
     -- RF1 (ENG-293, stablepass-be migration 20260720120000_racing_feed.sql):
     -- the runner lifecycle. Only 'confirmed'/'nominated' may be given a result
     -- (a scratched horse never ran, so it must not earn a career start).
+    -- NOTE: the default below comes from ENG-313
+    -- (20260720120002_race_horse_entry_status_default.sql), NOT the RF1 migration cited
+    -- above — RF1 declares 'confirmed'. ENG-313 flipped it to the fail-safe direction so
+    -- an unset value cannot mean "confirmed, safe to push".
     entry_status    text        not null default 'nominated'
                         check (entry_status in
                             ('nominated','confirmed','ran','scratched','not_accepted')),

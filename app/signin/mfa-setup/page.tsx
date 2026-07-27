@@ -71,8 +71,17 @@ export default async function MfaSetupPage() {
   //    library. The secret is shown once, here, to this admin's browser only:
   //    it is never logged, never persisted by this app, and never leaves the
   //    response.
+  //
+  //    `issuer` and `friendlyName` are what the admin's authenticator app shows
+  //    in its list. Without them GoTrue falls back to the site URL's host, so a
+  //    factor enrolled against a dev server reads "localhost:3000" — useless in
+  //    an app that already holds a dozen entries. Both are baked into the QR at
+  //    scan time, so changing them here only affects NEW enrolments; anyone who
+  //    already scanned keeps the old label until they re-enrol.
   const { data: enrolled, error: enrollError } = await sb.auth.mfa.enroll({
     factorType: "totp",
+    issuer: "StablePass Admin",
+    friendlyName: `StablePass Admin (${user.email})`,
   });
   // Guard the PAYLOAD, not just the error: a factor-cap rejection or any
   // proxy/mock that answers 200 with a body missing `totp` would otherwise

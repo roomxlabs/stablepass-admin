@@ -15,6 +15,11 @@ export type TableScript = {
 
 export type FakeState = {
   user: { id: string; email?: string } | null;
+  // Assurance level the fake session reports (ENG-370). requireAdmin() now
+  // requires aal2, so this defaults to "aal2" and every pre-existing route test
+  // keeps asserting what it was written to assert. Set it to "aal1" to drive
+  // the 403 `mfa_required` branch.
+  aal: "aal1" | "aal2";
   tables: Record<string, TableScript>;
   functions: Record<string, { data?: any; error?: any }>;
   rpcs: Record<string, { data?: any; error?: any }>;
@@ -84,7 +89,18 @@ function makeBuilder(state: FakeState, table: string): Builder {
 
 export function makeFakeClient(state: FakeState) {
   return {
-    auth: { getUser: async () => ({ data: { user: state.user }, error: null }) },
+    auth: {
+      getUser: async () => ({ data: { user: state.user }, error: null }),
+      // ENG-370: the admin gate reads the assurance level via Supabase's MFA
+      // API. Without this the gate's try/catch would see a TypeError and fail
+      // closed, 403-ing every route test.
+      mfa: {
+        getAuthenticatorAssuranceLevel: async () => ({
+          data: { currentLevel: state.aal, nextLevel: "aal2", currentAuthenticationMethods: [] },
+          error: null,
+        }),
+      },
+    },
     from: (table: string) => {
       state.calls.from.push(table);
       return makeBuilder(state, table);
@@ -114,6 +130,7 @@ export function makeFakeClient(state: FakeState) {
 export function blankState(): FakeState {
   return {
     user: null,
+    aal: "aal2",
     tables: {},
     functions: {},
     rpcs: {},

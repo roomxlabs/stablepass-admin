@@ -3,7 +3,33 @@
 // flow: password sign-in, getUser(), and the app_user.is_admin lookup.
 import http from "node:http";
 
-const FAKE_ACCESS_TOKEN = "fake-access-token";
+// getAuthenticatorAssuranceLevel() decodes session.access_token with auth-js's
+// decodeJWT(), which REQUIRES 3 base64url parts. A placeholder string throws
+// AuthInvalidJwtError. Signature is never verified client-side.
+const b64url = (o) => Buffer.from(JSON.stringify(o)).toString("base64url");
+function jwt(aal) {
+  return [
+    b64url({ alg: "HS256", typ: "JWT" }),
+    b64url({
+      sub: ADMIN_USER_ID, email: ADMIN_EMAIL, role: "authenticated",
+      aal, amr: aal === "aal2" ? [{ method: "password" }, { method: "totp" }] : [{ method: "password" }],
+      exp: Math.floor(Date.now() / 1000) + 3600,
+    }),
+    "sig",
+  ].join(".");
+}
+const ADMIN_USER_ID = "admin-0001";
+const ADMIN_EMAIL = "ops@stablepass.co";
+const AAL1_TOKEN = jwt("aal1");
+const AAL2_TOKEN = jwt("aal2");
+
+// Current AAL of the "logged in" session this mock is tracking. Reset to aal1
+// on every fresh password grant (POST /auth/v1/token) and on logout; bumped to
+// aal2 by a correct mfa.challengeAndVerify().
+let currentAal = "aal1";
+
+// Audit trail (ENG-370): the two RPCs lib/audit.ts writes through.
+const AUDIT_LOG = [];
 
 // NOTE: there is deliberately no standalone TRAINER_FIXTURES set. Every trainer
 // read is served from the DB built off TRAINER_SEED below, so the /__control
@@ -49,11 +75,26 @@ const ADMIN_USER = {
   identities: [],
   created_at: "2020-01-01T00:00:00Z",
   updated_at: "2020-01-01T00:00:00Z",
+  // mfa.listFactors() does NOT hit a separate endpoint — auth-js reads this
+  // straight off GET /auth/v1/user and buckets status==="verified" into `totp`.
+  factors: [
+    {
+      id: "factor-totp-1",
+      friendly_name: "Authenticator",
+      factor_type: "totp",
+      status: "verified",
+      created_at: "2020-01-01T00:00:00Z",
+      updated_at: "2020-01-01T00:00:00Z",
+    },
+  ],
 };
 
+// Session whose access_token reflects the CURRENT aal (module-level
+// `currentAal`), so getAuthenticatorAssuranceLevel()'s decodeJWT() sees a
+// claim consistent with where the flow actually is.
 function session() {
   return {
-    access_token: FAKE_ACCESS_TOKEN,
+    access_token: currentAal === "aal2" ? AAL2_TOKEN : AAL1_TOKEN,
     token_type: "bearer",
     expires_in: 3600,
     expires_at: Math.floor(Date.now() / 1000) + 3600,
@@ -327,6 +368,7 @@ export function startMockSupabase() {
     const rawBody = await drainBody(req);
 
     // Test control: flip the dataset between populated and empty for screenshots.
+    // Also clears the audit log so each spec starts from a clean slate.
     if (req.method === "POST" && url.pathname === "/__control") {
       let empty = false;
       try {
@@ -335,7 +377,52 @@ export function startMockSupabase() {
         empty = false;
       }
       setEmpty(empty);
+      AUDIT_LOG.length = 0;
       sendJson(res, 200, { ok: true, empty });
+      return;
+    }
+
+    // Test inspection: what has lib/audit.ts written so far.
+    // Clear the audit log WITHOUT touching the populated/empty fixture toggle,
+    // so an audit assertion can be made self-contained (assert on a delta)
+    // instead of depending on which sibling spec ran first.
+    if (req.method === "DELETE" && url.pathname === "/__audit") {
+      AUDIT_LOG.length = 0;
+      sendJson(res, 200, { ok: true });
+      return;
+    }
+
+    if (req.method === "GET" && url.pathname === "/__audit") {
+      sendJson(res, 200, AUDIT_LOG);
+      return;
+    }
+
+    // ---- Admin auth audit trail (ENG-370) -----------------------------------
+    // Both RPCs lib/audit.ts calls. MUST stay ahead of the generic
+    // /rest/v1/rpc/<name> dispatcher right below (same shadowing gotcha as the
+    // /rest/v1/<table> dispatcher further down — first-registered wins).
+    if (req.method === "POST" && url.pathname === "/rest/v1/rpc/log_admin_auth_event") {
+      let body = {};
+      try {
+        body = JSON.parse(rawBody || "{}");
+      } catch {
+        body = {};
+      }
+      AUDIT_LOG.push({ fn: "log_admin_auth_event", ...body });
+      res.writeHead(204, corsHeaders());
+      res.end();
+      return;
+    }
+    if (req.method === "POST" && url.pathname === "/rest/v1/rpc/log_admin_signin_fail") {
+      let body = {};
+      try {
+        body = JSON.parse(rawBody || "{}");
+      } catch {
+        body = {};
+      }
+      AUDIT_LOG.push({ fn: "log_admin_signin_fail", ...body });
+      res.writeHead(204, corsHeaders());
+      res.end();
       return;
     }
 
@@ -583,16 +670,54 @@ export function startMockSupabase() {
     }
 
     if (req.method === "POST" && url.pathname === "/auth/v1/token") {
+      let body = {};
+      try {
+        body = JSON.parse(rawBody || "{}");
+      } catch {
+        body = {};
+      }
+      // Exercises the failed-password path (app/signin/actions.ts's
+      // `error || !data.user` branch): GoTrue's real 400 shape for a bad grant.
+      if (body.password === "wrongpassword") {
+        sendJson(res, 400, { error: "invalid_grant", error_description: "Invalid login credentials" });
+        return;
+      }
+      // A fresh password grant always starts a session back at aal1, even if a
+      // previous test in this run upgraded it to aal2.
+      currentAal = "aal1";
       sendJson(res, 200, session());
       return;
     }
 
     if (req.method === "GET" && url.pathname === "/auth/v1/user") {
       const auth = req.headers["authorization"];
-      if (auth === `Bearer ${FAKE_ACCESS_TOKEN}`) {
+      if (auth === `Bearer ${AAL1_TOKEN}` || auth === `Bearer ${AAL2_TOKEN}`) {
         sendJson(res, 200, ADMIN_USER);
       } else {
         sendJson(res, 401, { code: 401, msg: "invalid token" });
+      }
+      return;
+    }
+
+    // mfa.challengeAndVerify({factorId, code}) — two calls, POST .../challenge
+    // then POST .../verify. factorId is unused (only one factor exists here).
+    if (req.method === "POST" && /^\/auth\/v1\/factors\/[^/]+\/challenge$/.test(url.pathname)) {
+      sendJson(res, 200, { id: "challenge-1", type: "totp", expires_at: Math.floor(Date.now() / 1000) + 300 });
+      return;
+    }
+    if (req.method === "POST" && /^\/auth\/v1\/factors\/[^/]+\/verify$/.test(url.pathname)) {
+      let body = {};
+      try {
+        body = JSON.parse(rawBody || "{}");
+      } catch {
+        body = {};
+      }
+      if (body.code === "123456") {
+        currentAal = "aal2";
+        sendJson(res, 200, session());
+      } else {
+        // GoTrue's real error shape for a bad TOTP code.
+        sendJson(res, 422, { code: 422, error_code: "mfa_verification_failed", msg: "Invalid TOTP code entered" });
       }
       return;
     }
@@ -608,6 +733,7 @@ export function startMockSupabase() {
     }
 
     if (req.method === "POST" && url.pathname === "/auth/v1/logout") {
+      currentAal = "aal1";
       res.writeHead(204, corsHeaders());
       res.end();
       return;

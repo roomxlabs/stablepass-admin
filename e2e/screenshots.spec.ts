@@ -16,7 +16,12 @@ test("admin can sign in and reach the gated dashboard shell", async ({ page }) =
   await page.goto("/signin");
   await page.locator("#email").fill("ops@stablepass.co");
   await page.locator("#password").fill("correcthorse");
-  await page.getByRole("button", { name: "Sign in" }).click();
+  await page.getByRole("button", { name: "Continue" }).click();
+
+  // ENG-370: sign-in is now two steps — password lands on /signin/mfa, not "/".
+  await page.waitForURL("http://127.0.0.1:3002/signin/mfa", { timeout: 30000 });
+  await page.locator("#code").fill("123456");
+  await page.getByRole("button", { name: "Verify" }).click();
 
   await page.waitForURL("http://127.0.0.1:3002/", { timeout: 30000 });
   await expect(page.locator(".admin-shell")).toBeVisible({ timeout: 30000 });

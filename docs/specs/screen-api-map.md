@@ -176,7 +176,7 @@ Derived from `docs/dev-handover/mockups/` (mobile · web · admin) against the A
 ---
 
 ## 🛠 Admin (`mockups/web/admin/index.html`) — included for completeness
-Gated: `is_admin` + login on `admin.stablepass.co` (no 2FA in this version).
+Gated: `is_admin` + login on `admin.stablepass.co`, **plus a TOTP second factor (ENG-370)** — sign-in is two steps (`/signin` password → `/signin/mfa` code) and every admin surface requires an `aal2` session.
 
 ### 01 · Sign in
 | Action | API | Status | Cov |

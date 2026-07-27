@@ -395,3 +395,61 @@ Two cross-cutting consequences to budget for when `lib/auth/admin.ts` gains a co
    against a POPULATED table (`lib/auth/admin-aal2-route.test.ts`), or the new branch is untested.
 2. Six e2e specs (`analytics/compose/dashboard/horses/posts/trainers`) each carry their own inline
    `signIn()` helper. Changing the sign-in flow or the submit button's label breaks all six at once.
+
+## `lib/audit.ts`'s `AdminAuthEvent` union omits `mfa_enrolled` (ENG-371)
+The file's own header reserves it ("`mfa_enrolled` is A2's") and the RPC's check constraint accepts
+it, but the exported union is only `signin_ok|signin_fail|mfa_ok|mfa_fail`. A2 could not edit
+`lib/audit.ts` (A1's surface), so it bridges with `const MFA_ENROLLED = "mfa_enrolled" as
+AdminAuthEvent` at the call site. Harmless — `logAdminAuthEvent` only forwards the string as
+`p_event`, no switch/exhaustiveness — but **widen the union** when A1's file is next touched, and
+don't "fix" the cast by writing a second audit wrapper.
+
+## Don't gate `/signin/mfa-setup` with `requireAdminPage()` — it redirects TO that route
+`requireAdminPage()` sends an AAL1 admin with `hasFactor === false` to `/signin/mfa-setup`, so using
+it to gate that page is an infinite redirect. The enrolment page must do the checks inline (no
+session → `/signin`; non-admin → `/signin?error=forbidden`; verified factor → `/` at aal2 or
+`/signin/mfa` at aal1). The A1↔A2 pair is loop-free because both key off `factors.totp` with
+opposite polarity, and A1's page only bounces back on a POSITIVE zero-factor read (`!error &&`).
+Same shape applies to any future "you must do X before continuing" screen the gate redirects to.
+
+## `lib/testing/supabase-fake.ts` defaults `aal` to `"aal2"` — and models no `auth.mfa.*`
+ENG-370 added `aal: "aal1"|"aal2"` defaulting to **"aal2"** so pre-existing route tests kept passing.
+Any test of an AAL1 path that forgets to set it exercises the wrong branch and passes for the wrong
+reason — set it explicitly. The fake also has no `mfa.enroll/unenroll/listFactors/challengeAndVerify`
+and no `signOut`, so MFA-flow tests hand-roll their own `vi.mock("@/lib/supabase/server")` (see
+`app/signin/mfa/actions.test.ts` and `app/signin/mfa-setup/*.test.ts`).
+
+## A query-builder mock that swallows its arguments cannot see an IDOR
+`from: () => ({select: () => ({eq: () => ({single: ...})})})` makes `.eq("id", user.id)` and
+`.eq("id", "anyone-else")` indistinguishable — a self-review mutation to a stranger's row left the
+suite fully green. Record the filter (`state.reads.push(`${table}.${col}=${val}`)`) and assert it.
+Keep it in a SEPARATE array from the side-effect trace so "no write happened" assertions
+(`expect(trace).toEqual([])`) still mean what they say.
+
+## Guard the PAYLOAD of a Supabase call, not just its `error`
+`e2e/mock-supabase.mjs`'s catch-all answers **`200 {}`** for any unhandled route (not 404), so a
+missing endpoint yields `{data: {}, error: null}` — a shape that passes an `if (error)` check and
+then throws on the first property access. `mfa.enroll` guarded only on `error` would 500 the one
+screen an admin cannot route around. Guard the field you're about to read
+(`enrolled?.totp?.qr_code ? … : null`) and unit-test that third shape — `{data:null,error}` does NOT
+cover it.
+
+## `e2e/mock-supabase.mjs` has the CHALLENGE half of the MFA API but not the ENROL half
+It serves `POST /auth/v1/factors/:id/{challenge,verify}` and its `ADMIN_USER` always carries a
+*verified* factor, so no session it mints can reach a "nothing enrolled" state. There is no
+`POST /auth/v1/factors` and no `DELETE /auth/v1/factors/:id`. ENG-371 therefore e2e-tests only the
+redirect branches and captured its screenshots against a throwaway copy of the mock in a scratchpad
+(own port + `pw.capture.config.ts`, both deleted after). Add the two endpoints to the shared mock
+when someone owns that file.
+
+## auth-js prepends the `data:` prefix to `qr_code` itself — don't send a complete data-URI
+`GoTrueClient._enroll()` does ``data.totp.qr_code = `data:image/svg+xml;utf-8,${data.totp.qr_code}` ``.
+A mock returning an already-complete `data:image/svg+xml;utf-8,<encoded>` gets double-prefixed into a
+broken image. The mock's `qr_code` must be **just the percent-encoded SVG**. Also: `listFactors()`
+buckets only `status === "verified"` into `totp`; `all` holds the unverified ones too.
+
+## Run mutation-testing reviewers ONE AT A TIME per worktree
+Two `rx:review` agents mutation-testing the same worktree concurrently corrupted each other's
+readings (one observed `signOutCalls === 2` because the other's identical mutation was live). Both
+recovered, but serialize them — or give each a private copy — or a crash mid-mutation leaves the
+tree dirty.

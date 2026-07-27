@@ -106,11 +106,37 @@ describe("verifyMfa — session preconditions", () => {
 });
 
 describe("verifyMfa — wrong code", () => {
-  it("logs mfa_fail, signs out, and returns to /signin generically", async () => {
+  it("keeps the session and lets the admin retry in place", async () => {
+    // A mistyped digit must cost a retry, not the whole sign-in: no signOut,
+    // no redirect, just an error rendered back onto /signin/mfa.
     state.verifyFails = true;
-    await expect(verifyMfa({}, form("000000"))).rejects.toThrow("REDIRECT:/signin?error=mfa");
-    expect(state.signOutCalls).toBe(1);
+    const res = await verifyMfa({}, form("000000"));
+    expect(state.signOutCalls).toBe(0);
+    expect(res.attempts).toBe(1);
+    expect(res.error).toMatch(/didn't match/i);
     expect(state.rpcCalls.map((c) => c.args.p_event)).toContain("mfa_fail");
+  });
+
+  it("logs mfa_fail on EVERY miss, not only the last one", async () => {
+    state.verifyFails = true;
+    const first = await verifyMfa({}, form("000000"));
+    const second = await verifyMfa(first, form("000000"));
+    expect(second.attempts).toBe(2);
+    expect(state.rpcCalls.filter((c) => c.args.p_event === "mfa_fail")).toHaveLength(2);
+  });
+
+  it("counts down the attempts left, singular on the last one", async () => {
+    state.verifyFails = true;
+    expect((await verifyMfa({ attempts: 3 }, form("000000"))).error).toContain("1 attempt left");
+    expect((await verifyMfa({ attempts: 2 }, form("000000"))).error).toContain("2 attempts left");
+  });
+
+  it("signs out and returns to /signin generically once the attempts run out", async () => {
+    state.verifyFails = true;
+    await expect(verifyMfa({ attempts: 4 }, form("000000"))).rejects.toThrow(
+      "REDIRECT:/signin?error=mfa",
+    );
+    expect(state.signOutCalls).toBe(1);
   });
 
   it("logs mfa_fail BEFORE signOut — after it, the RPC silently writes nothing", async () => {
@@ -118,13 +144,22 @@ describe("verifyMfa — wrong code", () => {
     // we are anon, and log_admin_auth_event's in-body guard drops the insert
     // while still returning 204.
     state.verifyFails = true;
-    await expect(verifyMfa({}, form("000000"))).rejects.toThrow("REDIRECT:/signin?error=mfa");
+    await expect(verifyMfa({ attempts: 4 }, form("000000"))).rejects.toThrow(
+      "REDIRECT:/signin?error=mfa",
+    );
     expect(state.trace).toEqual(["rpc:mfa_fail", "signOut"]);
+  });
+
+  it("does not burn an attempt on a malformed code — it never reaches verify", async () => {
+    state.verifyFails = true;
+    const res = await verifyMfa({ attempts: 2 }, form("12"));
+    expect(res.attempts).toBe(2);
+    expect(state.rpcCalls).toHaveLength(0);
   });
 
   it("uses the authenticated RPC, not the anon signin_fail one", async () => {
     state.verifyFails = true;
-    await expect(verifyMfa({}, form("000000"))).rejects.toThrow();
+    await verifyMfa({}, form("000000"));
     expect(state.rpcCalls[0]!.fn).toBe("log_admin_auth_event");
   });
 });

@@ -26,7 +26,7 @@ test("happy path: password then correct code reaches the dashboard shell", async
   await expect(page.locator(".admin-shell")).toBeVisible({ timeout: 30000 });
 });
 
-test("wrong code sends the admin back to /signin with a generic error", async ({ page }) => {
+test("wrong code keeps the admin on /signin/mfa to retry", async ({ page }) => {
   test.setTimeout(30000);
 
   await page.goto("/signin");
@@ -38,10 +38,33 @@ test("wrong code sends the admin back to /signin with a generic error", async ({
   await page.locator("#code").fill("000000");
   await page.getByRole("button", { name: "Verify" }).click();
 
+  // A mistyped digit must not cost the whole sign-in: stay on the challenge
+  // screen, keep the AAL1 session, and show the code field again.
+  await expect(page.getByRole("alert")).toContainText("didn't match", { timeout: 30000 });
+  expect(page.url()).toContain("/signin/mfa");
+  await expect(page.locator("#code")).toBeVisible();
+  await page.screenshot({ path: "e2e/__screenshots__/12-signin-mfa-error.png" });
+});
+
+test("running out of attempts drops the session back to /signin", async ({ page }) => {
+  test.setTimeout(60000);
+
+  await page.goto("/signin");
+  await page.locator("#email").fill("ops@stablepass.co");
+  await page.locator("#password").fill("correcthorse");
+  await page.getByRole("button", { name: "Continue" }).click();
+  await page.waitForURL("http://127.0.0.1:3002/signin/mfa", { timeout: 30000 });
+
+  // Five misses exhausts the retry budget; the fifth signs out generically.
+  for (let i = 0; i < 5; i++) {
+    await page.locator("#code").fill("000000");
+    await page.getByRole("button", { name: "Verify" }).click();
+    if (i < 4) await expect(page.getByRole("alert")).toContainText("left", { timeout: 30000 });
+  }
+
   await page.waitForURL(/\/signin(\?|$)/, { timeout: 30000 });
   expect(page.url()).not.toContain("/signin/mfa");
   await expect(page.getByText("Wrong email, password or code.")).toBeVisible({ timeout: 30000 });
-  await page.screenshot({ path: "e2e/__screenshots__/12-signin-mfa-error.png" });
 });
 
 test("audit log: a full sign-in writes signin_ok then mfa_ok", async ({ browser }) => {

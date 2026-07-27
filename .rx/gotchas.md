@@ -25,10 +25,20 @@ Each route ticket needs a test asserting the 403-for-non-admin branch + the happ
 that file; pull real values (`--brand-green:#285D50`, `--brand-green-darker:#122E26`, `--cream:#FAF7F2`,
 Inter/Cormorant) rather than eyeballing.
 
-## The admin sign-in mockup is stale on 2FA — spec wins
-`screens/01-signin.html` shows an "Authenticator code" field + "Protected by 2FA" legal line, but the
-ticket, CLAUDE.md, `.rx/mockups.md` and `docs/specs/screen-api-map.md` all say **no 2FA in v1**. Build
-email+password only. Don't let a reviewer flag the missing 2FA field as a miss.
+## ~~The admin sign-in mockup is stale on 2FA~~ — REVERSED by ENG-370: the MOCKUP was right
+**This entry used to say "build email+password only, 2FA is out of scope in v1". That is now wrong —
+2FA shipped.** `screens/01-signin.html`'s "Authenticator code" field and its
+"Protected by 2FA · Staff sessions audited" legal line are both real requirements. Do **not** delete
+the code step or revert the legal line to match an older doc.
+
+What actually shipped (ENG-370), because the mockup's *single form* still isn't buildable:
+- **Two steps, two screens.** `/signin` = email + password (button: **Continue**); `/signin/mfa` =
+  the 6-digit code. Supabase must mint the AAL1 session from the password **before** a TOTP code can
+  be verified, so one submit would mean holding the password server-side.
+- `/signin/mfa` reuses `.admin-signin` / `.admin-signin-card` and the mockup's own code-field styling
+  verbatim. `app/globals.css` needed **no** new classes.
+- `"/"` is reachable only at **aal2**. `requireAdmin()` 403s (`mfa_required`) an AAL1 admin;
+  `requireAdminPage()` redirects to `/signin/mfa` (or `/signin/mfa-setup` when nothing is enrolled).
 
 ## First FE ticket bootstraps the toolchain (done in ENG-173)
 The scaffold ships **no test runner and no design system**. ENG-173 added: vitest (`npm test` =
@@ -341,3 +351,47 @@ member-api-v1's gate PR was still open — so an analytics-v1 → main PR silent
 the other epic (5.4k lines). Run `git merge-base --is-ancestor origin/feature/<other> HEAD` and
 `git log --oneline origin/main..HEAD` before opening a gate PR, and put the merge-order call at the
 TOP of the body. `git diff --stat` alone will badly mislead you about what a gate PR contains.
+
+## `getAuthenticatorAssuranceLevel()` decodes the access token as a REAL JWT
+auth-js's no-argument path calls `decodeJWT(session.access_token)`, which throws
+`AuthInvalidJwtError` unless the token is exactly 3 base64url parts. `e2e/mock-supabase.mjs`'s old
+`FAKE_ACCESS_TOKEN = "fake-access-token"` therefore made every aal read blow up. The mock now mints a
+structurally valid unsigned JWT carrying an `aal` claim (`jwt("aal1")` / `jwt("aal2")`, signature
+segment is the literal `"sig"` — the client never verifies it) and flips `currentAal` on a successful
+verify. Related: `mfa.listFactors()` does **not** call a factors endpoint — it reads `user.factors`
+off `GET /auth/v1/user`, and only `status:"verified"` entries land in the `totp` bucket.
+
+## The admin audit trail has TWO RPCs and the wrong one fails SILENTLY
+stablepass-be (ENG-369) ships `log_admin_signin_fail(p_email,p_ip,p_user_agent)` — anon-callable, event
+hard-coded — and `log_admin_auth_event(p_event,…)` — authenticated/service_role only, **with an in-body
+guard**. Call the general one without a session and it inserts **zero rows and still returns 204**. So:
+- a **failed password** must use `log_admin_signin_fail` (no session exists at that moment);
+- `mfa_fail` (and the valid-password-non-admin `signin_fail`) must be logged **BEFORE** `signOut()`.
+Pin the ordering with an ordered trace array (`expect(trace).toEqual(["rpc:mfa_fail","signOut"])`), not
+`toHaveBeenCalled` — a `toContain` assertion passes with the lines swapped.
+
+## `p_ip` is `inet`: a PARTIAL IPv6 raises 22P02 from the ARGUMENT CAST
+The cast runs *before* the function's never-raise body, so a bad value silently loses the audit row.
+`X-Forwarded-For` is routinely a list (`client, proxy1, proxy2`) — never forward it raw. The subtle
+trap is partial IPv6: `1:2`, `:`, `:::`, `abcd:`, `0:0`, `1:2:3` all *look* like addresses and are all
+rejected by Postgres. Validating only the group **count** (`<= 8`) is not enough — require exactly 8
+groups unless a single `::` is present, reject stray leading/trailing colons, and accept an IPv4 tail
+(`::ffff:192.0.2.1` is the routine dual-stack form). Since XFF is client-supplied, a loose parser lets
+an attacker suppress their own `signin_fail` rows with one header. See `lib/audit.ts#parseIp`.
+
+## postgrest-js RESOLVES with `{error}` — a bare try/catch around `.rpc()` is dead code
+`await sb.rpc(...)` does not reject on a PostgREST error (only `.throwOnError()` does), so wrapping an
+audit/fire-and-forget RPC in `try/catch` catches nothing that actually happens: a 22P02 bad cast, a
+renamed function (PGRST202), a revoked grant and a real success all look identical. Inspect `error` and
+`console.warn` it; keep the never-rethrow contract. This is the write-side twin of the existing
+"table reads that ignore `error` turn an RLS regression into 'no data'" note.
+
+## Touching the admin gate breaks the SHARED test fake + every inline e2e sign-in
+Two cross-cutting consequences to budget for when `lib/auth/admin.ts` gains a condition:
+1. `lib/testing/supabase-fake.ts` backs ~30 `app/api/admin/**` route tests. A new `sb.auth.*` call the
+   fake doesn't implement becomes a `TypeError`, the gate fails closed, and every route test 403s.
+   Add the stub and default it to the PASSING value (`aal: "aal2"`) so existing tests keep their
+   intent — then add ONE dedicated test that drives the failing branch through a real route handler
+   against a POPULATED table (`lib/auth/admin-aal2-route.test.ts`), or the new branch is untested.
+2. Six e2e specs (`analytics/compose/dashboard/horses/posts/trainers`) each carry their own inline
+   `signIn()` helper. Changing the sign-in flow or the submit button's label breaks all six at once.

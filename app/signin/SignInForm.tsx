@@ -46,7 +46,7 @@ export default function SignInForm({ gateMessage }: { gateMessage?: string }) {
         style={{ marginTop: 8 }}
         disabled={pending}
       >
-        {pending ? "Signing in…" : "Sign in"}
+        {pending ? "Signing in…" : "Continue"}
       </button>
     </form>
   );

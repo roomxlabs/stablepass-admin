@@ -9,7 +9,12 @@ async function signIn(page: Page) {
   await page.goto("/signin");
   await page.locator("#email").fill("ops@stablepass.co");
   await page.locator("#password").fill("correcthorse");
-  await page.getByRole("button", { name: "Sign in" }).click();
+  await page.getByRole("button", { name: "Continue" }).click();
+  // ENG-370: sign-in is two steps now — the password step lands on the TOTP
+  // challenge, and only a verified code reaches "/" (which requires aal2).
+  await page.waitForURL("**/signin/mfa", { timeout: 30000 });
+  await page.locator("#code").fill("123456");
+  await page.getByRole("button", { name: "Verify" }).click();
   await page.waitForURL("http://127.0.0.1:3002/", { timeout: 30000 });
 }
 

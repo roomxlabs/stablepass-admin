@@ -25,10 +25,20 @@ Each route ticket needs a test asserting the 403-for-non-admin branch + the happ
 that file; pull real values (`--brand-green:#285D50`, `--brand-green-darker:#122E26`, `--cream:#FAF7F2`,
 Inter/Cormorant) rather than eyeballing.
 
-## The admin sign-in mockup is stale on 2FA — spec wins
-`screens/01-signin.html` shows an "Authenticator code" field + "Protected by 2FA" legal line, but the
-ticket, CLAUDE.md, `.rx/mockups.md` and `docs/specs/screen-api-map.md` all say **no 2FA in v1**. Build
-email+password only. Don't let a reviewer flag the missing 2FA field as a miss.
+## ~~The admin sign-in mockup is stale on 2FA~~ — REVERSED by ENG-370: the MOCKUP was right
+**This entry used to say "build email+password only, 2FA is out of scope in v1". That is now wrong —
+2FA shipped.** `screens/01-signin.html`'s "Authenticator code" field and its
+"Protected by 2FA · Staff sessions audited" legal line are both real requirements. Do **not** delete
+the code step or revert the legal line to match an older doc.
+
+What actually shipped (ENG-370), because the mockup's *single form* still isn't buildable:
+- **Two steps, two screens.** `/signin` = email + password (button: **Continue**); `/signin/mfa` =
+  the 6-digit code. Supabase must mint the AAL1 session from the password **before** a TOTP code can
+  be verified, so one submit would mean holding the password server-side.
+- `/signin/mfa` reuses `.admin-signin` / `.admin-signin-card` and the mockup's own code-field styling
+  verbatim. `app/globals.css` needed **no** new classes.
+- `"/"` is reachable only at **aal2**. `requireAdmin()` 403s (`mfa_required`) an AAL1 admin;
+  `requireAdminPage()` redirects to `/signin/mfa` (or `/signin/mfa-setup` when nothing is enrolled).
 
 ## First FE ticket bootstraps the toolchain (done in ENG-173)
 The scaffold ships **no test runner and no design system**. ENG-173 added: vitest (`npm test` =
@@ -341,3 +351,105 @@ member-api-v1's gate PR was still open — so an analytics-v1 → main PR silent
 the other epic (5.4k lines). Run `git merge-base --is-ancestor origin/feature/<other> HEAD` and
 `git log --oneline origin/main..HEAD` before opening a gate PR, and put the merge-order call at the
 TOP of the body. `git diff --stat` alone will badly mislead you about what a gate PR contains.
+
+## `getAuthenticatorAssuranceLevel()` decodes the access token as a REAL JWT
+auth-js's no-argument path calls `decodeJWT(session.access_token)`, which throws
+`AuthInvalidJwtError` unless the token is exactly 3 base64url parts. `e2e/mock-supabase.mjs`'s old
+`FAKE_ACCESS_TOKEN = "fake-access-token"` therefore made every aal read blow up. The mock now mints a
+structurally valid unsigned JWT carrying an `aal` claim (`jwt("aal1")` / `jwt("aal2")`, signature
+segment is the literal `"sig"` — the client never verifies it) and flips `currentAal` on a successful
+verify. Related: `mfa.listFactors()` does **not** call a factors endpoint — it reads `user.factors`
+off `GET /auth/v1/user`, and only `status:"verified"` entries land in the `totp` bucket.
+
+## The admin audit trail has TWO RPCs and the wrong one fails SILENTLY
+stablepass-be (ENG-369) ships `log_admin_signin_fail(p_email,p_ip,p_user_agent)` — anon-callable, event
+hard-coded — and `log_admin_auth_event(p_event,…)` — authenticated/service_role only, **with an in-body
+guard**. Call the general one without a session and it inserts **zero rows and still returns 204**. So:
+- a **failed password** must use `log_admin_signin_fail` (no session exists at that moment);
+- `mfa_fail` (and the valid-password-non-admin `signin_fail`) must be logged **BEFORE** `signOut()`.
+Pin the ordering with an ordered trace array (`expect(trace).toEqual(["rpc:mfa_fail","signOut"])`), not
+`toHaveBeenCalled` — a `toContain` assertion passes with the lines swapped.
+
+## `p_ip` is `inet`: a PARTIAL IPv6 raises 22P02 from the ARGUMENT CAST
+The cast runs *before* the function's never-raise body, so a bad value silently loses the audit row.
+`X-Forwarded-For` is routinely a list (`client, proxy1, proxy2`) — never forward it raw. The subtle
+trap is partial IPv6: `1:2`, `:`, `:::`, `abcd:`, `0:0`, `1:2:3` all *look* like addresses and are all
+rejected by Postgres. Validating only the group **count** (`<= 8`) is not enough — require exactly 8
+groups unless a single `::` is present, reject stray leading/trailing colons, and accept an IPv4 tail
+(`::ffff:192.0.2.1` is the routine dual-stack form). Since XFF is client-supplied, a loose parser lets
+an attacker suppress their own `signin_fail` rows with one header. See `lib/audit.ts#parseIp`.
+
+## postgrest-js RESOLVES with `{error}` — a bare try/catch around `.rpc()` is dead code
+`await sb.rpc(...)` does not reject on a PostgREST error (only `.throwOnError()` does), so wrapping an
+audit/fire-and-forget RPC in `try/catch` catches nothing that actually happens: a 22P02 bad cast, a
+renamed function (PGRST202), a revoked grant and a real success all look identical. Inspect `error` and
+`console.warn` it; keep the never-rethrow contract. This is the write-side twin of the existing
+"table reads that ignore `error` turn an RLS regression into 'no data'" note.
+
+## Touching the admin gate breaks the SHARED test fake + every inline e2e sign-in
+Two cross-cutting consequences to budget for when `lib/auth/admin.ts` gains a condition:
+1. `lib/testing/supabase-fake.ts` backs ~30 `app/api/admin/**` route tests. A new `sb.auth.*` call the
+   fake doesn't implement becomes a `TypeError`, the gate fails closed, and every route test 403s.
+   Add the stub and default it to the PASSING value (`aal: "aal2"`) so existing tests keep their
+   intent — then add ONE dedicated test that drives the failing branch through a real route handler
+   against a POPULATED table (`lib/auth/admin-aal2-route.test.ts`), or the new branch is untested.
+2. Six e2e specs (`analytics/compose/dashboard/horses/posts/trainers`) each carry their own inline
+   `signIn()` helper. Changing the sign-in flow or the submit button's label breaks all six at once.
+
+## `lib/audit.ts`'s `AdminAuthEvent` union omits `mfa_enrolled` (ENG-371)
+The file's own header reserves it ("`mfa_enrolled` is A2's") and the RPC's check constraint accepts
+it, but the exported union is only `signin_ok|signin_fail|mfa_ok|mfa_fail`. A2 could not edit
+`lib/audit.ts` (A1's surface), so it bridges with `const MFA_ENROLLED = "mfa_enrolled" as
+AdminAuthEvent` at the call site. Harmless — `logAdminAuthEvent` only forwards the string as
+`p_event`, no switch/exhaustiveness — but **widen the union** when A1's file is next touched, and
+don't "fix" the cast by writing a second audit wrapper.
+
+## Don't gate `/signin/mfa-setup` with `requireAdminPage()` — it redirects TO that route
+`requireAdminPage()` sends an AAL1 admin with `hasFactor === false` to `/signin/mfa-setup`, so using
+it to gate that page is an infinite redirect. The enrolment page must do the checks inline (no
+session → `/signin`; non-admin → `/signin?error=forbidden`; verified factor → `/` at aal2 or
+`/signin/mfa` at aal1). The A1↔A2 pair is loop-free because both key off `factors.totp` with
+opposite polarity, and A1's page only bounces back on a POSITIVE zero-factor read (`!error &&`).
+Same shape applies to any future "you must do X before continuing" screen the gate redirects to.
+
+## `lib/testing/supabase-fake.ts` defaults `aal` to `"aal2"` — and models no `auth.mfa.*`
+ENG-370 added `aal: "aal1"|"aal2"` defaulting to **"aal2"** so pre-existing route tests kept passing.
+Any test of an AAL1 path that forgets to set it exercises the wrong branch and passes for the wrong
+reason — set it explicitly. The fake also has no `mfa.enroll/unenroll/listFactors/challengeAndVerify`
+and no `signOut`, so MFA-flow tests hand-roll their own `vi.mock("@/lib/supabase/server")` (see
+`app/signin/mfa/actions.test.ts` and `app/signin/mfa-setup/*.test.ts`).
+
+## A query-builder mock that swallows its arguments cannot see an IDOR
+`from: () => ({select: () => ({eq: () => ({single: ...})})})` makes `.eq("id", user.id)` and
+`.eq("id", "anyone-else")` indistinguishable — a self-review mutation to a stranger's row left the
+suite fully green. Record the filter (`state.reads.push(`${table}.${col}=${val}`)`) and assert it.
+Keep it in a SEPARATE array from the side-effect trace so "no write happened" assertions
+(`expect(trace).toEqual([])`) still mean what they say.
+
+## Guard the PAYLOAD of a Supabase call, not just its `error`
+`e2e/mock-supabase.mjs`'s catch-all answers **`200 {}`** for any unhandled route (not 404), so a
+missing endpoint yields `{data: {}, error: null}` — a shape that passes an `if (error)` check and
+then throws on the first property access. `mfa.enroll` guarded only on `error` would 500 the one
+screen an admin cannot route around. Guard the field you're about to read
+(`enrolled?.totp?.qr_code ? … : null`) and unit-test that third shape — `{data:null,error}` does NOT
+cover it.
+
+## `e2e/mock-supabase.mjs` has the CHALLENGE half of the MFA API but not the ENROL half
+It serves `POST /auth/v1/factors/:id/{challenge,verify}` and its `ADMIN_USER` always carries a
+*verified* factor, so no session it mints can reach a "nothing enrolled" state. There is no
+`POST /auth/v1/factors` and no `DELETE /auth/v1/factors/:id`. ENG-371 therefore e2e-tests only the
+redirect branches and captured its screenshots against a throwaway copy of the mock in a scratchpad
+(own port + `pw.capture.config.ts`, both deleted after). Add the two endpoints to the shared mock
+when someone owns that file.
+
+## auth-js prepends the `data:` prefix to `qr_code` itself — don't send a complete data-URI
+`GoTrueClient._enroll()` does ``data.totp.qr_code = `data:image/svg+xml;utf-8,${data.totp.qr_code}` ``.
+A mock returning an already-complete `data:image/svg+xml;utf-8,<encoded>` gets double-prefixed into a
+broken image. The mock's `qr_code` must be **just the percent-encoded SVG**. Also: `listFactors()`
+buckets only `status === "verified"` into `totp`; `all` holds the unverified ones too.
+
+## Run mutation-testing reviewers ONE AT A TIME per worktree
+Two `rx:review` agents mutation-testing the same worktree concurrently corrupted each other's
+readings (one observed `signOutCalls === 2` because the other's identical mutation was live). Both
+recovered, but serialize them — or give each a private copy — or a crash mid-mutation leaves the
+tree dirty.

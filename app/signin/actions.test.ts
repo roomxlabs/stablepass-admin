@@ -2,15 +2,33 @@ import { describe, it, expect, beforeEach, vi } from "vitest";
 
 // Drives the BFF sign-in/out server actions at the Supabase boundary and
 // asserts the security-relevant branches: a valid but non-admin sign-in is
-// torn back down, and sign-out clears the session.
+// torn back down, sign-out clears the session, a password alone never reaches
+// "/", and every attempt lands on the audit trail through the RIGHT RPC.
 type SessionUser = { id: string; email?: string } | null;
+type Factor = { id: string; factor_type: string; status: string };
 
 const state: {
   signInUser: SessionUser;
   signInError: boolean;
   profile: { is_admin: boolean } | null;
   signOutCalls: number;
-} = { signInUser: null, signInError: false, profile: null, signOutCalls: 0 };
+  totpFactors: Factor[];
+  rpcCalls: Array<{ fn: string; args: Record<string, unknown> }>;
+  // Ordered log, so the audit-before-signOut ordering can be asserted.
+  trace: string[];
+} = {
+  signInUser: null,
+  signInError: false,
+  profile: null,
+  signOutCalls: 0,
+  totpFactors: [],
+  rpcCalls: [],
+  trace: [],
+};
+
+vi.mock("next/headers", () => ({
+  headers: async () => ({ get: () => null }),
+}));
 
 vi.mock("@/lib/supabase/server", () => ({
   supabaseServer: async () => ({
@@ -21,8 +39,21 @@ vi.mock("@/lib/supabase/server", () => ({
       }),
       signOut: async () => {
         state.signOutCalls += 1;
+        state.trace.push("signOut");
         return { error: null };
       },
+      mfa: {
+        // auth-js puts only VERIFIED factors in the `totp` bucket.
+        listFactors: async () => ({
+          data: { all: state.totpFactors, totp: state.totpFactors, phone: [], webauthn: [] },
+          error: null,
+        }),
+      },
+    },
+    rpc: async (fn: string, args: Record<string, unknown>) => {
+      state.rpcCalls.push({ fn, args });
+      state.trace.push(`rpc:${args.p_event ?? fn}`);
+      return { data: null, error: null };
     },
     from: () => ({
       select: () => ({ eq: () => ({ single: async () => ({ data: state.profile }) }) }),
@@ -50,11 +81,16 @@ function form(email?: string, password?: string): FormData {
   return fd;
 }
 
+const VERIFIED_TOTP: Factor = { id: "f1", factor_type: "totp", status: "verified" };
+
 beforeEach(() => {
   state.signInUser = null;
   state.signInError = false;
   state.profile = null;
   state.signOutCalls = 0;
+  state.totpFactors = [];
+  state.rpcCalls = [];
+  state.trace = [];
 });
 
 describe("signIn", () => {
@@ -70,6 +106,16 @@ describe("signIn", () => {
     expect(state.signOutCalls).toBe(0);
   });
 
+  it("logs a failed password through the ANON RPC (log_admin_signin_fail)", async () => {
+    // There is no session at this point, so log_admin_auth_event would write
+    // zero rows and still return 204 — a silent loss of the key forensic event.
+    state.signInError = true;
+    await signIn({}, form("x@stablepass.co", "nope"));
+    expect(state.rpcCalls).toHaveLength(1);
+    expect(state.rpcCalls[0]!.fn).toBe("log_admin_signin_fail");
+    expect(state.rpcCalls[0]!.args.p_email).toBe("x@stablepass.co");
+  });
+
   it("signs a valid NON-admin straight back out (no lingering session)", async () => {
     state.signInUser = { id: "u1", email: "member@stablepass.co" };
     state.profile = { is_admin: false };
@@ -78,11 +124,46 @@ describe("signIn", () => {
     expect(state.signOutCalls).toBe(1);
   });
 
-  it("redirects an admin to the dashboard", async () => {
+  it("audits a VALID password on a non-admin account, before signing it out", async () => {
+    // Working credentials aimed at the admin console is a forensic signal. A
+    // session exists here, so it goes through the authenticated RPC — and, like
+    // mfa_fail, it must be written before signOut() or the row is dropped.
+    state.signInUser = { id: "u1", email: "member@stablepass.co" };
+    state.profile = { is_admin: false };
+    await signIn({}, form("member@stablepass.co", "pw"));
+    expect(state.trace).toEqual(["rpc:signin_fail", "signOut"]);
+    expect(state.rpcCalls[0]!.fn).toBe("log_admin_auth_event");
+  });
+
+  it("sends an admin WITH a verified factor to the code step, logging signin_ok", async () => {
     state.signInUser = { id: "u1", email: "ops@stablepass.co" };
     state.profile = { is_admin: true };
-    await expect(signIn({}, form("ops@stablepass.co", "pw"))).rejects.toThrow("REDIRECT:/");
+    state.totpFactors = [VERIFIED_TOTP];
+    await expect(signIn({}, form("ops@stablepass.co", "pw"))).rejects.toThrow(
+      "REDIRECT:/signin/mfa",
+    );
     expect(state.signOutCalls).toBe(0);
+    expect(state.rpcCalls[0]!.fn).toBe("log_admin_auth_event");
+    expect(state.rpcCalls[0]!.args.p_event).toBe("signin_ok");
+  });
+
+  it("sends an admin with NO factor to forced enrolment", async () => {
+    state.signInUser = { id: "u1", email: "ops@stablepass.co" };
+    state.profile = { is_admin: true };
+    state.totpFactors = [];
+    await expect(signIn({}, form("ops@stablepass.co", "pw"))).rejects.toThrow(
+      "REDIRECT:/signin/mfa-setup",
+    );
+  });
+
+  it("never reaches the dashboard on a password alone", async () => {
+    state.signInUser = { id: "u1", email: "ops@stablepass.co" };
+    state.profile = { is_admin: true };
+    state.totpFactors = [VERIFIED_TOTP];
+    // Exact match, not substring: "REDIRECT:/signin/mfa" *contains* "REDIRECT:/".
+    await expect(signIn({}, form("ops@stablepass.co", "pw"))).rejects.toSatisfy(
+      (e: Error) => e.message !== "REDIRECT:/",
+    );
   });
 });
 

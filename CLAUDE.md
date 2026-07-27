@@ -3,7 +3,7 @@
 Operator **admin dashboard + BFF** (`admin.stablepass.co`, Next.js App Router, TS). Same BFF pattern as `stablepass-web`, but **every route is behind `requireAdmin()`** and endpoints live under `app/api/admin/*`. Read `docs/specs/`; `.rx/guardrails.md` is the non-negotiable subset.
 
 ## Architecture
-- **Admin = `app_user.is_admin=true`** (no separate identity, no 2FA in v1). `lib/auth/admin.ts#requireAdmin()` gates every route (401 no session, 403 non-admin).
+- **Admin = `app_user.is_admin=true` + an AAL2 (TOTP) session** (no separate identity). `lib/auth/admin.ts#requireAdmin()` gates every route (401 no session, 403 non-admin, 403 `mfa_required` for an AAL1 admin); `requireAdminPage()` redirects instead. Sign-in is **two steps**: `/signin` (password) → `/signin/mfa` (code), or `/signin/mfa-setup` when nothing is enrolled. After ENG-368 Postgres's own `is_admin()` requires aal2 too, so an AAL1 admin reads **0 rows with no error** — always gate before reading.
 - Tokens in httpOnly cookies (`@supabase/ssr`); `lib/supabase/server.ts` is the only server client. Admin's RLS `*_all_admin` policies grant the elevated read/write.
 - Envelope + status via `lib/api/envelope.ts`.
 - Media: video → Mux, images/voice → Supabase Storage (direct).

@@ -453,3 +453,35 @@ Two `rx:review` agents mutation-testing the same worktree concurrently corrupted
 readings (one observed `signOutCalls === 2` because the other's identical mutation was live). Both
 recovered, but serialize them — or give each a private copy — or a crash mid-mutation leaves the
 tree dirty.
+
+## Vitest STUBS CSS modules — a render test can never prove a stylesheet fact
+`css: false` (the default) makes `import styles from "./x.module.css"` a proxy that returns the key,
+so `styles.postCard === "postCard"` and `getComputedStyle` sees nothing. A ticket whose acceptance
+criteria are CSS ("no border", "sans", "not brand green") therefore has **zero** coverage from
+component tests — ENG-558 confirmed all four of its parity changes could be reverted with the suite
+green. Pin them by reading the stylesheet itself and slicing the rule block:
+`readFileSync(join(process.cwd(), "app/(dash)/compose/compose.module.css"), "utf8")`.
+**Use `process.cwd()`, not `new URL(..., import.meta.url)`** — under Vitest `import.meta.url` is not
+a `file:` URL and `readFileSync` dies with `TypeError: The URL must be of scheme file`.
+
+## Compose tests that REPLACE a file must mock `discardDraft`
+`onPickFile` opens with ``if (draft) void discardDraft(draft.id).catch(...)``. A bare `vi.fn()`
+returns `undefined`, so `.catch` throws **synchronously, before every `setState` below it** — the
+swap silently does nothing and the failure surfaces as an unrelated "stale value" assertion plus an
+unhandled rejection. Any test that picks a second file needs `api.discardDraft.mockResolvedValue()`.
+
+## Edit mode plays an HLS RENDITION — never measure intrinsic size there
+`HlsVideo` routes non-Safari through hls.js, which starts on a low-bitrate rendition, so
+`videoWidth`/`videoHeight` at `loadedmetadata` report e.g. 640x360 for a 1080p asset. Anything that
+prints pixel dimensions must measure the **picked local file** only (ENG-558 does). Related: hls.js
+reports manifest/network/403 failures on its own `Hls.Events.ERROR` channel and the `<video>`
+element never fires `error` — so an "on error, give up" UI state is unreachable on that path. Pair
+any such state with a timeout, or it hangs on "loading" forever.
+
+## Real video fixtures in Playwright without ffmpeg: record a canvas
+There is no ffmpeg on this machine, and client footage must never reach a PR screenshot. Record a
+synthetic one in-page instead: size a `<canvas>`, `captureStream(25)` → `MediaRecorder(…, "video/webm")`,
+paint ~24 frames, then `setInputFiles({ buffer: Buffer.from(bytes), mimeType: "video/webm" })`. The
+`<video>` reports true intrinsic dimensions from it. Paint corner ticks — they make a centre-crop
+self-evident in the screenshot. Then wait for `video.videoWidth > 0` before shooting, the video
+equivalent of the `img.decode()` fix (both now applied in `e2e/compose*.spec.ts`).

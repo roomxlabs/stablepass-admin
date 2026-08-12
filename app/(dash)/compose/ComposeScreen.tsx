@@ -7,7 +7,7 @@ import { Icon } from "../icons";
 import LocalTime from "../LocalTime";
 import HlsVideo from "./HlsVideo";
 import PreviewModal from "./PreviewModal";
-import type { PostPreviewData } from "./PostPreview";
+import { MediaReadout, type PostPreviewData } from "./PostPreview";
 import {
   createDraft,
   discardDraft,
@@ -17,10 +17,20 @@ import {
   uploadPhotoToStorage,
   uploadVideoToMux,
 } from "./api";
-import type { CreateDraftResponse, EditInitial, HorseOption, MediaType, TrainerOption } from "./types";
+import type {
+  CreateDraftResponse,
+  EditInitial,
+  HorseOption,
+  MediaDimensions,
+  MediaType,
+  TrainerOption,
+} from "./types";
+import { resolveMemberAspect } from "./types";
 import styles from "./compose.module.css";
 
 const CAPTION_MAX = 240;
+/** How long to wait for the browser to report a picked file's dimensions. */
+const MEASURE_TIMEOUT_MS = 8000;
 type PublishMode = "draft" | "schedule" | "publish";
 type UploadState = "idle" | "creating" | "uploading" | "done" | "error";
 type ActionState = { kind: "idle" | "working" | "ok" | "error"; message?: string };
@@ -108,6 +118,13 @@ export default function ComposeScreen({
   const [file, setFile] = useState<File | null>(null);
   const [mediaType, setMediaType] = useState<MediaType | null>(initial?.mediaType ?? null);
   const [mediaUrl, setMediaUrl] = useState<string | null>(initial?.mediaUrl ?? null);
+  // Intrinsic size of the picked asset, measured in the browser off the Step 2
+  // preview element — before any upload, and without reading post.aspect_ratio
+  // (that column is the webhook's, ENG-557). `mediaMeasured` separates "still
+  // loading metadata" from "the browser could not decode this at all", so the
+  // readout never guesses an orientation.
+  const [mediaDims, setMediaDims] = useState<MediaDimensions>(null);
+  const [mediaMeasured, setMediaMeasured] = useState(false);
   const [draft, setDraft] = useState<CreateDraftResponse | null>(null);
   const [upload, setUpload] = useState<{ state: UploadState; pct: number; error?: string }>({
     state: "idle",
@@ -176,11 +193,36 @@ export default function ComposeScreen({
     setShowResults(true);
   }
 
+  /** Metadata landed. Zero/absent intrinsic size counts as unmeasurable. */
+  function measureMedia(width: number, height: number) {
+    setMediaDims(width > 0 && height > 0 ? { width, height } : null);
+    setMediaMeasured(true);
+  }
+
+  /** Undecodable codec or a dead object URL. Advisory only — posting is unaffected. */
+  function failMeasureMedia() {
+    setMediaDims(null);
+    setMediaMeasured(true);
+  }
+
+  // A deadline, because "never decodes" does not always raise an `error` event:
+  // an undecodable codec can simply produce no `loadedmetadata` at all. Without
+  // this the readout would sit on "Measuring…" forever instead of reaching the
+  // specified "Dimensions unavailable". Measuring wins the race in the normal
+  // case; when it does not, resolving late is still resolving.
+  useEffect(() => {
+    if (isEdit || !mediaUrl || mediaMeasured) return;
+    const timer = setTimeout(() => setMediaMeasured(true), MEASURE_TIMEOUT_MS);
+    return () => clearTimeout(timer);
+  }, [isEdit, mediaUrl, mediaMeasured]);
+
   function resetMedia() {
     if (mediaUrl && typeof URL !== "undefined" && URL.revokeObjectURL) URL.revokeObjectURL(mediaUrl);
     setFile(null);
     setMediaType(null);
     setMediaUrl(null);
+    setMediaDims(null);
+    setMediaMeasured(false);
     setDraft(null);
     setUpload({ state: "idle", pct: 0 });
     if (fileInputRef.current) fileInputRef.current.value = "";
@@ -206,6 +248,10 @@ export default function ComposeScreen({
     setFile(picked);
     setMediaType(kind);
     setMediaUrl(objectUrl(picked));
+    // Clear the old measurement BEFORE the new one lands, so a swapped file
+    // never shows the previous file's orientation.
+    setMediaDims(null);
+    setMediaMeasured(false);
     setUpload({ state: "creating", pct: 0 });
 
     try {
@@ -381,6 +427,7 @@ export default function ComposeScreen({
     caption,
     mediaType,
     mediaUrl,
+    dimensions: mediaDims,
   };
 
   const captionOver = caption.length > CAPTION_MAX;
@@ -569,6 +616,13 @@ export default function ComposeScreen({
               {isEdit ? (
                 <div className={`${styles.uploadZone} ${styles.filled}`} data-testid="media-existing">
                   <div className={styles.preview}>
+                    {/* Deliberately NOT measured. Edit mode plays a signed Mux
+                        HLS source, and hls.js starts on a low-bitrate
+                        rendition, so `videoWidth` here is the rendition's size
+                        (e.g. 640x360), not the asset's — a readout built on it
+                        would print a confident wrong number. Media cannot be
+                        changed when editing anyway, so there is nothing to
+                        decide. Measurement covers the picked file only. */}
                     {mediaType === "photo" && mediaUrl ? (
                       // eslint-disable-next-line @next/next/no-img-element -- signed existing media
                       <img src={mediaUrl} alt="" />
@@ -594,11 +648,29 @@ export default function ComposeScreen({
                   <div className={styles.preview}>
                     {mediaType === "photo" && mediaUrl ? (
                       // eslint-disable-next-line @next/next/no-img-element -- local object URL preview
-                      <img src={mediaUrl} alt="" />
+                      <img
+                        src={mediaUrl}
+                        alt=""
+                        onLoad={(e) =>
+                          measureMedia(e.currentTarget.naturalWidth, e.currentTarget.naturalHeight)
+                        }
+                        onError={failMeasureMedia}
+                      />
                     ) : mediaType === "video" && mediaUrl ? (
                       // Playable local preview of the picked file (object URL);
                       // native controls replace the decorative play glyph.
-                      <HlsVideo src={mediaUrl} controls playsInline preload="metadata" />
+                      // `loadedmetadata` is where the real dimensions arrive —
+                      // no upload needed, so the readout is live immediately.
+                      <HlsVideo
+                        src={mediaUrl}
+                        controls
+                        playsInline
+                        preload="metadata"
+                        onLoadedMetadata={(e) =>
+                          measureMedia(e.currentTarget.videoWidth, e.currentTarget.videoHeight)
+                        }
+                        onError={failMeasureMedia}
+                      />
                     ) : null}
                   </div>
                   {upload.state === "uploading" ? (
@@ -942,6 +1014,17 @@ export default function ComposeScreen({
             {/* Inline mini preview */}
             <div className={styles.side}>
               <h4 className={styles.sideTitle}>Preview · mobile &amp; web</h4>
+              {/* What we detected, and what members actually get — the answer
+                  to "is this a reel or a landscape video?", above the preview.
+                  Compose only: in edit mode the media is fixed and unmeasured. */}
+              {isEdit ? null : (
+                <MediaReadout
+                  mediaType={mediaType}
+                  mediaUrl={mediaUrl}
+                  dimensions={mediaDims}
+                  measured={mediaMeasured}
+                />
+              )}
               <div className={styles.miniWrap}>
                 <div className={styles.miniCard}>
                   <div className={styles.miniHead}>
@@ -958,7 +1041,11 @@ export default function ComposeScreen({
                       Race day
                     </span>
                   </div>
-                  <div className={styles.miniMedia}>
+                  <div
+                    className={styles.miniMedia}
+                    style={{ aspectRatio: String(resolveMemberAspect(mediaDims, mediaType)) }}
+                    data-testid="mini-media"
+                  >
                     {mediaUrl && mediaType === "photo" ? (
                       // eslint-disable-next-line @next/next/no-img-element -- local object URL preview
                       <img src={mediaUrl} alt="" />
@@ -972,7 +1059,7 @@ export default function ComposeScreen({
                 </div>
               </div>
               <div className={`${styles.help} ${styles.miniCaption}`}>
-                This is the mobile feed. Use Preview to see mobile &amp; web side by side.
+                Framing matches the member feed. Use Preview to see mobile &amp; web side by side.
               </div>
             </div>
           </div>

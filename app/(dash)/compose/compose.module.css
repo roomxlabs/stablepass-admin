@@ -547,8 +547,13 @@
   font-size: 11.5px;
   color: var(--muted);
 }
+/* The rail preview is the box the operator actually looks at while composing,
+   so it takes the member ratio too — a fixed 180px letterbox directly under a
+   line reading "Portrait 9:16" would contradict the readout on screen.
+   `aspect-ratio` is the pre-measurement fallback; ComposeScreen sets the
+   resolved value inline. */
 .miniMedia {
-  height: 180px;
+  aspect-ratio: 16/10;
   background: #1a1a1a;
   border-radius: 10px;
   margin-bottom: 10px;
@@ -570,6 +575,21 @@
 }
 .miniCaption {
   text-align: center;
+}
+/* Detected-orientation readout — composed onto `.help` (the form's hint style)
+   so it stays in the compose form's own vocabulary. Ink + 500 because this is
+   the line that answers "is this a reel or a landscape video?", which is the
+   question the operator currently cannot answer at all. */
+.mediaReadout {
+  color: var(--ink);
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  margin: 0 0 10px;
+}
+/* Measuring, or undecodable: the line asserts no orientation, so it recedes. */
+.mediaReadoutMuted {
+  color: var(--muted);
+  font-weight: 400;
 }
 
 /* ---- Preview modal (mobile + web device frames) -------------------------- */
@@ -700,10 +720,12 @@
 }
 
 /* ---- Member post card (duplicated from the member web design) ------------ */
+/* No border, no radius (ENG-554 parity): a full-bleed band, like the mockup's
+   `.post`. The media is flush to the card edges by construction — the card
+   carries no padding of its own, `.postHead` and `.postBody` do. `max-width`
+   and the centred layout stay: this is a desktop preview pane, not a phone. */
 .postCard {
   background: var(--white);
-  border: 1px solid var(--line);
-  border-radius: var(--radius-md);
   overflow: hidden;
   max-width: 560px;
   margin: 0 auto;
@@ -732,8 +754,10 @@
   flex: 1;
   min-width: 0;
 }
+/* Sans, not serif: mobile moved horse names off Cormorant in ENG-419 and this
+   card mirrors the member card. A deliberate departure from the mockup. */
 .postHorse {
-  font-family: var(--font-serif);
+  font-family: var(--font-sans);
   font-size: 18px;
   font-weight: 600;
   margin: 0;
@@ -748,10 +772,16 @@
   color: var(--brand-green);
   font-weight: 500;
 }
+/* Neutral dark, never brand green — the member app shows no green frame behind
+   an unpainted asset, so the preview must not either.
+   `aspect-ratio` here is only the FALLBACK for the pre-measurement paint (and
+   for SSR): PostPreview sets the measured, clamped ratio inline. 16/10 matches
+   the member card's unknown-aspect default, so the box never collapses and
+   never flashes a ratio the member will not get. */
 .postMedia {
   position: relative;
-  background: var(--brand-green-dark);
-  aspect-ratio: 16/9;
+  background: var(--ink);
+  aspect-ratio: 16/10;
   overflow: hidden;
 }
 .postMedia img,

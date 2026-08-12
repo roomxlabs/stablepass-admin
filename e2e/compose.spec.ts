@@ -11,6 +11,19 @@ const PNG_1x1 = Buffer.from(
   "base64",
 );
 
+/**
+ * Wait for object-URL images to actually decode before shooting. Without this
+ * the shot lands while the <img> is still blank and the baseline records
+ * `.postMedia`'s background instead of the photo — which is exactly why the
+ * committed 06-compose-preview.png was an unpainted box (see .rx/gotchas.md).
+ */
+async function settleImages(page: import("@playwright/test").Page) {
+  await page.evaluate(async () => {
+    await Promise.all(Array.from(document.images).map((img) => img.decode().catch(() => {})));
+    await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+  });
+}
+
 async function signIn(page: import("@playwright/test").Page) {
   await page.goto("/signin");
   await page.locator("#email").fill("ops@stablepass.co");
@@ -82,10 +95,12 @@ test("compose: pick horse, upload photo, caption, preview", async ({ page }) => 
     .getByTestId("caption")
     .fill("Last fast gallop before Saturday — he's spot-on. Came home strong over the final 200.");
 
+  await settleImages(page);
   await page.screenshot({ path: "e2e/__screenshots__/05-compose-filled.png", fullPage: true });
 
   // Full mobile + web preview.
   await page.getByRole("button", { name: "Preview on mobile & web" }).click();
   await expect(page.getByTestId("preview-modal")).toBeVisible();
+  await settleImages(page);
   await page.screenshot({ path: "e2e/__screenshots__/06-compose-preview.png" });
 });

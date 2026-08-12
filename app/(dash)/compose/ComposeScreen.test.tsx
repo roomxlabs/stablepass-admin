@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
-import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import ComposeScreen from "./ComposeScreen";
 import type { EditInitial, HorseOption, TrainerOption } from "./types";
 
@@ -452,5 +452,210 @@ describe("ComposeScreen", () => {
     // Endpoint reached (guard passed), then the code maps to the friendly line.
     await waitFor(() => expect(api.schedulePost).toHaveBeenCalledTimes(1));
     expect(screen.getByTestId("action-note").textContent).toMatch(/past/i);
+  });
+});
+
+// --- ENG-558: detected-orientation readout ----------------------------------
+// The measurement is taken off the Step 2 preview element, from the LOCAL file,
+// before any upload — so it never reads post.aspect_ratio (that column is the
+// webhook's, ENG-557) and works the moment the operator picks a file.
+describe("ComposeScreen · media orientation", () => {
+  beforeEach(() => {
+    // jsdom implements neither, and the component guards on their presence, so
+    // without these the local object-URL preview never renders at all and
+    // there is no element to measure.
+    Object.assign(URL, {
+      createObjectURL: () => "blob:measured",
+      revokeObjectURL: () => {},
+    });
+    // Swapping a file discards the previous draft first; without a resolved
+    // promise here that call throws and the swap never reaches the reset.
+    api.discardDraft.mockResolvedValue(undefined);
+  });
+
+  afterEach(() => {
+    Reflect.deleteProperty(URL, "createObjectURL");
+    Reflect.deleteProperty(URL, "revokeObjectURL");
+  });
+
+  function pickVideo(name = "reel.mov") {
+    api.createDraft.mockResolvedValue({
+      id: "v1",
+      status: "draft",
+      type: "video",
+      watermarked: false,
+      uploadUrl: "https://storage.mux.com/one-time-upload",
+      muxUploadId: "mux-123",
+    });
+    api.uploadVideoToMux.mockResolvedValue(undefined);
+    const file = new File([new Uint8Array([9, 9, 9])], name, { type: "video/quicktime" });
+    fireEvent.change(screen.getByTestId("media-input"), { target: { files: [file] } });
+  }
+
+  /** Stand in for the browser decoding the file's metadata. */
+  function reportVideoSize(video: HTMLVideoElement, width: number, height: number) {
+    Object.defineProperty(video, "videoWidth", { value: width, configurable: true });
+    Object.defineProperty(video, "videoHeight", { value: height, configurable: true });
+    fireEvent.loadedMetadata(video);
+  }
+
+  it("shows no readout until a file is chosen", () => {
+    renderScreen();
+    expect(screen.queryByTestId("media-readout")).toBeNull();
+  });
+
+  it("measures a portrait reel and warns that members see it cropped", async () => {
+    const { container } = renderScreen();
+    pickHorse("horse-opt-h1");
+    pickVideo();
+
+    // Metadata pending: the line must not guess an orientation.
+    const readout = await screen.findByTestId("media-readout");
+    expect(readout.textContent).toBe("Measuring…");
+    expect(readout.textContent).not.toMatch(/Landscape|Portrait|Square/);
+
+    reportVideoSize(container.querySelector("video")!, 1080, 1920);
+
+    expect(screen.getByTestId("media-readout").textContent).toBe(
+      "1080×1920 · Portrait 9:16 · Members see it cropped to 4:5",
+    );
+
+    // ...and the member card previews it in the clamped 4:5 box, not 16:9.
+    fireEvent.click(screen.getByRole("button", { name: "Preview" }));
+    const boxes = screen.getAllByTestId("post-preview-media");
+    expect(boxes.length).toBeGreaterThan(0);
+    for (const box of boxes) expect(box.style.aspectRatio).toBe("0.8");
+  });
+
+  it("previews a 16:9 video uncropped", async () => {
+    const { container } = renderScreen();
+    pickHorse("horse-opt-h1");
+    pickVideo("gallop.mov");
+    await screen.findByTestId("media-readout");
+
+    reportVideoSize(container.querySelector("video")!, 1920, 1080);
+
+    expect(screen.getByTestId("media-readout").textContent).toBe(
+      "1920×1080 · Landscape 16:9 · Members see it at 16:9",
+    );
+  });
+
+  it("reports an undecodable file instead of blocking the operator", async () => {
+    const { container } = renderScreen();
+    pickHorse("horse-opt-h1");
+    pickVideo("corrupt.mov");
+    await screen.findByTestId("media-readout");
+
+    fireEvent.error(container.querySelector("video")!);
+
+    expect(screen.getByTestId("media-readout").textContent).toBe(
+      "Dimensions unavailable · Members see it at 16:10",
+    );
+    // Advisory only — the upload path is untouched by a failed measurement.
+    await waitFor(() => expect(api.uploadVideoToMux).toHaveBeenCalledTimes(1));
+  });
+
+  it("clears the previous readout when the operator swaps the file", async () => {
+    const { container } = renderScreen();
+    pickHorse("horse-opt-h1");
+    pickVideo("landscape.mov");
+    await screen.findByTestId("media-readout");
+    reportVideoSize(container.querySelector("video")!, 1920, 1080);
+    expect(screen.getByTestId("media-readout").textContent).toMatch(/Landscape/);
+
+    // Swap: the stale orientation must go before the new one lands.
+    pickVideo("reel.mov");
+    expect(screen.getByTestId("media-readout").textContent).toBe("Measuring…");
+
+    reportVideoSize(container.querySelector("video")!, 1080, 1920);
+    expect(screen.getByTestId("media-readout").textContent).toMatch(/Portrait 9:16/);
+  });
+
+  it("gives up on a file that never reports metadata, rather than measuring forever", async () => {
+    // An undecodable codec does not reliably raise `error` — it can simply
+    // never fire `loadedmetadata`. Without a deadline the operator is left
+    // staring at "Measuring…" with no answer.
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      renderScreen();
+      pickHorse("horse-opt-h1");
+      pickVideo("silent.mov");
+      expect((await screen.findByTestId("media-readout")).textContent).toBe("Measuring…");
+
+      await act(async () => {
+        vi.advanceTimersByTime(9000);
+      });
+
+      expect(screen.getByTestId("media-readout").textContent).toBe(
+        "Dimensions unavailable · Members see it at 16:10",
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("drives the rail preview box off the measurement, not a fixed letterbox", async () => {
+    const { container } = renderScreen();
+    pickHorse("horse-opt-h1");
+
+    // Before any file: the 16:10 default.
+    expect(screen.getByTestId("mini-media").style.aspectRatio).toBe("1.6");
+
+    pickVideo();
+    await screen.findByTestId("media-readout");
+    reportVideoSize(container.querySelector("video")!, 1080, 1920);
+
+    // The box under the readout must agree with the readout.
+    expect(screen.getByTestId("mini-media").style.aspectRatio).toBe("0.8");
+  });
+
+  it("edit mode shows no readout — the media is fixed and never measured", () => {
+    const initial: EditInitial = {
+      id: "post-9",
+      status: "published",
+      mediaType: "video",
+      mediaUrl: "https://signed.example/video.m3u8",
+      title: "Old title",
+      caption: "Old caption",
+      bylineId: "t1",
+      scheduledFor: null,
+      horse: HORSES[0],
+    };
+    render(<ComposeScreen horses={HORSES} trainers={TRAINERS} initial={initial} />);
+
+    // Measuring an HLS rendition would print a confident wrong number, and the
+    // operator cannot change the media here anyway.
+    expect(screen.getByTestId("media-existing")).toBeTruthy();
+    expect(screen.queryByTestId("media-readout")).toBeNull();
+  });
+
+  it("measures a photo but promises only what the app actually renders", async () => {
+    api.createDraft.mockResolvedValue({
+      id: "p1",
+      status: "draft",
+      type: "photo",
+      watermarked: false,
+      uploadUrl: "https://storage.example/upload",
+      path: "posts/p1.jpg",
+      token: "tok",
+      bucket: "post-media",
+    });
+    api.uploadPhotoToStorage.mockResolvedValue(undefined);
+
+    const { container } = renderScreen();
+    pickHorse("horse-opt-h1");
+    const file = new File([new Uint8Array([1, 2, 3])], "gallop.jpg", { type: "image/jpeg" });
+    fireEvent.change(screen.getByTestId("media-input"), { target: { files: [file] } });
+    await screen.findByTestId("media-readout");
+
+    const img = container.querySelector("img")!;
+    Object.defineProperty(img, "naturalWidth", { value: 1920, configurable: true });
+    Object.defineProperty(img, "naturalHeight", { value: 1080, configurable: true });
+    fireEvent.load(img);
+
+    // Photos carry no Mux aspect_ratio, so members get 16:10 regardless.
+    expect(screen.getByTestId("media-readout").textContent).toBe(
+      "1920×1080 · Landscape 16:9 · Members see it at 16:10",
+    );
   });
 });

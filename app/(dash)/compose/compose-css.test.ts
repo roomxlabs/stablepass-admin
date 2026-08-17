@@ -11,11 +11,30 @@ import { describe, expect, it } from "vitest";
 // file: URL and readFileSync dies with "The URL must be of scheme file".
 const CSS = readFileSync(join(process.cwd(), "app/(dash)/compose/compose.module.css"), "utf8");
 
-/** The declarations inside one top-level rule block. */
+/**
+ * The declarations inside one top-level rule block.
+ *
+ * Rejects a DUPLICATE selector rather than reading the first and stopping.
+ * Reading only the first match is not a guard at all: appending
+ * `.postCard { border: 1px solid var(--line); }` to the end of the stylesheet
+ * silently undoes this ticket's parity fixes with every test still green,
+ * because the later rule is what the cascade actually applies. ENG-611 is
+ * sequenced straight after ENG-558 and declares this same stylesheet in its
+ * surface, so that is a live hazard, not a hypothetical one.
+ */
 function rule(selector: string): string {
-  const at = CSS.indexOf(`${selector} {`);
-  expect(at, `${selector} should exist in compose.module.css`).toBeGreaterThan(-1);
-  return CSS.slice(at, CSS.indexOf("}", at));
+  const marker = `${selector} {`;
+  // Only TOP-LEVEL occurrences count: the selector has to begin its own line.
+  // Without that anchor a descendant rule such as `.previewCompact .postCard {`
+  // contains `.postCard {` as a substring and reads as a redeclaration, which
+  // it is not — it is a different selector at a different specificity, and the
+  // compact scale legitimately needs it.
+  const hits: number[] = [];
+  for (let i = CSS.indexOf(marker); i !== -1; i = CSS.indexOf(marker, i + 1)) {
+    if (i === 0 || CSS[i - 1] === "\n") hits.push(i);
+  }
+  expect(hits.length, `${selector} should be declared exactly once in compose.module.css`).toBe(1);
+  return CSS.slice(hits[0], CSS.indexOf("}", hits[0]));
 }
 
 describe("member-card parity (ENG-554 geometry)", () => {

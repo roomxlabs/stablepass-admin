@@ -47,6 +47,18 @@ race read is logged and suppresses badges; it is never silently read as "nobody 
 row→option mapping lives in `data.ts` (same split as `app/(dash)/trainers/data.ts`) precisely so the
 badge is provably data-driven: a hardcoded value inside `page.tsx` would sail through the whole suite.
 
+## Race badge treatment
+`.pill .pillGreen .pillDot` — the classes already in `compose.module.css`, matching the mockup's
+`<span class="pill green dot">` and the Status chip on the same screen. `.raceBadge` adds only the
+mockup's inline `font-size: 10.5px` and `flex-shrink: 0`. It must NOT carry its own ground, weight,
+case or padding: an earlier cut did, which put two design languages for one component on one screen.
+
+## Video controls
+The rail is never playable (the native control bar plus its black band eats ~40% of that small box).
+The modal is playable on click, but `controls` only appears once playback starts — the bar is opaque
+and covers ~21% of a 16:9 box, which is precisely the bottom edge this ticket exists to reveal. The
+considered look is the one that most needs an unobstructed frame.
+
 ## Typography
 Option D on the horse name: `var(--font-sans)` 500 on `#3A3A38`, matching mobile M1 and web W2. The
 colour is a literal on purpose — it is this repo's CSS, not an import of mobile's token. Card geometry

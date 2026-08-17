@@ -8,6 +8,9 @@
 // the reactions instead of below, a raw ALL-CAPS racing name, and a fixed 16:9
 // media box that blind-cropped every reel. Design source for this layout is
 // 06-stage1-design/mockups/web/admin/screens/03-compose.html (round 5 re-cut).
+"use client";
+
+import { useState } from "react";
 import type { MeasureState, MediaDimensions, MediaType } from "./types";
 import { describeOrientation, displayHorseName, resolveAspect } from "./types";
 import HlsVideo from "./HlsVideo";
@@ -39,6 +42,12 @@ export default function PostPreview({
   onMeasure?: (dims: MediaDimensions) => void;
 }) {
   const { horseName, byline, caption, mediaType, mediaUrl, racesToday, dims, measure } = data;
+
+  // The native control bar is opaque and eats the bottom ~21% of a 16:9 box, so
+  // showing it by default would hide the very edge this ticket exists to make
+  // visible. It appears once the operator actually starts playback — before
+  // that the frame is unobstructed and the preview is honest about framing.
+  const [played, setPlayed] = useState(false);
 
   // Racing names are registered ALL CAPS; members read them title-cased.
   const shownName = horseName ? displayHorseName(horseName) : "Select a horse";
@@ -80,7 +89,10 @@ export default function PostPreview({
               </div>
             </div>
             {racesToday ? (
-              <span className={styles.raceBadge} data-testid="preview-race-badge">
+              <span
+                className={`${styles.pill} ${styles.pillGreen} ${styles.pillDot} ${styles.raceBadge}`}
+                data-testid="preview-race-badge"
+              >
                 Race day
               </span>
             ) : null}
@@ -106,16 +118,32 @@ export default function PostPreview({
               />
             ) : mediaUrl && mediaType === "video" ? (
               // Playable in the modal, where there is room to vet the actual
-              // video. NOT in the compact rail: the native control bar plus its
-              // black band eats ~40% of that small box, and a member sees none
-              // of it — which would make the rail preview lie about framing.
+              // video — click the frame to start it. NOT playable in the
+              // compact rail: the native control bar plus its black band eats
+              // ~40% of that small box, and a member sees none of it, so the
+              // rail preview would lie about framing.
+              //
+              // The same argument applies to the modal until playback starts,
+              // which is why `controls` waits for `played` rather than being on
+              // from the outset: the considered look is the one that most needs
+              // an unobstructed frame.
               <HlsVideo
                 src={mediaUrl}
-                controls={!compact}
+                controls={!compact && played}
                 muted={compact}
                 playsInline
                 preload="metadata"
                 data-testid="preview-video"
+                onClick={
+                  compact
+                    ? undefined
+                    : (e) => {
+                        const v = e.currentTarget;
+                        if (v.paused) void v.play();
+                        else v.pause();
+                      }
+                }
+                onPlay={() => setPlayed(true)}
                 onLoadedMetadata={(e) =>
                   onMeasure?.({
                     width: e.currentTarget.videoWidth,

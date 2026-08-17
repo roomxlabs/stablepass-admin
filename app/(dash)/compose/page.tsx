@@ -3,12 +3,12 @@ import ComposeScreen from "./ComposeScreen";
 import type { EditInitial, HorseOption, MediaType, TrainerOption } from "./types";
 import { aestToday } from "./types";
 import {
+  loadRacingHorseIds,
   one,
-  racingHorseIds,
   toHorseOptions,
   toTrainerOptions,
   type HorseRow,
-  type RaceTodayRow,
+  type RaceQueryClient,
   type TrainerRow,
 } from "./data";
 import {
@@ -52,10 +52,16 @@ export default async function ComposePage({
 
   // Which horses actually run today, so the preview's "Race day" badge is real
   // rather than hardcoded on every post (ENG-558). `race_date` is a plain DATE
-  // column, so this is a straight equality against today in AEST — both
+  // column, so it is a straight equality against today in AEST — both
   // 'upcoming' and 'finished' races count: a horse that ran this morning still
   // had a race day.
-  const [horsesRes, trainersRes, racesRes] = await Promise.all([
+  //
+  // The read lives in `loadRacingHorseIds` (data.ts), NOT inline: this file is
+  // an async server component and cannot be unit-tested, and inline it let three
+  // separate badge regressions pass the entire suite. That function owns the
+  // `race_date` filter and the "a failed read is not 'nobody races today'"
+  // branch, and data.test.ts pins both.
+  const [horsesRes, trainersRes, racing] = await Promise.all([
     sb
       .from("horse")
       .select(
@@ -64,17 +70,13 @@ export default async function ComposePage({
       .eq("status", "active")
       .order("display_name"),
     sb.from("trainer").select("id,name,display_name").order("name"),
-    sb.from("race").select("race_horse(horse_id)").eq("race_date", aestToday()),
+    // Cast through unknown, same reason as lib/dashboard/queries.ts: with no
+    // generated DB types, matching supabase-js's builder generics against a
+    // hand-written structural type makes tsc unroll them (TS2589).
+    loadRacingHorseIds(sb as unknown as RaceQueryClient, aestToday()),
   ]);
 
-  // A FAILED race read is not "nobody races today". Surface it in the log
-  // rather than letting an embed rename or a policy change quietly turn the
-  // badge off everywhere and read as flakiness. The screen still renders —
-  // the badge is advisory and must never block composing.
-  if (racesRes.error) {
-    console.error("compose: race-day lookup failed, badges suppressed", racesRes.error.message);
-  }
-  const racingToday = racingHorseIds(racesRes.data as RaceTodayRow[] | null);
+  const racingToday = racing.ids;
 
   const horses: HorseOption[] = toHorseOptions(horsesRes.data as HorseRow[] | null, racingToday);
   const trainers: TrainerOption[] = toTrainerOptions(trainersRes.data as TrainerRow[] | null);

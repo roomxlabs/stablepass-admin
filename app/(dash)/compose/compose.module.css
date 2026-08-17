@@ -1,7 +1,11 @@
 /* Compose screen styles — ported 1:1 from the shared mockup
-   (dev-handover/StablePass-mockups/mockups/web/style.css, admin + member-post
-   sections). Scoped as a CSS module because globals.css only carries the shell
-   subset; values reference the global :root tokens so nothing is eyeballed. */
+   (06-stage1-design/mockups/web/style.css, admin + member-post sections; the
+   screen itself is web/admin/screens/03-compose.html). Scoped as a CSS module
+   because globals.css only carries the shell subset; values reference the
+   global :root tokens so nothing is eyeballed.
+
+   The path above used to read `dev-handover/StablePass-mockups/…`, which has
+   never existed anywhere in the workspace — see .rx/gotchas.md. */
 
 /* ---- Topbar buttons (mockup uses small btn-light in the topbar) ---------- */
 .btnLight {
@@ -706,20 +710,6 @@
   color: var(--muted);
   display: inline-flex;
 }
-.postPlay {
-  position: absolute;
-  top: 50%;
-  left: 50%;
-  transform: translate(-50%, -50%);
-  width: 64px;
-  height: 64px;
-  border-radius: 50%;
-  background: rgba(255, 255, 255, 0.95);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: var(--brand-green-dark);
-}
 /* BELOW the reaction bar, Instagram-style, as on the member card (5 Aug). */
 .postBody {
   margin: 12px 18px 0;
@@ -729,29 +719,21 @@
   white-space: pre-wrap;
   word-break: break-word;
 }
+/* The race badge is a `.pill .pillGreen .pillDot` — the SAME treatment as the
+   Status chip two panels up, and a byte-for-byte match of the mockup rule
+   (mockups/web/style.css `.pill`). The mockup writes it three times on this
+   screen as `<span class="pill green dot">`, including inside the preview card
+   at 03-compose.html:198.
+
+   This class therefore carries no colour, weight, case or padding of its own —
+   an earlier cut of this ticket gave it a solid-green uppercase treatment,
+   which put two different design languages for the same component on one
+   screen (the "● Ready" chip and a "● RACE DAY" block). All it adds is the
+   size the mockup sets inline there, plus flex-shrink so a long horse name
+   cannot squeeze it. */
 .raceBadge {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  background: var(--brand-green);
-  color: var(--cream);
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  padding: 5px 11px;
-  border-radius: var(--radius-pill);
+  font-size: 10.5px;
   flex-shrink: 0;
-}
-/* The member card's badge carries a leading dot; the `gap` above exists to
-   space it. Without this the admin copy had an orphaned gap and read as a flat
-   block — a parity miss on the one component whose job is parity. */
-.raceBadge::before {
-  content: "";
-  width: 6px;
-  height: 6px;
-  background: var(--cream);
-  border-radius: 50%;
 }
 
 /* ---- Compact scale (the right-column pane the mockup draws) --------------
@@ -784,10 +766,6 @@
 .previewCompact .postBody {
   margin: 10px 14px 0;
   font-size: 13px;
-}
-.previewCompact .raceBadge {
-  font-size: 10.5px;
-  padding: 4px 9px;
 }
 
 /* ---- Responsive ---------------------------------------------------------- */

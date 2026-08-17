@@ -1,8 +1,17 @@
 // The race-day badge must be DATA-DRIVEN. It was hardcoded on every post
 // before ENG-558, and the loader is an async server component, so without
 // these tests the regression (`racesToday: true`) sails through the suite.
-import { describe, expect, it } from "vitest";
-import { one, racingHorseIds, toHorseOptions, toTrainerOptions, type HorseRow } from "./data";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+  loadRacingHorseIds,
+  one,
+  racingHorseIds,
+  toHorseOptions,
+  toTrainerOptions,
+  type HorseRow,
+  type RaceQueryClient,
+  type RaceTodayRow,
+} from "./data";
 
 function horse(id: string, over: Partial<HorseRow> = {}): HorseRow {
   return {
@@ -112,5 +121,79 @@ describe("toTrainerOptions", () => {
 
   it("is empty for a failed read", () => {
     expect(toTrainerOptions(null)).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// loadRacingHorseIds — the query itself, not just the mapping.
+//
+// These exist because page.tsx is an async server component and cannot be
+// tested. With the read inline there, THREE regressions passed the full suite:
+// dropping the race_date filter (every horse that ever raced gets a badge),
+// deleting the error branch, and building the set from horse ids. The first two
+// are pinned here; the spy records its arguments, because a query mock that
+// swallows them cannot see a missing filter (.rx/gotchas.md).
+// ---------------------------------------------------------------------------
+
+function spyClient(result: { data: RaceTodayRow[] | null; error: { message: string } | null }) {
+  const calls: { table?: string; columns?: string; eq?: [string, string] } = {};
+  const client: RaceQueryClient = {
+    from(table) {
+      calls.table = table;
+      return {
+        select(columns) {
+          calls.columns = columns;
+          return {
+            eq(column, value) {
+              calls.eq = [column, value];
+              return Promise.resolve(result);
+            },
+          };
+        },
+      };
+    },
+  };
+  return { client, calls };
+}
+
+describe("loadRacingHorseIds", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it("filters races to the given day — without this every past runner is 'racing today'", async () => {
+    const { client, calls } = spyClient({
+      data: [{ race_horse: [{ horse_id: "h1" }, { horse_id: "h2" }] }],
+      error: null,
+    });
+
+    const got = await loadRacingHorseIds(client, "2026-08-18");
+
+    expect(calls.table).toBe("race");
+    expect(calls.columns).toBe("race_horse(horse_id)");
+    // The whole point: a date-scoped equality, on the date it was handed.
+    expect(calls.eq).toEqual(["race_date", "2026-08-18"]);
+    expect(got.failed).toBe(false);
+    expect([...got.ids].sort()).toEqual(["h1", "h2"]);
+  });
+
+  it("reports a FAILED read instead of passing it off as 'nobody races today'", async () => {
+    const err = vi.spyOn(console, "error").mockImplementation(() => {});
+    const { client } = spyClient({ data: null, error: { message: "permission denied" } });
+
+    const got = await loadRacingHorseIds(client, "2026-08-18");
+
+    // Fails in the safe direction — no badge is shown, never a false one...
+    expect(got.ids.size).toBe(0);
+    // ...but the caller can still tell the two cases apart.
+    expect(got.failed).toBe(true);
+    expect(err).toHaveBeenCalledOnce();
+    // The message only — no error object, no .details, no .hint.
+    expect(err.mock.calls[0][1]).toBe("permission denied");
+  });
+
+  it("distinguishes a genuinely empty race day from a failure", async () => {
+    const { client } = spyClient({ data: [], error: null });
+    const got = await loadRacingHorseIds(client, "2026-08-18");
+    expect(got.ids.size).toBe(0);
+    expect(got.failed).toBe(false);
   });
 });

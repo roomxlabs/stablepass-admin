@@ -44,6 +44,48 @@ export function racingHorseIds(rows: RaceTodayRow[] | null): Set<string> {
   return new Set((rows ?? []).flatMap((r) => (r.race_horse ?? []).map((rh) => rh.horse_id)));
 }
 
+/** The narrow slice of the Supabase client this loader needs, so it can be
+ *  unit-tested with a spy that actually records its filter arguments. */
+export type RaceQueryClient = {
+  from: (table: string) => {
+    select: (columns: string) => {
+      eq: (
+        column: string,
+        value: string,
+      ) => PromiseLike<{ data: RaceTodayRow[] | null; error: { message: string } | null }>;
+    };
+  };
+};
+
+/**
+ * Which horses run today, for the preview's "Race day" badge.
+ *
+ * This lives here rather than inline in `page.tsx` because `page.tsx` is an
+ * async server component and is therefore effectively untestable — and the
+ * whole point of ENG-558 is that a badge which is always on is a lie. Inline,
+ * three separate regressions passed the full suite: dropping the `race_date`
+ * filter (every horse that ever raced gets a badge), deleting the error branch,
+ * and building the set from horse ids instead of race rows. Two of those three
+ * are pinned by this function's tests.
+ *
+ * `failed` is reported rather than inferred: an empty set from an ERROR is not
+ * the same fact as an empty set from "nobody races today" (CLAUDE.md — an AAL1
+ * admin reads 0 rows with no error). Either way the screen still renders: the
+ * badge is advisory and must never block composing.
+ */
+export async function loadRacingHorseIds(
+  sb: RaceQueryClient,
+  today: string,
+): Promise<{ ids: Set<string>; failed: boolean }> {
+  const res = await sb.from("race").select("race_horse(horse_id)").eq("race_date", today);
+  if (res.error) {
+    // Log the message only — never the error object, its details or its hint.
+    console.error("compose: race-day lookup failed, badges suppressed", res.error.message);
+    return { ids: new Set<string>(), failed: true };
+  }
+  return { ids: racingHorseIds(res.data), failed: false };
+}
+
 export function toHorseOptions(rows: HorseRow[] | null, racingToday: Set<string>): HorseOption[] {
   return (rows ?? []).map((h) => {
     const t = one(h.trainer);

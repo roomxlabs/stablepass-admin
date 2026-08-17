@@ -517,3 +517,27 @@ ffmpeg on the box, and real client footage must never reach a PR screenshot, so 
 records synthetic webm in-page via `canvas.captureStream()` + `MediaRecorder` at exact dimensions. The
 `<video>` then reports true intrinsic size. Paint corner ticks + a centre cross + the size as text, so
 a centre crop is self-evident in the PNG and the shot is self-describing.
+
+## Before styling a "parity" component, grep the stylesheet for the one that already exists (ENG-558)
+The re-scope's own first cut of the Race day badge invented `.raceBadge`: solid `--brand-green`,
+uppercase, weight 700. The mockup writes that badge three times on the compose screen as
+`<span class="pill green dot">`, and `.pill` / `.pillGreen` / `.pillDot` were **already in
+`compose.module.css`**, already a byte-for-byte match, and already rendering the Status chip one panel
+above the preview. The result was two design languages for the same component on one screen — and a
+regression from base, which had used the pill classes correctly.
+
+The badge now composes them and `.raceBadge` carries only the mockup's inline `font-size: 10.5px` plus
+`flex-shrink: 0`. **Rule of thumb: a ticket whose job is parity is exactly the ticket most likely to
+hand-roll a component that already exists.** Grep first; a new class for an existing mockup component
+is a smell, not a shortcut. Fresh-eyes review caught this one, the screenshots made it obvious, and no
+test could have — see the CSS-module entry above for why.
+
+## Anchor a "duplicate selector" CSS assertion to the line start (ENG-558)
+`compose-css.test.ts#rule()` reads a rule out of the raw stylesheet, so it must reject a **second**
+declaration of the same selector — the later one is what the cascade applies, and appending
+`.postCard { border: 1px solid var(--line) }` to the file otherwise reverts a parity fix with a green
+suite. That matters here because ENG-611 is sequenced straight after ENG-558 into this same file.
+
+The naive version (`indexOf(sel + " {")` twice) is wrong: `.previewCompact .postCard {` **contains**
+`.postCard {`, so every legitimate descendant override reads as a duplicate and the guard fails on
+correct code. Only count occurrences at index 0 or immediately after a newline.

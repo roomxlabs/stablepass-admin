@@ -231,5 +231,18 @@ describe("guardrail: no watermarking in admin", () => {
     expect(container.querySelector("[class*='watermark' i]")).toBeNull();
     expect(container.querySelector("[data-testid*='watermark' i]")).toBeNull();
     expect(container.innerHTML.toLowerCase()).not.toContain("watermark");
+
+    // Name-based checks only catch an overlay that admits what it is. Pin the
+    // SHAPE too: the media box holds exactly the one media element, so any
+    // extra painted layer — however it is named — fails here.
+    const media = screen.getByTestId("preview-media");
+    expect(media.children).toHaveLength(1);
+    expect(media.firstElementChild?.tagName).toBe("VIDEO");
+
+    // And with no file it is the empty block alone, not an overlay host.
+    cleanup();
+    const empty = renderPreview({ mediaUrl: null, mediaType: null }).container;
+    const emptyMedia = empty.querySelector("[data-testid='preview-media']");
+    expect(emptyMedia?.children).toHaveLength(1);
   });
 });

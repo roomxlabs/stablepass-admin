@@ -7,7 +7,7 @@ import { Icon } from "../icons";
 import LocalTime from "../LocalTime";
 import HlsVideo from "./HlsVideo";
 import PreviewModal from "./PreviewModal";
-import type { PostPreviewData } from "./PostPreview";
+import PostPreview, { type PostPreviewData } from "./PostPreview";
 import {
   createDraft,
   discardDraft,
@@ -17,7 +17,15 @@ import {
   uploadPhotoToStorage,
   uploadVideoToMux,
 } from "./api";
-import type { CreateDraftResponse, EditInitial, HorseOption, MediaType, TrainerOption } from "./types";
+import type {
+  CreateDraftResponse,
+  EditInitial,
+  HorseOption,
+  MeasureState,
+  MediaDimensions,
+  MediaType,
+  TrainerOption,
+} from "./types";
 import styles from "./compose.module.css";
 
 const CAPTION_MAX = 240;
@@ -108,6 +116,13 @@ export default function ComposeScreen({
   const [file, setFile] = useState<File | null>(null);
   const [mediaType, setMediaType] = useState<MediaType | null>(initial?.mediaType ?? null);
   const [mediaUrl, setMediaUrl] = useState<string | null>(initial?.mediaUrl ?? null);
+  // Intrinsic size of the picked file, measured in the browser off the local
+  // object URL — never uploaded, never chosen by the operator. Starts "off":
+  // edit mode previews a Mux HLS rendition whose videoWidth/videoHeight
+  // describe the rendition, not the asset, so it is deliberately unmeasured
+  // rather than measured wrongly (ENG-558).
+  const [dims, setDims] = useState<MediaDimensions>(null);
+  const [measure, setMeasure] = useState<MeasureState>("off");
   const [draft, setDraft] = useState<CreateDraftResponse | null>(null);
   const [upload, setUpload] = useState<{ state: UploadState; pct: number; error?: string }>({
     state: "idle",
@@ -181,9 +196,24 @@ export default function ComposeScreen({
     setFile(null);
     setMediaType(null);
     setMediaUrl(null);
+    setDims(null);
+    setMeasure("off");
     setDraft(null);
     setUpload({ state: "idle", pct: 0 });
     if (fileInputRef.current) fileInputRef.current.value = "";
+  }
+
+  /**
+   * The preview media element reports the file's intrinsic size (or null when
+   * the browser can't decode it). Either way the measurement is finished, so
+   * the readout stops saying "Measuring…" — a file we cannot measure is
+   * advisory-only and never blocks posting.
+   */
+  function onMeasure(next: MediaDimensions) {
+    setMeasure("done");
+    setDims((prev) =>
+      prev && next && prev.width === next.width && prev.height === next.height ? prev : next,
+    );
   }
 
   async function onPickFile(picked: File) {
@@ -206,6 +236,10 @@ export default function ComposeScreen({
     setFile(picked);
     setMediaType(kind);
     setMediaUrl(objectUrl(picked));
+    // Drop the previous file's measurement BEFORE the new one lands, so the
+    // readout can never describe the file the operator just replaced.
+    setDims(null);
+    setMeasure("measuring");
     setUpload({ state: "creating", pct: 0 });
 
     try {
@@ -381,6 +415,11 @@ export default function ComposeScreen({
     caption,
     mediaType,
     mediaUrl,
+    // Real race-day data off the picked horse — the badge used to be hardcoded
+    // on every post, which made the preview claim a race that wasn't running.
+    racesToday: horse?.racesToday ?? false,
+    dims,
+    measure,
   };
 
   const captionOver = caption.length > CAPTION_MAX;
@@ -848,7 +887,7 @@ export default function ComposeScreen({
                   className={`btn ${styles.btnLight} btn-block`}
                   onClick={() => setPreviewOpen(true)}
                 >
-                  Preview on mobile &amp; web
+                  Preview post
                 </button>
                 {!isEdit ? (
                   <button
@@ -939,41 +978,19 @@ export default function ComposeScreen({
               </div>
             ) : null}
 
-            {/* Inline mini preview */}
+            {/* Inline preview — the SAME component the modal renders, at the
+                sidebar scale. This used to be a hand-rolled copy of the card
+                (hardcoded "Race day", caption above the reactions, raw racing
+                name); a third copy is how the other two drifted. It is also
+                the always-mounted instance, so it owns measurement. */}
             <div className={styles.side}>
-              <h4 className={styles.sideTitle}>Preview · mobile &amp; web</h4>
-              <div className={styles.miniWrap}>
-                <div className={styles.miniCard}>
-                  <div className={styles.miniHead}>
-                    <div className={styles.miniAvatar} aria-hidden="true">
-                      {(horse?.name.trim()[0] ?? "S").toUpperCase()}
-                    </div>
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <div className={styles.miniName}>{horse?.name ?? "Select a horse"}</div>
-                      <div className={styles.miniBy}>
-                        {trainerName ? `by ${trainerName} · just now` : "just now"}
-                      </div>
-                    </div>
-                    <span className={`${styles.pill} ${styles.pillGreen} ${styles.pillDot}`} style={{ fontSize: "10.5px" }}>
-                      Race day
-                    </span>
-                  </div>
-                  <div className={styles.miniMedia}>
-                    {mediaUrl && mediaType === "photo" ? (
-                      // eslint-disable-next-line @next/next/no-img-element -- local object URL preview
-                      <img src={mediaUrl} alt="" />
-                    ) : mediaUrl && mediaType === "video" ? (
-                      <HlsVideo src={mediaUrl} muted playsInline preload="metadata" />
-                    ) : null}
-                  </div>
-                  <div className={styles.miniBody}>
-                    {caption.trim() ? caption : "Your caption will appear here."}
-                  </div>
-                </div>
-              </div>
-              <div className={`${styles.help} ${styles.miniCaption}`}>
-                This is the mobile feed. Use Preview to see mobile &amp; web side by side.
-              </div>
+              <h4 className={styles.sideTitle}>Preview</h4>
+              {/* Only a locally-picked file is measurable — see MeasureState. */}
+              <PostPreview
+                data={previewData}
+                compact
+                onMeasure={file ? onMeasure : undefined}
+              />
             </div>
           </div>
         </div>

@@ -1,6 +1,16 @@
 import { requireAdminPage } from "@/lib/auth/admin";
 import ComposeScreen from "./ComposeScreen";
 import type { EditInitial, HorseOption, MediaType, TrainerOption } from "./types";
+import { aestToday } from "./types";
+import {
+  one,
+  racingHorseIds,
+  toHorseOptions,
+  toTrainerOptions,
+  type HorseRow,
+  type RaceTodayRow,
+  type TrainerRow,
+} from "./data";
 import {
   HORSE_PHOTO_BUCKET,
   POST_MEDIA_BUCKET,
@@ -19,22 +29,6 @@ import { resolveVideoPlayback } from "@/lib/mux-playback";
 // (horse, caption, byline, media preview) — the row Edit action links here.
 export const dynamic = "force-dynamic";
 
-type HorseRow = {
-  id: string;
-  display_name: string | null;
-  racing_name: string | null;
-  photo_url: string | null;
-  stable_name: string | null;
-  trainer_id: string | null;
-  trainer: { id: string; name: string | null; display_name: string | null } | Array<{
-    id: string;
-    name: string | null;
-    display_name: string | null;
-  }> | null;
-};
-
-type TrainerRow = { id: string; name: string | null; display_name: string | null };
-
 type PostRow = {
   id: string;
   type: string;
@@ -48,11 +42,6 @@ type PostRow = {
   horse: HorseRow | HorseRow[] | null;
 };
 
-function one<T>(v: T | T[] | null): T | null {
-  if (Array.isArray(v)) return v[0] ?? null;
-  return v ?? null;
-}
-
 export default async function ComposePage({
   searchParams,
 }: {
@@ -61,7 +50,12 @@ export default async function ComposePage({
   const { sb } = await requireAdminPage();
   const { id } = await searchParams;
 
-  const [horsesRes, trainersRes] = await Promise.all([
+  // Which horses actually run today, so the preview's "Race day" badge is real
+  // rather than hardcoded on every post (ENG-558). `race_date` is a plain DATE
+  // column, so this is a straight equality against today in AEST — both
+  // 'upcoming' and 'finished' races count: a horse that ran this morning still
+  // had a race day.
+  const [horsesRes, trainersRes, racesRes] = await Promise.all([
     sb
       .from("horse")
       .select(
@@ -70,24 +64,20 @@ export default async function ComposePage({
       .eq("status", "active")
       .order("display_name"),
     sb.from("trainer").select("id,name,display_name").order("name"),
+    sb.from("race").select("race_horse(horse_id)").eq("race_date", aestToday()),
   ]);
 
-  const horses: HorseOption[] = ((horsesRes.data as HorseRow[] | null) ?? []).map((h) => {
-    const t = one(h.trainer);
-    return {
-      id: h.id,
-      name: h.racing_name ?? h.display_name ?? "Unnamed horse",
-      photoUrl: h.photo_url,
-      stableName: h.stable_name,
-      trainerId: h.trainer_id ?? t?.id ?? null,
-      trainerName: t?.name ?? t?.display_name ?? null,
-    };
-  });
+  // A FAILED race read is not "nobody races today". Surface it in the log
+  // rather than letting an embed rename or a policy change quietly turn the
+  // badge off everywhere and read as flakiness. The screen still renders —
+  // the badge is advisory and must never block composing.
+  if (racesRes.error) {
+    console.error("compose: race-day lookup failed, badges suppressed", racesRes.error.message);
+  }
+  const racingToday = racingHorseIds(racesRes.data as RaceTodayRow[] | null);
 
-  const trainers: TrainerOption[] = ((trainersRes.data as TrainerRow[] | null) ?? []).map((t) => ({
-    id: t.id,
-    name: t.name ?? t.display_name ?? "Unnamed trainer",
-  }));
+  const horses: HorseOption[] = toHorseOptions(horsesRes.data as HorseRow[] | null, racingToday);
+  const trainers: TrainerOption[] = toTrainerOptions(trainersRes.data as TrainerRow[] | null);
 
   // Private bucket: sign each pickable horse's photo path for display.
   const horsePhotos = await signPhotoMap(sb, HORSE_PHOTO_BUCKET, horses.map((h) => h.photoUrl));
@@ -137,6 +127,7 @@ export default async function ComposePage({
           stableName: h?.stable_name ?? null,
           trainerId: h?.trainer_id ?? t?.id ?? null,
           trainerName: t?.name ?? t?.display_name ?? null,
+          racesToday: h ? racingToday.has(h.id) : false,
         },
       };
     }

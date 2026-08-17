@@ -94,6 +94,22 @@ describe("describeOrientation", () => {
     expect(describeOrientation({ width: 0, height: 0 }, "video")).toBe(copy);
   });
 
+  it("never contradicts itself on a near-square file", () => {
+    // 1080x1081 is portrait by a hair, so a raw-float orientation word printed
+    // "Portrait 1:1" — a line that argues with itself and tells the operator
+    // nothing. The word is derived from the ratio actually printed.
+    expect(describeOrientation({ width: 1080, height: 1081 }, "video")).toBe(
+      "1080×1081 · Square 1:1 · Members see it at 1:1",
+    );
+    expect(describeOrientation({ width: 1081, height: 1080 }, "video")).toBe(
+      "1081×1080 · Square 1:1 · Members see it at 1:1",
+    );
+    // A file that really is portrait still says so.
+    expect(describeOrientation({ width: 1080, height: 1350 }, "video")).toBe(
+      "1080×1350 · Portrait 4:5 · Members see it at 4:5",
+    );
+  });
+
   it("falls back to a decimal ratio when the size does not reduce cleanly", () => {
     // 1234:567 is coprime-ish noise; a decimal reads better than the raw pair.
     expect(describeOrientation({ width: 1234, height: 567 }, "video")).toBe(

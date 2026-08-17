@@ -97,6 +97,20 @@ describe("the media box tells the truth about aspect", () => {
     expect(readout).not.toMatch(/Landscape|Portrait|Square/);
   });
 
+  it("announces the readout, which changes without the operator acting", () => {
+    // "Measuring…" -> the result happens on its own, so a screen-reader user
+    // gets nothing unless the node is a live region.
+    render(<MeasuringHarness mediaUrl="blob:reel" mediaType="video" />);
+    expect(screen.getByTestId("preview-readout")).toBe(screen.getByRole("status"));
+
+    const video = screen.getByTestId("preview-video") as HTMLVideoElement;
+    Object.defineProperty(video, "videoWidth", { value: 1080, configurable: true });
+    Object.defineProperty(video, "videoHeight", { value: 1920, configurable: true });
+    fireEvent.loadedMetadata(video);
+    // Same node after the transition — not swapped out, so the region is live.
+    expect(screen.getByRole("status").textContent).toContain("Portrait");
+  });
+
   it("clamps a 1080x1920 reel to 0.8 and says it will be cropped", () => {
     render(<MeasuringHarness mediaUrl="blob:reel" mediaType="video" />);
     const video = screen.getByTestId("preview-video") as HTMLVideoElement;

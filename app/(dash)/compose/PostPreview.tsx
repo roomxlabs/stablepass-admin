@@ -51,9 +51,12 @@ export default function PostPreview({
   return (
     <div className={`${styles.previewBlock} ${compact ? styles.previewCompact : ""}`}>
       {/* Detected, never chosen. Absent entirely until a file is picked, and
-          in edit mode, where the source is an HLS rendition we can't trust. */}
+          in edit mode, where the source is an HLS rendition we can't trust.
+          role=status because the line CHANGES under the operator ("Measuring…"
+          then the result) without them acting, so a screen reader has to be
+          told. Polite, not assertive: it is advisory and never blocks posting. */}
       {measure !== "off" ? (
-        <div className={styles.previewReadout} data-testid="preview-readout">
+        <div className={styles.previewReadout} role="status" data-testid="preview-readout">
           {measure === "measuring" ? "Measuring…" : describeOrientation(dims, mediaType)}
         </div>
       ) : null}

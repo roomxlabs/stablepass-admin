@@ -125,8 +125,15 @@ function gcd(a: number, b: number): number {
   return b === 0 ? a : gcd(b, a % b);
 }
 
-/** "1920x1080" -> "16:9"; odd sizes that don't reduce cleanly -> "1.85:1". */
-function ratioLabel(width: number, height: number): string {
+/**
+ * "1920x1080" -> "16:9"; odd sizes that don't reduce cleanly -> "1.85:1".
+ *
+ * Returns the two numbers ACTUALLY PRINTED alongside the label, because the
+ * orientation word must be derived from those and not from the raw float. At
+ * 1080x1081 the float is portrait while the printed label rounds to 1:1, and
+ * "Portrait 1:1" is a self-contradiction sitting in the operator's readout.
+ */
+function ratioParts(width: number, height: number): { label: string; w: number; h: number } {
   const w = Math.round(width);
   const h = Math.round(height);
   const g = gcd(w, h) || 1;
@@ -134,9 +141,14 @@ function ratioLabel(width: number, height: number): string {
   const rh = h / g;
   // A clean broadcast-style ratio (16:9, 4:5, 1:1). Anything that only reduces
   // to big coprime numbers reads as noise, so fall back to a decimal.
-  if (rw <= 32 && rh <= 32) return `${rw}:${rh}`;
+  if (rw <= 32 && rh <= 32) return { label: `${rw}:${rh}`, w: rw, h: rh };
   const ratio = w / h;
-  return ratio >= 1 ? `${Number(ratio.toFixed(2))}:1` : `1:${Number((h / w).toFixed(2))}`;
+  if (ratio >= 1) {
+    const n = Number(ratio.toFixed(2));
+    return n === 1 ? { label: "1:1", w: 1, h: 1 } : { label: `${n}:1`, w: n, h: 1 };
+  }
+  const n = Number((h / w).toFixed(2));
+  return n === 1 ? { label: "1:1", w: 1, h: 1 } : { label: `1:${n}`, w: 1, h: n };
 }
 
 /**
@@ -153,7 +165,10 @@ export function describeOrientation(dims: MediaDimensions, mediaType: MediaType 
   }
   const { width, height } = dims;
   const ratio = width / height;
-  const orientation = ratio > 1 ? "Landscape" : ratio < 1 ? "Portrait" : "Square";
+  // Orientation comes from the PRINTED ratio, never the raw float — see
+  // ratioParts. A line that reads "Portrait 1:1" tells the operator nothing.
+  const { label, w: rw, h: rh } = ratioParts(width, height);
+  const orientation = rw > rh ? "Landscape" : rw < rh ? "Portrait" : "Square";
 
   let membersSee: string;
   if (mediaType === "photo") {
@@ -168,10 +183,10 @@ export function describeOrientation(dims: MediaDimensions, mediaType: MediaType 
   } else if (ratio > ASPECT_MAX) {
     membersSee = "Members see it cropped to 1.91:1";
   } else {
-    membersSee = `Members see it at ${ratioLabel(width, height)}`;
+    membersSee = `Members see it at ${label}`;
   }
 
-  return `${width}×${height} · ${orientation} ${ratioLabel(width, height)} · ${membersSee}`;
+  return `${width}×${height} · ${orientation} ${label} · ${membersSee}`;
 }
 
 /**

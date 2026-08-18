@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import ComposeScreen from "./ComposeScreen";
 import type { EditInitial, HorseOption, TrainerOption } from "./types";
@@ -42,6 +42,7 @@ const HORSES: HorseOption[] = [
     stableName: "Randwick",
     trainerId: "t1",
     trainerName: "Chris Waller",
+    racesToday: true,
   },
   {
     id: "h2",
@@ -50,6 +51,7 @@ const HORSES: HorseOption[] = [
     stableName: "Caulfield",
     trainerId: "t2",
     trainerName: "Peter Moody",
+    racesToday: false,
   },
 ];
 
@@ -452,5 +454,172 @@ describe("ComposeScreen", () => {
     // Endpoint reached (guard passed), then the code maps to the friendly line.
     await waitFor(() => expect(api.schedulePost).toHaveBeenCalledTimes(1));
     expect(screen.getByTestId("action-note").textContent).toMatch(/past/i);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ENG-558 — the measurement state machine, tested where it is OWNED.
+//
+// PostPreview.test.tsx drives a harness that re-implements this ownership, so
+// it proves the preview renders correctly GIVEN correct state — never that
+// ComposeScreen produces it. Without the tests below, deleting the reset in
+// onPickFile (stale readout) or handing onMeasure to the edit-mode preview
+// (the HLS-rendition lie) both leave the whole suite green.
+// ---------------------------------------------------------------------------
+describe("ComposeScreen — preview measurement", () => {
+  const VIDEO = new File([new Uint8Array([1, 2, 3])], "reel.mp4", { type: "video/mp4" });
+  const VIDEO_2 = new File([new Uint8Array([4, 5, 6])], "swap.mp4", { type: "video/mp4" });
+
+  // jsdom implements neither, so without these `objectUrl()` returns null and
+  // the preview never renders a media element to measure.
+  beforeEach(() => {
+    let n = 0;
+    Object.defineProperty(URL, "createObjectURL", {
+      value: vi.fn(() => `blob:test-${++n}`),
+      configurable: true,
+      writable: true,
+    });
+    Object.defineProperty(URL, "revokeObjectURL", {
+      value: vi.fn(),
+      configurable: true,
+      writable: true,
+    });
+  });
+
+  function pickFile(file: File) {
+    fireEvent.change(screen.getByTestId("media-input"), { target: { files: [file] } });
+  }
+
+  it("shows no readout until a file is picked", () => {
+    renderScreen();
+    pickHorse("horse-opt-h1");
+    expect(screen.queryByTestId("preview-readout")).toBeNull();
+  });
+
+  it("enters 'Measuring…' on pick, and asserts no orientation yet", async () => {
+    api.createDraft.mockResolvedValue({
+      id: "d1",
+      status: "draft",
+      type: "video",
+      watermarked: false,
+      uploadUrl: "http://up.test/1",
+      muxUploadId: "u1",
+    });
+    api.uploadVideoToMux.mockResolvedValue(undefined);
+
+    renderScreen();
+    pickHorse("horse-opt-h1");
+    pickFile(VIDEO);
+
+    const readout = await screen.findByTestId("preview-readout");
+    expect(readout.textContent).toBe("Measuring…");
+    expect(readout.textContent).not.toMatch(/Landscape|Portrait|Square/);
+    // ...and the box is at the 16:10 fallback, never a guessed orientation.
+    expect(screen.getByTestId("preview-media").style.aspectRatio).toBe("1.6");
+  });
+
+  it("prints the measured orientation once the media reports its size", async () => {
+    api.createDraft.mockResolvedValue({
+      id: "d1",
+      status: "draft",
+      type: "video",
+      watermarked: false,
+      uploadUrl: "http://up.test/1",
+      muxUploadId: "u1",
+    });
+    api.uploadVideoToMux.mockResolvedValue(undefined);
+
+    renderScreen();
+    pickHorse("horse-opt-h1");
+    pickFile(VIDEO);
+    await screen.findByTestId("preview-readout");
+
+    const video = screen.getByTestId("preview-video") as HTMLVideoElement;
+    Object.defineProperty(video, "videoWidth", { value: 1080, configurable: true });
+    Object.defineProperty(video, "videoHeight", { value: 1920, configurable: true });
+    fireEvent.loadedMetadata(video);
+
+    await waitFor(() =>
+      expect(screen.getByTestId("preview-readout").textContent).toBe(
+        "1080×1920 · Portrait 9:16 · Members see it cropped to 4:5",
+      ),
+    );
+    expect(screen.getByTestId("preview-media").style.aspectRatio).toBe("0.8");
+  });
+
+  it("clears the previous measurement when the operator swaps the file", async () => {
+    api.createDraft.mockResolvedValue({
+      id: "d1",
+      status: "draft",
+      type: "video",
+      watermarked: false,
+      uploadUrl: "http://up.test/1",
+      muxUploadId: "u1",
+    });
+    api.uploadVideoToMux.mockResolvedValue(undefined);
+    // Replacing a file calls discardDraft(...).catch — a bare vi.fn() returns
+    // undefined and throws synchronously before every setState below it.
+    api.discardDraft.mockResolvedValue(undefined);
+
+    renderScreen();
+    pickHorse("horse-opt-h1");
+    pickFile(VIDEO);
+    await screen.findByTestId("preview-readout");
+
+    const video = screen.getByTestId("preview-video") as HTMLVideoElement;
+    Object.defineProperty(video, "videoWidth", { value: 1920, configurable: true });
+    Object.defineProperty(video, "videoHeight", { value: 1080, configurable: true });
+    fireEvent.loadedMetadata(video);
+    await waitFor(() =>
+      expect(screen.getByTestId("preview-readout").textContent).toContain("Landscape"),
+    );
+
+    // Swap: the readout must NOT keep describing the file that was replaced.
+    pickFile(VIDEO_2);
+    await waitFor(() => {
+      const text = screen.getByTestId("preview-readout").textContent ?? "";
+      expect(text).toBe("Measuring…");
+      expect(text).not.toContain("1920×1080");
+    });
+  });
+
+  it("edit mode measures NOTHING — the source is an HLS rendition", async () => {
+    const initial: EditInitial = {
+      id: "post-9",
+      status: "draft",
+      mediaType: "video",
+      mediaUrl: "https://stream.example/asset.m3u8?token=t",
+      title: "T",
+      caption: "C",
+      bylineId: "t1",
+      scheduledFor: null,
+      horse: HORSES[0],
+    };
+    render(<ComposeScreen horses={HORSES} trainers={TRAINERS} initial={initial} />);
+
+    // No readout at all...
+    expect(screen.queryByTestId("preview-readout")).toBeNull();
+
+    // ...and even if the element reports a size, it must be ignored: hls.js
+    // starts on a low-bitrate rendition, so 640x360 here is the RENDITION, not
+    // the 1080p asset. Printing it would be worse than printing nothing.
+    const video = screen.getByTestId("preview-video") as HTMLVideoElement;
+    Object.defineProperty(video, "videoWidth", { value: 640, configurable: true });
+    Object.defineProperty(video, "videoHeight", { value: 360, configurable: true });
+    fireEvent.loadedMetadata(video);
+
+    await waitFor(() => expect(screen.queryByTestId("preview-readout")).toBeNull());
+  });
+
+  it("shows the race badge only for a horse that races today", () => {
+    renderScreen();
+    pickHorse("horse-opt-h1"); // Mahogany — racesToday: true
+    expect(screen.getByTestId("preview-race-badge")).toBeTruthy();
+
+    cleanup();
+    renderScreen();
+    fireEvent.change(screen.getByTestId("horse-search"), { target: { value: "Black" } });
+    fireEvent.click(screen.getByTestId("horse-opt-h2")); // Black Caviar — false
+    expect(screen.queryByTestId("preview-race-badge")).toBeNull();
   });
 });

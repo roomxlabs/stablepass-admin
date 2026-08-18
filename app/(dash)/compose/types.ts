@@ -1,8 +1,63 @@
 // Shared types for the Compose screen (ENG-176 / T6).
 // `type` and `body` mirror the DB columns (post.type, post.body) — NOT
-// `media_kind`/`caption`, which don't exist. Only video + photo compose here.
+// `media_kind`/`caption`, which don't exist.
+//
+// ENG-611 widened this to all four authorable types. `post.type`'s CHECK has
+// permitted ('video','photo','text','voice','news') since the baseline schema,
+// so nothing here needed a migration. `news` is deliberately NOT included:
+// it exists in the schema but nothing authors it and it was never asked for.
 
-export type MediaType = "video" | "photo";
+export type MediaType = "video" | "photo" | "voice" | "text";
+
+/**
+ * The three that carry an uploaded asset. `text` has none — its title and body
+ * are the whole post, which is exactly why it could not be authored before:
+ * the type used to be sniffed from the picked file's MIME, and a text post has
+ * no file to sniff.
+ */
+export const UPLOAD_TYPES = ["video", "photo", "voice"] as const;
+export type UploadType = (typeof UPLOAD_TYPES)[number];
+
+/**
+ * Membership, NOT `!== "text"`. `post.type`'s CHECK still permits `news`, and
+ * `page.tsx` casts a loaded row's type straight to `MediaType`, so a negative
+ * test would wave `news` through as an "upload type" and then index
+ * ACCEPT_BY_TYPE / TYPE_LABEL with it and get `undefined`.
+ */
+export function isUploadType(type: MediaType): type is UploadType {
+  return (UPLOAD_TYPES as readonly string[]).includes(type);
+}
+
+/** `accept` for the file input, narrowed to the type the operator chose. */
+export const ACCEPT_BY_TYPE: Record<UploadType, string> = {
+  video: "video/*",
+  photo: "image/*",
+  voice: "audio/*",
+};
+
+/** Picker labels, also used verbatim in the MIME-mismatch error copy. */
+export const TYPE_LABEL: Record<MediaType, string> = {
+  video: "Video",
+  photo: "Photo",
+  voice: "Voice",
+  text: "Text",
+};
+
+/**
+ * The upload type a picked file's MIME implies, or null when it is none of the
+ * three. This is now **validation only** — never reclassification. Choosing
+ * Video and then picking a `.jpg` is an error the operator has to resolve; the
+ * screen must not quietly turn their video post into a photo post.
+ *
+ * Deliberately the MIME PREFIX only: a codec the browser cannot decode is
+ * still a perfectly uploadable file, so decodability must never gate the pick.
+ */
+export function uploadTypeForFile(file: File): UploadType | null {
+  if (file.type.startsWith("video/")) return "video";
+  if (file.type.startsWith("image/")) return "photo";
+  if (file.type.startsWith("audio/")) return "voice";
+  return null;
+}
 
 /** A horse the operator can attribute a post to. Name prefers the racing name. */
 export type HorseOption = {
@@ -30,19 +85,26 @@ export type TrainerOption = {
 
 /**
  * The 202 payload from `POST /api/admin/posts`. Video drafts carry a Mux
- * one-time `uploadUrl` (+ `muxUploadId`); photo drafts carry a Supabase
- * Storage signed-upload target (`uploadUrl` + `path` + `token` + `bucket`).
- * The browser PUTs the file bytes straight to that target — never through us.
+ * one-time `uploadUrl` (+ `muxUploadId`); photo AND voice drafts carry a
+ * Supabase Storage signed-upload target (`uploadUrl` + `path` + `token` +
+ * `bucket`). The browser PUTs the file bytes straight to that target — never
+ * through us.
+ *
+ * `uploadUrl` is OPTIONAL because a `text` draft has no upload target at all:
+ * the route returns 202 with just the draft, and makes no Storage or Mux call
+ * to fail. Anything reading `uploadUrl` must therefore narrow on the type
+ * first, which is what `isUploadType` is for.
  */
 export type CreateDraftResponse = {
   id: string;
   status: string;
   type: MediaType;
   watermarked: boolean;
-  uploadUrl: string;
+  /** Absent for `text`. */
+  uploadUrl?: string;
   // video
   muxUploadId?: string;
-  // photo
+  // photo | voice
   path?: string;
   token?: string;
   bucket?: string;

@@ -100,10 +100,33 @@ async function recordVideo(page: Page, width: number, height: number): Promise<n
   );
 }
 
+/**
+ * Choose the post type in step 2 (ENG-611). The type is now EXPLICIT — the
+ * screen no longer infers it from the picked file — so every media test has to
+ * select its type before picking a file, or the pick is rejected as a mismatch.
+ */
+async function chooseType(page: Page, type: "video" | "photo" | "voice" | "text") {
+  await page.getByTestId(`type-option-${type}`).click();
+  await expect(page.getByTestId(`type-option-${type}`)).toHaveAttribute("data-selected", "true");
+}
+
 /** Mock the create-draft BFF call + the browser's direct PUT to the target. */
-async function mockUploads(page: Page, type: "video" | "photo") {
+async function mockUploads(page: Page, type: "video" | "photo" | "voice" | "text") {
   await page.route("**/api/admin/posts", async (route) => {
     if (route.request().method() !== "POST") return route.continue();
+    // Voice takes the photo path EXACTLY — same bucket, same
+    // `<postId>/original` object. Text gets NO upload target at all.
+    const storageTarget = {
+      id: "p-e2e",
+      status: "draft",
+      type,
+      watermarked: false,
+      uploadUrl:
+        "http://127.0.0.1:8787/storage/v1/object/upload/sign/post-media/p-e2e/original?token=e2e",
+      path: "p-e2e/original",
+      token: "e2e",
+      bucket: "post-media",
+    };
     await route.fulfill({
       status: 202,
       contentType: "application/json",
@@ -120,17 +143,9 @@ async function mockUploads(page: Page, type: "video" | "photo") {
                 uploadUrl: "http://127.0.0.1:8787/mock-upload/p-e2e",
                 muxUploadId: "up-e2e",
               }
-            : {
-                id: "p-e2e",
-                status: "draft",
-                type: "photo",
-                watermarked: false,
-                uploadUrl:
-                  "http://127.0.0.1:8787/storage/v1/object/upload/sign/post-media/p-e2e/original?token=e2e",
-                path: "p-e2e/original",
-                token: "e2e",
-                bucket: "post-media",
-              },
+            : type === "text"
+              ? { id: "p-e2e", status: "draft", type: "text", watermarked: false }
+              : storageTarget,
       }),
     });
   });
@@ -195,6 +210,10 @@ test("compose: pick horse, upload photo, caption, preview", async ({ page }) => 
 
   await pickHorseAndCaption(page);
 
+  // ENG-611: the type is chosen, not sniffed. The default is Video, so a .jpg
+  // pick without this would (correctly) be rejected as a mismatch.
+  await chooseType(page, "photo");
+
   await page.getByTestId("media-input").setInputFiles({
     name: "gallop.jpg",
     mimeType: "image/jpeg",
@@ -233,6 +252,9 @@ for (const shape of [
     await page.goto("/compose");
     await expect(page.getByRole("heading", { name: "Compose post" })).toBeVisible();
     await pickHorseAndCaption(page);
+    // Video is the default, but say so explicitly so this proof does not
+    // silently depend on which option the picker ships selected.
+    await chooseType(page, "video");
 
     const bytes = await recordVideo(page, shape.width, shape.height);
     await page.getByTestId("media-input").setInputFiles({
@@ -266,3 +288,180 @@ for (const shape of [
       .screenshot({ path: `e2e/__screenshots__/${shape.slot}-compose-${shape.name}-modal.png` });
   });
 }
+
+// ---------------------------------------------------------------------------
+// ENG-611 — the post-type selector, plus text and voice posts.
+// ---------------------------------------------------------------------------
+
+/**
+ * A tiny but structurally valid 8-bit mono WAV, built in-process. No fixture
+ * file and no client audio: a voice PR screenshot must never carry real
+ * trainer audio.
+ */
+function wavBuffer(): Buffer {
+  const samples = Buffer.alloc(16, 0x80); // silence at the 8-bit midpoint
+  const header = Buffer.alloc(44);
+  header.write("RIFF", 0);
+  header.writeUInt32LE(36 + samples.length, 4);
+  header.write("WAVE", 8);
+  header.write("fmt ", 12);
+  header.writeUInt32LE(16, 16); // PCM fmt chunk size
+  header.writeUInt16LE(1, 20); // PCM
+  header.writeUInt16LE(1, 22); // mono
+  header.writeUInt32LE(8000, 24); // sample rate
+  header.writeUInt32LE(8000, 28); // byte rate
+  header.writeUInt16LE(1, 32); // block align
+  header.writeUInt16LE(8, 34); // bits per sample
+  header.write("data", 36);
+  header.writeUInt32LE(samples.length, 40);
+  return Buffer.concat([header, samples]);
+}
+
+/**
+ * Mock the lifecycle calls a create → publish round-trip makes after the draft.
+ * Returns the list of publish targets, so the test can assert WHAT was
+ * published rather than trusting a transient success note.
+ */
+async function mockLifecycle(page: Page) {
+  const published: string[] = [];
+  await page.route("**/api/admin/posts/p-e2e", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ data: { id: "p-e2e" } }),
+    }),
+  );
+  await page.route("**/api/admin/posts/*/publish", (route) => {
+    published.push(new URL(route.request().url()).pathname);
+    return route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ data: { id: "p-e2e", status: "published" } }),
+    });
+  });
+  return published;
+}
+
+test("compose: the four-option post-type selector is step 2", async ({ page }) => {
+  test.setTimeout(90000);
+  await signIn(page);
+  await page.goto("/compose");
+  await expect(page.getByRole("heading", { name: "Compose post" })).toBeVisible();
+
+  // Four options, and Video selected by default.
+  await expect(page.getByTestId("type-picker")).toBeVisible();
+  for (const t of ["video", "photo", "voice", "text"] as const) {
+    await expect(page.getByTestId(`type-option-${t}`)).toBeVisible();
+  }
+  await expect(page.getByTestId("type-option-video")).toHaveAttribute("data-selected", "true");
+  // ...and the steps really are renumbered around it.
+  await expect(page.getByText("Step 2 · Post type")).toBeVisible();
+  await expect(page.getByText("Step 3 · Media")).toBeVisible();
+  await expect(page.getByText("Step 4 · Words")).toBeVisible();
+
+  await page.screenshot({
+    path: "e2e/__screenshots__/15-compose-type-picker.png",
+    fullPage: true,
+  });
+
+  // A file whose MIME contradicts the chosen type is an ERROR, never a silent
+  // reclassification — the post stays a Video post.
+  await page.getByTestId("horse-search").fill("Mah");
+  await page.getByTestId("horse-opt-h1").click();
+  await page.getByTestId("media-input").setInputFiles({
+    name: "gallop.jpg",
+    mimeType: "image/jpeg",
+    buffer: PNG_1x1,
+  });
+  await expect(page.getByTestId("type-mismatch")).toBeVisible();
+  await expect(page.getByTestId("type-option-video")).toHaveAttribute("data-selected", "true");
+  await page.screenshot({
+    path: "e2e/__screenshots__/15-compose-type-mismatch.png",
+    fullPage: true,
+  });
+});
+
+test("compose: a text post has no media step and publishes on its body alone", async ({ page }) => {
+  test.setTimeout(90000);
+  await signIn(page);
+  await mockUploads(page, "text");
+  const published = await mockLifecycle(page);
+
+  await page.goto("/compose");
+  await expect(page.getByRole("heading", { name: "Compose post" })).toBeVisible();
+
+  await chooseType(page, "text");
+  // The media step is GONE — not disabled, not an empty frame.
+  await expect(page.getByTestId("media-input")).toHaveCount(0);
+  await expect(page.getByText("Step 3 · Media")).toHaveCount(0);
+
+  await page.getByTestId("horse-search").fill("Mah");
+  await page.getByTestId("horse-opt-h1").click();
+  await expect(page.getByTestId("byline-select")).toHaveValue("t1");
+  await page
+    .getByTestId("caption")
+    .fill(
+      "Mahogany pulled up perfectly after Saturday and has come through the run in great order. He'll go around again in a fortnight.",
+    );
+
+  await page.screenshot({ path: "e2e/__screenshots__/16-compose-text.png", fullPage: true });
+
+  // Preview: a text post carries no media, and the preview must not crash.
+  await page.setViewportSize({ width: 1280, height: 1400 });
+  await page.getByRole("button", { name: "Preview post" }).click();
+  await expect(page.getByTestId("preview-modal")).toBeVisible();
+  await page
+    .getByTestId("preview-panel")
+    .screenshot({ path: "e2e/__screenshots__/16-compose-text-preview.png" });
+  await page.keyboard.press("Escape");
+  await expect(page.getByTestId("preview-modal")).toHaveCount(0);
+  await page.setViewportSize({ width: 1280, height: 900 });
+
+  // ...and it publishes, with no upload having happened at all.
+  //
+  // Assert the END STATE, not the success note: the screen sets that note and
+  // immediately `router.push("/posts")`, so the note is racing its own
+  // navigation and asserting on it is flaky. Landing on /posts only happens
+  // after publish resolves, and `published` records what was actually hit.
+  await page.getByTestId("primary-action").click();
+  await page.waitForURL("**/posts", { timeout: 20000 });
+  expect(published).toEqual(["/api/admin/posts/p-e2e/publish"]);
+});
+
+test("compose: a voice post uploads audio to post-media, exactly like a photo", async ({ page }) => {
+  test.setTimeout(90000);
+  await signIn(page);
+  await mockUploads(page, "voice");
+
+  await page.goto("/compose");
+  await expect(page.getByRole("heading", { name: "Compose post" })).toBeVisible();
+
+  await chooseType(page, "voice");
+  // The upload zone narrows to audio for a voice post.
+  await expect(page.getByTestId("media-input")).toHaveAttribute("accept", "audio/*");
+
+  await page.getByTestId("horse-search").fill("Mah");
+  await page.getByTestId("horse-opt-h1").click();
+  await expect(page.getByTestId("byline-select")).toHaveValue("t1");
+  await page
+    .getByTestId("caption")
+    .fill("A quick word from the stable on how he pulled up this morning.");
+
+  await page.getByTestId("media-input").setInputFiles({
+    name: "stable-note.wav",
+    mimeType: "audio/wav",
+    buffer: wavBuffer(),
+  });
+  await expect(page.getByTestId("upload-done")).toBeVisible({ timeout: 15000 });
+  // A playable local preview, not a blank frame. (No `settle()` here: it waits
+  // for an <img>/<video> to decode and voice has neither.)
+  await expect(page.getByTestId("voice-preview")).toBeVisible();
+  // Voice carries no measurable geometry, so the detected-orientation readout
+  // must stay ABSENT rather than sit on "Measuring…" forever.
+  await expect(page.getByTestId("preview-readout")).toHaveCount(0);
+
+  // A tall viewport rather than fullPage: the sidebar and topbar are fixed, so
+  // a fullPage shot of a scrolling page paints both of them twice.
+  await page.setViewportSize({ width: 1280, height: 1400 });
+  await page.screenshot({ path: "e2e/__screenshots__/17-compose-voice.png" });
+});

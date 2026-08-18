@@ -541,3 +541,36 @@ suite. That matters here because ENG-611 is sequenced straight after ENG-558 int
 The naive version (`indexOf(sel + " {")` twice) is wrong: `.previewCompact .postCard {` **contains**
 `.postCard {`, so every legitimate descendant override reads as a duplicate and the guard fails on
 correct code. Only count occurrences at index 0 or immediately after a newline.
+
+## The supabase-fake swallowed mutation payloads until ENG-611
+**Symptom:** a route test could assert a mutation did not error, but never that it wrote the right
+thing — a route that inserted the wrong `type`, or forgot `media_url`, went green.
+**Cause:** `makeBuilder`'s `insert`/`update`/`delete` discarded their arguments.
+**Do this:** `state.calls.mutations` (`{ table, op, payload }[]`) and `state.calls.storage`
+(`{ bucket, path }[]`) now record them. Guard the PAYLOAD, e.g.
+
+```ts
+expect(state.calls.mutations).toContainEqual(
+  expect.objectContaining({ table: "post", op: "update", payload: { media_url: "p1/original" } }),
+);
+```
+`state.calls.storage.length === 0` is how you prove a `text` post made no Storage call at all.
+
+## Compose's post type is CHOSEN, not sniffed (ENG-611)
+`ComposeScreen` used to derive the type from the picked file's MIME. It no longer does: step 2 is an
+explicit 4-option picker (`video|photo|voice|text`; `news` is deliberately absent) and the MIME is
+**validation only** — a mismatch raises `data-testid="type-mismatch"` and never reclassifies the post.
+**Consequence for any test that picks a file:** the default type is `video`, so a test that uploads an
+image or audio file MUST select that type first or the pick is (correctly) rejected. This broke the
+existing photo e2e spec and had to be fixed in the same PR.
+
+## `.rx/mockups.md` was still stale after gotchas.md was fixed
+The `dev-handover/` path was corrected in THIS file on 17 Aug but not in `.rx/mockups.md`, which kept
+sending readers to a directory that has never existed. Both are fixed as of ENG-611. If you correct a
+design-source path, correct it in **both** files.
+
+## PostPreview renders its media box for every type, including text
+A1 (ENG-558) guards the media CHILDREN (`mediaUrl && mediaType === "photo"` / `"video"`) and
+`resolveAspect` accepts `null`, so a text post does **not** crash the preview — but the empty
+`.postMedia` box is still drawn. ENG-611 deliberately did not touch it (A1 owns the file); dropping
+the box for a medialess post is open follow-up work, not a regression.

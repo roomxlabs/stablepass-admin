@@ -4,7 +4,11 @@ import { ok, fail } from "@/lib/api/envelope";
 import { createMuxDirectUpload, MuxError } from "@/lib/mux";
 
 const POST_MEDIA_BUCKET = "post-media"; // T15 private bucket (photo/voice)
-const CREATABLE_TYPES: string[] = ["video", "photo"]; // this endpoint creates video|photo only
+// ENG-611: widened from video|photo. `post.type`'s CHECK has permitted all of
+// these since the baseline schema, so nothing here needed a migration.
+// `news` is deliberately EXCLUDED: it exists in the schema but nothing authors
+// it, so this endpoint must keep rejecting it with a 400.
+const CREATABLE_TYPES: string[] = ["video", "photo", "voice", "text"];
 
 // 202 Accepted — the draft row exists, but the media upload is still pending:
 // the client uploads the file bytes directly to Mux (video) / Storage (photo).
@@ -67,21 +71,40 @@ export async function GET(req: Request) {
 }
 
 // POST /api/admin/posts — create a draft, then hand back a **direct upload
-// target**: video → Mux direct upload, photo → Supabase Storage signed upload
-// URL. The finished file bytes never transit our server (guardrail §5). No
-// watermark mutation. video|photo only (text/voice/news creation is out of scope).
+// target**: video → Mux direct upload, photo AND voice → Supabase Storage
+// signed upload URL. The finished file bytes never transit our server
+// (guardrail §5). No watermark mutation.
+//
+// `text` (ENG-611) is the odd one out: it carries no asset, so it gets NO
+// upload target at all — a 202 with just the draft. It must not touch Storage
+// or Mux, and must not roll its draft back for the absence of an upload
+// target it was never supposed to have.
+//
+// `news` remains uncreatable here.
 export async function POST(req: Request) {
   const g = await requireAdmin();
   if ("res" in g) return g.res;
   const { sb } = g;
 
-  const body = await req.json().catch(() => ({}));
-  const { horseId, type, title, sourceTrainerId, expiresAt } = body ?? {};
+  const payload = await req.json().catch(() => ({}));
+  const { horseId, type, title, body, sourceTrainerId, expiresAt } = payload ?? {};
 
+  // A horse is required for EVERY type, text included: post.horse_id is NOT
+  // NULL and it is what the member app renders in the byline.
   if (!horseId || !type || !sourceTrainerId)
     return fail("validation_failed", "horseId, type and sourceTrainerId are required.", 400);
   if (!CREATABLE_TYPES.includes(type))
-    return fail("validation_failed", "Only 'video' or 'photo' posts can be created here.", 400);
+    return fail(
+      "validation_failed",
+      "Only 'video', 'photo', 'voice' or 'text' posts can be created here.",
+      400,
+    );
+
+  // A text post's body IS the post — a title alone is not one. Enforced here
+  // as well as in Compose, because the BFF is not the only caller.
+  const hasBody = typeof body === "string" && body.trim().length > 0;
+  if (type === "text" && !hasBody)
+    return fail("validation_failed", "A text post requires a non-empty body.", 400);
 
   // Horse must exist — a clean 404 rather than a raw FK violation.
   const { data: horse } = await sb.from("horse").select("id").eq("id", horseId).maybeSingle();
@@ -93,6 +116,7 @@ export async function POST(req: Request) {
       horse_id: horseId,
       type,
       title: title ?? null,
+      body: hasBody ? body : null,
       source_trainer_id: sourceTrainerId,
       status: "draft",
       watermarked: false,
@@ -102,6 +126,12 @@ export async function POST(req: Request) {
     .single();
   if (error || !draft) return fail("insert_failed", error?.message ?? "Could not create draft.", 400);
 
+  // text → done. No upload target, so no Storage/Mux call to make and nothing
+  // to roll the draft back for.
+  if (type === "text") {
+    return accepted({ id: draft.id, status: "draft", type, watermarked: false });
+  }
+
   if (type === "video") {
     try {
       // passthrough = post id: Mux echoes it on asset webhooks so the BE
@@ -110,23 +140,39 @@ export async function POST(req: Request) {
       const { uploadId, uploadUrl } = await createMuxDirectUpload({ passthrough: draft.id });
       return accepted({ id: draft.id, status: "draft", type, watermarked: false, uploadUrl, muxUploadId: uploadId });
     } catch (e) {
-      await sb.from("post").delete().eq("id", draft.id); // roll back the orphan draft
+      await sb.from("post").delete().eq("id", draft.id).eq("status", "draft"); // roll back the orphan draft
       const msg = e instanceof MuxError ? e.message : "Mux is unavailable.";
       return fail("mux_unavailable", msg, 502);
     }
   }
 
-  // photo → Supabase Storage direct-upload target (signed upload URL).
+  // photo | voice → Supabase Storage direct-upload target (signed upload URL).
+  // Voice reuses the photo path EXACTLY: same private bucket, same
+  // `<postId>/original` object, no new bucket and no Mux. There is no duration
+  // column on `post`, so nothing here records one.
   const objectPath = `${draft.id}/original`;
   const { data: signed, error: storageErr } = await sb.storage
     .from(POST_MEDIA_BUCKET)
     .createSignedUploadUrl(objectPath);
   if (storageErr || !signed) {
-    await sb.from("post").delete().eq("id", draft.id); // roll back the orphan draft
+    await sb.from("post").delete().eq("id", draft.id).eq("status", "draft"); // roll back the orphan draft
     return fail("storage_unavailable", storageErr?.message ?? "Storage is unavailable.", 502);
   }
   // Record where the media will land; the bytes go direct to Storage.
-  await sb.from("post").update({ media_url: objectPath }).eq("id", draft.id);
+  //
+  // Checked, not fire-and-forget: if this write is lost the client still gets a
+  // 202 and a valid upload target, so the bytes land in Storage against a post
+  // whose media_url is permanently NULL — an orphaned object and a post that
+  // renders blank forever. Roll the draft back instead, exactly as a failed
+  // signing does.
+  const { error: recordErr } = await sb
+    .from("post")
+    .update({ media_url: objectPath })
+    .eq("id", draft.id);
+  if (recordErr) {
+    await sb.from("post").delete().eq("id", draft.id).eq("status", "draft");
+    return fail("storage_unavailable", recordErr.message, 502);
+  }
   return accepted({
     id: draft.id,
     status: "draft",

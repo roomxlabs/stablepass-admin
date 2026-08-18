@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import ComposeScreen from "./ComposeScreen";
 import type { EditInitial, HorseOption, TrainerOption } from "./types";
 
@@ -62,6 +62,13 @@ function renderScreen() {
 function pickHorse(testId: string) {
   fireEvent.change(screen.getByTestId("horse-search"), { target: { value: "Mah" } });
   fireEvent.click(screen.getByTestId(testId));
+}
+
+// ENG-611: the post type is CHOSEN (step 2), never sniffed from the picked
+// file — so any test that picks a non-video file must select the matching
+// type first, or it hits the MIME-mismatch guard.
+function selectType(type: string) {
+  fireEvent.click(within(screen.getByTestId(`type-option-${type}`)).getByRole("radio"));
 }
 
 afterEach(() => {
@@ -183,6 +190,7 @@ describe("ComposeScreen", () => {
 
     renderScreen();
     pickHorse("horse-opt-h1");
+    selectType("photo");
 
     const file = new File([new Uint8Array([1, 2, 3])], "gallop.jpg", { type: "image/jpeg" });
     fireEvent.change(screen.getByTestId("media-input"), { target: { files: [file] } });
@@ -248,6 +256,193 @@ describe("ComposeScreen", () => {
     expect(api.uploadPhotoToStorage).not.toHaveBeenCalled();
   });
 
+  // --- ENG-611: the post-type picker (video/photo/voice/text) ----------------
+
+  it("post type picker: renders all 4 options, video selected by default", () => {
+    renderScreen();
+    const picker = screen.getByTestId("type-picker");
+    expect(picker.getAttribute("role")).toBe("radiogroup");
+    expect(picker.getAttribute("aria-label")).toBe("Post type");
+    for (const type of ["video", "photo", "voice", "text"]) {
+      expect(screen.getByTestId(`type-option-${type}`)).toBeTruthy();
+    }
+    expect(screen.getByTestId("type-option-video").getAttribute("data-selected")).toBe("true");
+    expect(screen.getByTestId("type-option-photo").getAttribute("data-selected")).toBeNull();
+    expect(screen.getByTestId("type-option-voice").getAttribute("data-selected")).toBeNull();
+    expect(screen.getByTestId("type-option-text").getAttribute("data-selected")).toBeNull();
+  });
+
+  it("choosing Text removes the media step entirely", () => {
+    renderScreen();
+    expect(screen.getByTestId("media-input")).toBeTruthy();
+    selectType("text");
+    expect(screen.queryByTestId("media-input")).toBeNull();
+  });
+
+  it("the file input's accept attribute tracks the chosen type", () => {
+    renderScreen();
+    expect(screen.getByTestId("media-input").getAttribute("accept")).toBe("video/*");
+    selectType("photo");
+    expect(screen.getByTestId("media-input").getAttribute("accept")).toBe("image/*");
+    selectType("voice");
+    expect(screen.getByTestId("media-input").getAttribute("accept")).toBe("audio/*");
+  });
+
+  it("MIME mismatch: a file that doesn't match the chosen type errors and leaves the type unchanged", async () => {
+    renderScreen();
+    pickHorse("horse-opt-h1");
+    // Default type is Video; pick an image file.
+    const file = new File([new Uint8Array([1, 2, 3])], "gallop.jpg", { type: "image/jpeg" });
+    fireEvent.change(screen.getByTestId("media-input"), { target: { files: [file] } });
+
+    expect(await screen.findByTestId("type-mismatch")).toBeTruthy();
+    expect(screen.getByTestId("type-option-video").getAttribute("data-selected")).toBe("true");
+    expect(api.createDraft).not.toHaveBeenCalled();
+  });
+
+  it("switching type after a file is picked clears the file, discards the draft, and revokes the object URL", async () => {
+    const createObjectURL = vi.fn(() => "blob:test-1");
+    const revokeObjectURL = vi.fn();
+    Object.defineProperty(URL, "createObjectURL", {
+      value: createObjectURL,
+      configurable: true,
+      writable: true,
+    });
+    Object.defineProperty(URL, "revokeObjectURL", {
+      value: revokeObjectURL,
+      configurable: true,
+      writable: true,
+    });
+
+    api.createDraft.mockResolvedValue({
+      id: "v1",
+      status: "draft",
+      type: "video",
+      watermarked: false,
+      uploadUrl: "https://storage.mux.com/one-time-upload",
+      muxUploadId: "mux-123",
+    });
+    api.uploadVideoToMux.mockResolvedValue(undefined);
+    api.discardDraft.mockResolvedValue(undefined);
+
+    renderScreen();
+    pickHorse("horse-opt-h1");
+
+    const file = new File([new Uint8Array([9, 9, 9])], "gallop.mov", { type: "video/quicktime" });
+    fireEvent.change(screen.getByTestId("media-input"), { target: { files: [file] } });
+    await waitFor(() => expect(api.createDraft).toHaveBeenCalledTimes(1));
+    await screen.findByTestId("media-filled");
+
+    selectType("photo");
+
+    await waitFor(() => expect(api.discardDraft).toHaveBeenCalledWith("v1"));
+    expect(revokeObjectURL).toHaveBeenCalledWith("blob:test-1");
+    expect((screen.getByTestId("media-input") as HTMLInputElement).value).toBe("");
+    expect(screen.queryByTestId("media-filled")).toBeNull();
+  });
+
+  it("a text post: createDraft carries type 'text' + the body, and never touches an upload endpoint", async () => {
+    api.createDraft.mockResolvedValue({ id: "tx1", status: "draft", type: "text", watermarked: false });
+    api.patchPost.mockResolvedValue(undefined);
+    api.publishPost.mockResolvedValue(undefined);
+
+    renderScreen();
+    pickHorse("horse-opt-h1");
+    selectType("text");
+
+    fireEvent.change(screen.getByTestId("caption"), { target: { value: "Stable update text" } });
+    fireEvent.click(screen.getByTestId("primary-action"));
+
+    await waitFor(() =>
+      expect(api.createDraft).toHaveBeenCalledWith(
+        expect.objectContaining({ type: "text", body: "Stable update text" }),
+      ),
+    );
+    expect(api.uploadVideoToMux).not.toHaveBeenCalled();
+    expect(api.uploadPhotoToStorage).not.toHaveBeenCalled();
+  });
+
+  it("a text post with an empty body: primary-action is disabled and createDraft is never called", () => {
+    renderScreen();
+    pickHorse("horse-opt-h1");
+    selectType("text");
+
+    const btn = screen.getByTestId("primary-action") as HTMLButtonElement;
+    expect(btn.disabled).toBe(true);
+    fireEvent.click(btn);
+    expect(api.createDraft).not.toHaveBeenCalled();
+  });
+
+  // Regression: the readiness predicate desynced. `canAct` was applied to the
+  // sidebar button and the status pill but NOT to the three topbar buttons,
+  // which stayed on `draftReady` — structurally unreachable for a text post.
+  // The screen said "Ready" with three permanently-dead controls next to it.
+  it("a ready text post enables the TOPBAR actions too, not just the sidebar one", () => {
+    renderScreen();
+    pickHorse("horse-opt-h1");
+    selectType("text");
+    fireEvent.change(screen.getByTestId("caption"), { target: { value: "Stable update text" } });
+
+    expect((screen.getByTestId("primary-action") as HTMLButtonElement).disabled).toBe(false);
+    for (const name of ["Save draft", "Schedule", "Publish"]) {
+      const btn = screen.getByRole("button", { name }) as HTMLButtonElement;
+      expect(btn.disabled, `topbar "${name}" should be enabled for a ready text post`).toBe(false);
+    }
+  });
+
+  // Regression: switching type while createDraft was in flight resurrected the
+  // OLD draft via the late setDraft, and runAction then published that instead
+  // of creating the text post — a type=video row going live with the text body.
+  it("a type switch during an in-flight createDraft never publishes the abandoned draft", async () => {
+    let releaseCreate: (v: unknown) => void = () => {};
+    const pending = new Promise((resolve) => {
+      releaseCreate = resolve;
+    });
+    api.createDraft.mockReturnValueOnce(pending);
+    api.discardDraft.mockResolvedValue(undefined);
+    api.patchPost.mockResolvedValue(undefined);
+    api.publishPost.mockResolvedValue(undefined);
+
+    renderScreen();
+    pickHorse("horse-opt-h1");
+    selectType("video");
+
+    // Pick a video; createDraft hangs.
+    const vid = new File([new Uint8Array([1, 2, 3])], "gallop.mp4", { type: "video/mp4" });
+    fireEvent.change(screen.getByTestId("media-input"), { target: { files: [vid] } });
+    await waitFor(() => expect(api.createDraft).toHaveBeenCalledTimes(1));
+
+    // The operator gives up on the video and switches to Text mid-flight.
+    selectType("text");
+
+    // Only now does the video draft land.
+    releaseCreate({
+      id: "VIDEO-DRAFT",
+      status: "draft",
+      type: "video",
+      watermarked: false,
+      uploadUrl: "https://mux.example/upload",
+      muxUploadId: "up1",
+    });
+    await waitFor(() => expect(api.discardDraft).toHaveBeenCalledWith("VIDEO-DRAFT"));
+
+    // Publish the text post.
+    api.createDraft.mockResolvedValue({
+      id: "TEXT-DRAFT",
+      status: "draft",
+      type: "text",
+      watermarked: false,
+    });
+    fireEvent.change(screen.getByTestId("caption"), { target: { value: "Stable update text" } });
+    fireEvent.click(screen.getByTestId("primary-action"));
+
+    await waitFor(() => expect(api.publishPost).toHaveBeenCalled());
+    // The abandoned video draft must never be the thing that goes live.
+    expect(api.publishPost).toHaveBeenCalledWith("TEXT-DRAFT");
+    expect(api.publishPost).not.toHaveBeenCalledWith("VIDEO-DRAFT");
+    expect(api.patchPost).not.toHaveBeenCalledWith("VIDEO-DRAFT", expect.anything());
+  });
+
   // --- Scheduling: explicit Date + Time picker (create + edit) ----------------
 
   async function uploadPhoto() {
@@ -262,6 +457,7 @@ describe("ComposeScreen", () => {
       bucket: "post-media",
     });
     api.uploadPhotoToStorage.mockResolvedValue(undefined);
+    selectType("photo");
     const file = new File([new Uint8Array([1, 2, 3])], "gallop.jpg", { type: "image/jpeg" });
     fireEvent.change(screen.getByTestId("media-input"), { target: { files: [file] } });
     await screen.findByTestId("upload-done");
@@ -277,7 +473,12 @@ describe("ComposeScreen", () => {
 
     // "Schedule for later" is the 2nd of the three When-to-publish radios; picking
     // it reveals the Date + Time pair — two separately labelled native controls.
-    fireEvent.click(screen.getAllByRole("radio")[1]);
+    // Scoped to name="schedule" (ENG-611 added 4 more radios ahead of these, in
+    // the post-type picker, so an unscoped index would now hit the wrong group).
+    const scheduleRadios = screen
+      .getAllByRole("radio")
+      .filter((el) => (el as HTMLInputElement).name === "schedule");
+    fireEvent.click(scheduleRadios[1]);
     expect(screen.getByText("Date")).toBeTruthy();
     expect(screen.getByText("Time")).toBeTruthy();
 

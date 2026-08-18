@@ -235,6 +235,84 @@
   font-family: var(--font-sans);
 }
 
+/* ---- Post-type picker (Step 2, ENG-611) ----------------------------------
+   Ported rule-for-rule from `.type-picker` in the mockups' shared style.css
+   (06-stage1-design/mockups/web/style.css), added in the 17 Aug round 5 re-cut
+   that drew this step. Token values come from that stylesheet, not eyeballed:
+   --white ground, --line border, --radius-sm, and --brand-green /
+   --brand-green-soft for the selected option.
+
+   The radio itself is visually hidden but stays focusable and in the a11y tree
+   (opacity, not display:none) — the label is the visible control, so keyboard
+   and screen-reader users still get a real radio group. */
+.typePicker {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
+}
+.typeOption {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 12px 8px;
+  background: var(--white);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--muted);
+  cursor: pointer;
+  /* NOT in the mockup's rule: the mockup's `.type-picker input` is
+     `position:absolute` with no positioned ancestor, so it escapes to whatever
+     is positioned further up. Containing it here keeps the hidden radio inside
+     its own tile. */
+  position: relative;
+}
+.typeOption svg {
+  width: 18px;
+  height: 18px;
+}
+.typeOption input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+.typeOptionSelected {
+  border-color: var(--brand-green);
+  background: var(--brand-green-soft);
+  color: var(--brand-green);
+  font-weight: 600;
+  box-shadow: inset 0 0 0 1px var(--brand-green);
+}
+/* Keyboard focus has to be visible on the LABEL, because the input it belongs
+   to is the hidden one — without this, tabbing through the group is invisible.
+   1px offset, not 2: the grid gutter is 8px, and a 2px ring at 2px offset put
+   a focused tile's outline visually against its neighbour. */
+.typeOption:focus-within {
+  outline: 2px solid var(--brand-green);
+  outline-offset: 1px;
+}
+
+/* Edit mode: the post type is fixed, shown rather than picked. */
+.readOnlyRow {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.readOnlyValue {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--brand-green);
+}
+.readOnlyValue svg {
+  width: 18px;
+  height: 18px;
+}
+
 /* ---- Upload zone --------------------------------------------------------- */
 .uploadZone {
   background: var(--cream-dark);
@@ -303,6 +381,18 @@
   height: 100%;
   object-fit: cover;
   display: block;
+}
+/* Voice (ENG-611): audio has no picture, so the 360px media ground would be a
+   big black rectangle wrapped around a 54px control. Size to the control and
+   drop the ground entirely. */
+.previewAudio {
+  height: auto;
+  background: var(--cream-dark);
+  padding: 18px;
+}
+.previewAudio audio {
+  display: block;
+  width: 100%;
 }
 .previewPlay {
   position: absolute;

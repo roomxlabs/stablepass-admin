@@ -105,3 +105,59 @@ describe("the fake web pane is gone from the stylesheet too", () => {
     }
   });
 });
+
+// ENG-611. Same reasoning as the block above, for the post-type picker: the
+// selected state is pure CSS, so a render test cannot prove any of it. Without
+// these, the entire `.typeOptionSelected` body could be deleted and all of
+// vitest plus both e2e specs would stay green — the picker would render as four
+// identical grey tiles with no selected state and nothing would fail.
+//
+// The values are the mockup's own (`.type-picker` in
+// 06-stage1-design/mockups/web/style.css), so this is a fidelity guard, not a
+// restatement of arbitrary numbers.
+describe("post-type picker fidelity (ENG-611)", () => {
+  it("is a 4-column grid with the mockup's 8px gutter", () => {
+    const picker = rule(".typePicker");
+    expect(picker).toMatch(/grid-template-columns:\s*repeat\(4,\s*1fr\)/);
+    expect(picker).toMatch(/gap:\s*8px/);
+  });
+
+  it("draws each option as the mockup's tokened card", () => {
+    const option = rule(".typeOption");
+    expect(option).toMatch(/background:\s*var\(--white\)/);
+    expect(option).toMatch(/border:\s*1px solid var\(--line\)/);
+    expect(option).toMatch(/border-radius:\s*var\(--radius-sm\)/);
+    expect(option).toMatch(/padding:\s*12px\s+8px/);
+    expect(option).toMatch(/color:\s*var\(--muted\)/);
+    // Tokens, never eyeballed hex.
+    expect(option).not.toMatch(/#[0-9a-f]{3,6}/i);
+  });
+
+  it("gives the selected option brand green, a soft fill and the inset ring", () => {
+    const selected = rule(".typeOptionSelected");
+    expect(selected).toMatch(/border-color:\s*var\(--brand-green\)/);
+    expect(selected).toMatch(/background:\s*var\(--brand-green-soft\)/);
+    expect(selected).toMatch(/color:\s*var\(--brand-green\)/);
+    expect(selected).toMatch(/font-weight:\s*600/);
+    expect(selected).toMatch(/box-shadow:\s*inset 0 0 0 1px var\(--brand-green\)/);
+    expect(selected).not.toMatch(/#[0-9a-f]{3,6}/i);
+  });
+
+  it("keeps the hidden radio focusable rather than display:none", () => {
+    // opacity/pointer-events, NOT display:none — a display:none radio leaves
+    // the group unreachable by keyboard and absent from the a11y tree.
+    const input = rule(".typeOption input");
+    expect(input).toMatch(/opacity:\s*0/);
+    expect(input).not.toMatch(/display:\s*none/);
+    // ...and the focus ring that makes that reachability visible.
+    expect(rule(".typeOption:focus-within")).toMatch(/outline:\s*2px solid var\(--brand-green\)/);
+  });
+
+  it("sizes voice's audio preview to the control instead of the 360px media ground", () => {
+    // A voice post has no picture; the shared .preview ground would wrap a 54px
+    // native control in a 360px black rectangle.
+    const audio = rule(".previewAudio");
+    expect(audio).toMatch(/height:\s*auto/);
+    expect(audio).not.toMatch(/#1a1a1a/i);
+  });
+});

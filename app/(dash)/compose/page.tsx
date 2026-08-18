@@ -19,6 +19,13 @@ import {
 } from "@/lib/storage/photos";
 import { resolveVideoPlayback } from "@/lib/mux-playback";
 
+/**
+ * The types Compose can load for editing — the same four it can create.
+ * `news` is excluded on purpose: nothing authors it, so nothing should open it
+ * in an editor built around the four authorable types.
+ */
+const EDITABLE_TYPES: string[] = ["video", "photo", "voice", "text"];
+
 // The operator's core daily flow. The (dash) layout already gates the tree;
 // we call requireAdminPage() again here for the elevated RLS client (`sb`) used
 // to read the pickable horses + the full trainer list (Layer A `[PG] GET
@@ -100,18 +107,26 @@ export default async function ComposePage({
       .eq("id", id)
       .maybeSingle();
     const post = data as PostRow | null;
-    if (post && (post.type === "photo" || post.type === "video")) {
+    // ENG-611: `voice` and `text` are editable too. Leaving them out here was
+    // not "edit is unsupported" — the posts library links EVERY row to
+    // `/compose?id=…`, so an unmatched type fell through to `initial =
+    // undefined` and opened a blank CREATE form, which would mint a SECOND
+    // post and silently strand the original.
+    if (post && EDITABLE_TYPES.includes(post.type)) {
       const h = one(post.horse);
       const t = h ? one(h.trainer) : null;
-      // Photo → signed Storage URL; video → signed Mux HLS URL (reconciled
-      // from Mux on read if the webhook hasn't set mux_playback_id yet).
+      // photo AND voice → signed Storage URL (same private bucket, same
+      // object); video → signed Mux HLS URL (reconciled from Mux on read if
+      // the webhook hasn't set mux_playback_id yet); text → no media at all.
       const [horsePhoto, mediaUrl] = await Promise.all([
         signPhoto(sb, HORSE_PHOTO_BUCKET, h?.photo_url ?? null),
-        post.type === "photo"
+        post.type === "photo" || post.type === "voice"
           ? signPhoto(sb, POST_MEDIA_BUCKET, post.media_url)
-          : resolveVideoPlayback(sb, { id: post.id, mux_playback_id: post.mux_playback_id }).then(
-              (p) => p.playbackUrl,
-            ),
+          : post.type === "video"
+            ? resolveVideoPlayback(sb, { id: post.id, mux_playback_id: post.mux_playback_id }).then(
+                (p) => p.playbackUrl,
+              )
+            : Promise.resolve(null),
       ]);
       initial = {
         id: post.id,

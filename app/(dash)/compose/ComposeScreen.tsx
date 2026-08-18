@@ -17,6 +17,7 @@ import {
   uploadPhotoToStorage,
   uploadVideoToMux,
 } from "./api";
+import { ACCEPT_BY_TYPE, isUploadType, TYPE_LABEL, uploadTypeForFile } from "./types";
 import type {
   CreateDraftResponse,
   EditInitial,
@@ -33,11 +34,13 @@ type PublishMode = "draft" | "schedule" | "publish";
 type UploadState = "idle" | "creating" | "uploading" | "done" | "error";
 type ActionState = { kind: "idle" | "working" | "ok" | "error"; message?: string };
 
-function mediaTypeForFile(file: File): MediaType | null {
-  if (file.type.startsWith("video/")) return "video";
-  if (file.type.startsWith("image/")) return "photo";
-  return null;
-}
+/** The picker, in the mockup's order. `news` is deliberately not offered. */
+const POST_TYPES: { type: MediaType; icon: "play" | "image" | "mic" | "text" }[] = [
+  { type: "video", icon: "play" },
+  { type: "photo", icon: "image" },
+  { type: "voice", icon: "mic" },
+  { type: "text", icon: "text" },
+];
 
 function objectUrl(file: File): string | null {
   if (typeof URL !== "undefined" && typeof URL.createObjectURL === "function") {
@@ -114,7 +117,15 @@ export default function ComposeScreen({
   const [caption, setCaption] = useState(initial?.caption ?? "");
 
   const [file, setFile] = useState<File | null>(null);
-  const [mediaType, setMediaType] = useState<MediaType | null>(initial?.mediaType ?? null);
+  /**
+   * The post type is CHOSEN up front (step 2), never inferred from the picked
+   * file. Inference is what left `text` unauthorable — it has no file to sniff.
+   * Video is the default: it is the common post, and it is what the mockup
+   * ships selected. In edit mode the existing post's type is fixed.
+   */
+  const [postType, setPostType] = useState<MediaType>(initial?.mediaType ?? "video");
+  /** MIME-mismatch message: the chosen type vs. what was actually picked. */
+  const [typeError, setTypeError] = useState<string | null>(null);
   const [mediaUrl, setMediaUrl] = useState<string | null>(initial?.mediaUrl ?? null);
   // Intrinsic size of the picked file, measured in the browser off the local
   // object URL — never uploaded, never chosen by the operator. Starts "off":
@@ -154,6 +165,21 @@ export default function ComposeScreen({
   }, []);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
+  /**
+   * Generation counter for "the pick currently in flight".
+   *
+   * `createDraft` + the byte upload are a long await, and the operator can
+   * switch post type, swap horse or clear the media in the middle of it.
+   * Guarding on `draft` alone cannot catch that: `draft` is only set AFTER the
+   * await resolves, so during the whole network call there is nothing to see,
+   * and the late `setDraft` would resurrect a draft of the OLD type into a
+   * screen that has already moved on — which `runAction` would then patch and
+   * publish instead of creating the post the operator actually asked for.
+   *
+   * Every invalidating action bumps this; an in-flight pick captures it and
+   * discards its own result if it has moved.
+   */
+  const pickGeneration = useRef(0);
 
   const trainerName = useMemo(
     () => trainers.find((t) => t.id === bylineId)?.name ?? null,
@@ -166,7 +192,18 @@ export default function ComposeScreen({
     return horses.filter((h) => h.name.toLowerCase().includes(q)).slice(0, 8);
   }, [horses, search]);
 
+  const isText = postType === "text";
   const draftReady = !!draft && upload.state === "done";
+  /**
+   * A text post has no upload, so it can never satisfy `draftReady` — and its
+   * draft does not even exist yet, because minting one is what picking a file
+   * does for the other three types. It is ready when its CONTENT is: a horse
+   * (post.horse_id is NOT NULL for every type), a byline, and a non-empty
+   * body. The body requirement is enforced server-side too — the BFF is not
+   * the only caller of POST /api/admin/posts.
+   */
+  const textReady = !!horse && !!bylineId && caption.trim().length > 0;
+  const canAct = isText ? textReady : draftReady;
   const busy = action.kind === "working";
   // Both halves of the pick are required before the schedule action is allowed.
   const canSchedule = !!scheduleDate && !!scheduleTime;
@@ -192,15 +229,32 @@ export default function ComposeScreen({
   }
 
   function resetMedia() {
+    // Invalidate any pick still in flight, so its `setDraft` cannot land after
+    // this clear and re-populate what we are about to empty.
+    pickGeneration.current += 1;
     if (mediaUrl && typeof URL !== "undefined" && URL.revokeObjectURL) URL.revokeObjectURL(mediaUrl);
     setFile(null);
-    setMediaType(null);
     setMediaUrl(null);
     setDims(null);
     setMeasure("off");
     setDraft(null);
+    setTypeError(null);
     setUpload({ state: "idle", pct: 0 });
     if (fileInputRef.current) fileInputRef.current.value = "";
+  }
+
+  /**
+   * Switching the post type invalidates everything downstream of it: the
+   * picked file belongs to the old type, and the draft row was minted with
+   * `type` already set (the route writes it at insert, and PATCH does not
+   * cover `type`). So we drop the draft and reuse the SAME clear path the
+   * replace-a-file flow uses, rather than inventing a second one.
+   */
+  function chooseType(next: MediaType) {
+    if (next === postType) return;
+    if (draft) void discardDraft(draft.id).catch(() => {});
+    resetMedia();
+    setPostType(next);
   }
 
   /**
@@ -221,11 +275,25 @@ export default function ComposeScreen({
       setUpload({ state: "error", pct: 0, error: "Pick a horse first." });
       return;
     }
-    const kind = mediaTypeForFile(picked);
-    if (!kind) {
-      setUpload({ state: "error", pct: 0, error: "Only a video or a photo can be uploaded here." });
+    // A text post has no media step at all, so it can never reach here.
+    if (!isUploadType(postType)) return;
+
+    // VALIDATION, not classification. The operator already told us what kind
+    // of post this is; a file whose MIME disagrees is an error they have to
+    // resolve, never a silent reclassification of their post (ENG-611).
+    const kind = uploadTypeForFile(picked);
+    if (kind !== postType) {
+      const got = kind ? TYPE_LABEL[kind] : picked.type || "an unrecognised file";
+      setTypeError(
+        `You chose ${TYPE_LABEL[postType]}, but that file is ${kind ? `a ${got}` : got}. ` +
+          `Pick a ${TYPE_LABEL[postType].toLowerCase()} file, or change the post type above.`,
+      );
+      // Leave the chosen type, the existing file and any draft exactly as they
+      // were — the pick simply did not happen.
+      if (fileInputRef.current) fileInputRef.current.value = "";
       return;
     }
+    setTypeError(null);
 
     // Replacing a file: drop the previous draft (and its uploaded asset) so we
     // don't leave an orphan draft row behind when we mint the new one.
@@ -234,24 +302,44 @@ export default function ComposeScreen({
 
     setDraft(null);
     setFile(picked);
-    setMediaType(kind);
     setMediaUrl(objectUrl(picked));
     // Drop the previous file's measurement BEFORE the new one lands, so the
     // readout can never describe the file the operator just replaced.
     setDims(null);
-    setMeasure("measuring");
+    // Voice has no picture, so there is nothing to measure and nothing that
+    // will ever fire `onMeasure` — entering "measuring" for it would leave the
+    // readout stuck on "Measuring…" forever. Stay "off" so it prints nothing.
+    setMeasure(kind === "voice" ? "off" : "measuring");
     setUpload({ state: "creating", pct: 0 });
+
+    // This pick's generation. If it moves while we are awaiting, the operator
+    // has changed the type / horse / file and everything below is stale.
+    const generation = ++pickGeneration.current;
+    const stale = () => pickGeneration.current !== generation;
 
     try {
       const created = await createDraft({ horseId: horse.id, type: kind, sourceTrainerId: bylineId });
+      if (stale()) {
+        // The operator moved on mid-flight. This draft belongs to a post they
+        // no longer want, so bin it server-side and touch NO state — writing
+        // it back would strand a draft of the wrong type in a screen that has
+        // already switched, and `runAction` would publish that instead.
+        void discardDraft(created.id).catch(() => {});
+        return;
+      }
       setDraft(created);
       setUpload({ state: "uploading", pct: 0 });
 
+      if (!created.uploadUrl) throw new Error("No upload target was returned.");
+
       if (kind === "video") {
-        await uploadVideoToMux(created.uploadUrl, picked, (pct) =>
-          setUpload({ state: "uploading", pct }),
-        );
+        await uploadVideoToMux(created.uploadUrl, picked, (pct) => {
+          if (!stale()) setUpload({ state: "uploading", pct });
+        });
       } else {
+        // photo AND voice take the identical Storage path — same private
+        // bucket, same `<postId>/original` object, same signed-upload token.
+        // The bytes go browser → Storage; they never transit our server.
         await uploadPhotoToStorage({
           bucket: created.bucket!,
           path: created.path!,
@@ -259,15 +347,30 @@ export default function ComposeScreen({
           file: picked,
         });
       }
+      if (stale()) return;
       setUpload({ state: "done", pct: 100 });
     } catch (e) {
+      // A failure that belongs to an abandoned pick must not surface an error
+      // against the post the operator has since switched to.
+      if (stale()) return;
       setUpload({ state: "error", pct: 0, error: (e as Error).message });
     }
   }
 
   async function runAction(next: PublishMode) {
-    if (!draft || !draftReady) {
-      setAction({ kind: "error", message: "Upload a video or photo first." });
+    if (isText) {
+      // The body IS the post for a text type, so an empty one is blocked here
+      // as well as server-side.
+      if (!horse || !bylineId) {
+        setAction({ kind: "error", message: "Pick a horse first." });
+        return;
+      }
+      if (!caption.trim()) {
+        setAction({ kind: "error", message: "A text post needs a body." });
+        return;
+      }
+    } else if (!draft || !draftReady) {
+      setAction({ kind: "error", message: `Upload a ${TYPE_LABEL[postType].toLowerCase()} first.` });
       return;
     }
     setMode(next);
@@ -288,22 +391,42 @@ export default function ComposeScreen({
 
     setAction({ kind: "working" });
     try {
+      // A text post's draft is minted HERE, not at the media pick — it has no
+      // media pick. The route returns 202 with just the draft and no upload
+      // target, so there is nothing to upload afterwards.
+      let current = draft;
+      if (!current) {
+        current = await createDraft({
+          horseId: horse!.id,
+          type: postType,
+          sourceTrainerId: bylineId,
+          title: title.trim() || undefined,
+          body: caption,
+        });
+        setDraft(current);
+      }
+
       // Persist the editable title + byline + caption before the lifecycle action.
-      await patchPost(draft.id, {
+      await patchPost(current.id, {
         title: title.trim() || null,
         body: caption,
         sourceTrainerId: bylineId,
       });
 
       if (next === "publish") {
-        await publishPost(draft.id);
+        await publishPost(current.id);
         setAction({ kind: "ok", message: "Published to subscribers." });
       } else if (next === "schedule") {
-        await schedulePost(draft.id, when!.toISOString());
+        await schedulePost(current.id, when!.toISOString());
         setAction({ kind: "ok", message: "Scheduled." });
       } else {
         setAction({ kind: "ok", message: "Saved as draft." });
       }
+      // The draft is no longer ours to manage once the action succeeded. Held
+      // on to, a later `chooseType`/`changeHorse` would fire a DELETE at a
+      // now-PUBLISHED post; the endpoint refuses it (409, draft-only), but the
+      // client swallowed that silently. Clearing it means we never ask.
+      setDraft(null);
       // Any successful action (publish / schedule / draft) → land on Posts
       // (refresh so the new/updated post shows in the library).
       router.push("/posts");
@@ -413,7 +536,12 @@ export default function ComposeScreen({
     horseName: horse?.name ?? null,
     byline: trainerName,
     caption,
-    mediaType,
+    // A text post genuinely has no media, so it reports none. PostPreview
+    // (ENG-558 / A1) already handles a null media type without crashing —
+    // `resolveAspect` takes `MediaType | null` and the media children are
+    // guarded on `mediaUrl && mediaType === …` — so no guard is re-added here,
+    // and A1's files are not touched.
+    mediaType: isText ? null : postType,
     mediaUrl,
     // Real race-day data off the picked horse — the badge used to be hardcoded
     // on every post, which made the preview claim a race that wasn't running.
@@ -425,7 +553,7 @@ export default function ComposeScreen({
   const captionOver = caption.length > CAPTION_MAX;
   const primaryLabel =
     mode === "publish" ? "Publish now" : mode === "schedule" ? "Schedule" : "Save as draft";
-  const mediaLabel = mediaType ? `1 ${mediaType}` : "None yet";
+  const mediaLabel = isText ? "None — text post" : file || mediaUrl ? `1 ${postType}` : "None yet";
 
   return (
     <>
@@ -470,7 +598,7 @@ export default function ComposeScreen({
                 type="button"
                 className={`btn ${styles.btnLight} ${styles.btnSm}`}
                 onClick={() => runAction("draft")}
-                disabled={!draftReady || busy}
+                disabled={!canAct || busy}
               >
                 Save draft
               </button>
@@ -478,7 +606,7 @@ export default function ComposeScreen({
                 type="button"
                 className={`btn ${styles.btnLight} ${styles.btnSm}`}
                 onClick={() => runAction("schedule")}
-                disabled={!draftReady || busy}
+                disabled={!canAct || busy}
               >
                 Schedule
               </button>
@@ -486,7 +614,7 @@ export default function ComposeScreen({
                 type="button"
                 className={`btn btn-primary ${styles.btnSm}`}
                 onClick={() => runAction("publish")}
-                disabled={!draftReady || busy}
+                disabled={!canAct || busy}
               >
                 Publish
               </button>
@@ -588,16 +716,80 @@ export default function ComposeScreen({
               ) : null}
             </section>
 
-            {/* STEP 2 — media */}
+            {/* STEP 2 — post type. Chosen, never sniffed. In edit mode the
+                type is fixed: PATCH does not cover `post.type`, and changing
+                it would orphan the already-uploaded asset. */}
             <section className={styles.section}>
-              <div className={styles.stepLabel}>Step 2 · Media</div>
+              <div className={styles.stepLabel}>Step 2 · Post type</div>
+              <h3 className={styles.sectionTitle}>What kind of post is this?</h3>
+
+              {isEdit ? (
+                // Edit mode: the type is FIXED. PATCH does not cover
+                // `post.type`, and changing it would orphan the asset already
+                // uploaded against this post. Rendered read-only rather than
+                // omitted, so the steps stay 1-2-3-4 instead of jumping 1-3-4
+                // and leaving the operator to wonder what step 2 was.
+                <div className={styles.readOnlyRow} data-testid="type-fixed">
+                  <span className={styles.readOnlyValue}>
+                    <Icon name={POST_TYPES.find((p) => p.type === postType)?.icon ?? "play"} />
+                    {TYPE_LABEL[postType]}
+                  </span>
+                  <span className={styles.help}>
+                    The post type can&apos;t be changed after the post is created.
+                  </span>
+                </div>
+              ) : (
+                <>
+                <div
+                  className={styles.typePicker}
+                  role="radiogroup"
+                  aria-label="Post type"
+                  data-testid="type-picker"
+                >
+                  {POST_TYPES.map(({ type, icon }) => (
+                    <label
+                      key={type}
+                      className={`${styles.typeOption} ${postType === type ? styles.typeOptionSelected : ""}`}
+                      data-testid={`type-option-${type}`}
+                      data-selected={postType === type ? "true" : undefined}
+                    >
+                      <input
+                        type="radio"
+                        name="post-type"
+                        value={type}
+                        checked={postType === type}
+                        onChange={() => chooseType(type)}
+                      />
+                      <Icon name={icon} />
+                      {TYPE_LABEL[type]}
+                    </label>
+                  ))}
+                </div>
+                {/* The mockup's line, STATIC and always visible — deliberately
+                    not gated on Text being selected. It is the only place the
+                    operator learns a text post exists and what it does, so
+                    revealing it only after they pick Text would show it exactly
+                    when it is no longer needed. */}
+                <div className={styles.help}>
+                  Text posts have no media: the title and body are the whole post, and they render
+                  as a Stable update in the app.
+                </div>
+                </>
+              )}
+            </section>
+
+            {/* STEP 3 — media. Hidden ENTIRELY for a text post: not a disabled
+                zone, not an empty frame — there is no media step. */}
+            {!isText ? (
+            <section className={styles.section}>
+              <div className={styles.stepLabel}>Step 3 · Media</div>
               <h3 className={styles.sectionTitle}>Add the content.</h3>
 
               <input
                 ref={fileInputRef}
                 className={styles.hiddenFile}
                 type="file"
-                accept="video/*,image/*"
+                accept={isUploadType(postType) ? ACCEPT_BY_TYPE[postType] : undefined}
                 data-testid="media-input"
                 onChange={(e) => {
                   const f = e.target.files?.[0];
@@ -607,13 +799,17 @@ export default function ComposeScreen({
 
               {isEdit ? (
                 <div className={`${styles.uploadZone} ${styles.filled}`} data-testid="media-existing">
-                  <div className={styles.preview}>
-                    {mediaType === "photo" && mediaUrl ? (
+                  <div
+                    className={`${styles.preview} ${postType === "voice" ? styles.previewAudio : ""}`}
+                  >
+                    {postType === "photo" && mediaUrl ? (
                       // eslint-disable-next-line @next/next/no-img-element -- signed existing media
                       <img src={mediaUrl} alt="" />
-                    ) : mediaType === "video" && mediaUrl ? (
+                    ) : postType === "video" && mediaUrl ? (
                       // Signed Mux HLS URL hydrated by the edit page loader.
                       <HlsVideo src={mediaUrl} controls playsInline preload="metadata" />
+                    ) : postType === "voice" && mediaUrl ? (
+                      <audio src={mediaUrl} controls preload="metadata" data-testid="voice-existing" />
                     ) : (
                       <span className={styles.previewPlay}>
                         <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
@@ -624,20 +820,26 @@ export default function ComposeScreen({
                   </div>
                   <div className={styles.uploadTools}>
                     <span className={styles.uploadMeta}>
-                      Existing {mediaType} · media can’t be changed when editing.
+                      Existing {postType} · media can’t be changed when editing.
                     </span>
                   </div>
                 </div>
               ) : file ? (
                 <div className={`${styles.uploadZone} ${styles.filled}`} data-testid="media-filled">
-                  <div className={styles.preview}>
-                    {mediaType === "photo" && mediaUrl ? (
+                  <div
+                    className={`${styles.preview} ${postType === "voice" ? styles.previewAudio : ""}`}
+                  >
+                    {postType === "photo" && mediaUrl ? (
                       // eslint-disable-next-line @next/next/no-img-element -- local object URL preview
                       <img src={mediaUrl} alt="" />
-                    ) : mediaType === "video" && mediaUrl ? (
+                    ) : postType === "video" && mediaUrl ? (
                       // Playable local preview of the picked file (object URL);
                       // native controls replace the decorative play glyph.
                       <HlsVideo src={mediaUrl} controls playsInline preload="metadata" />
+                    ) : postType === "voice" && mediaUrl ? (
+                      // Voice has no visual, so the local object URL is offered
+                      // as a playable audio element rather than a blank frame.
+                      <audio src={mediaUrl} controls preload="metadata" data-testid="voice-preview" />
                     ) : null}
                   </div>
                   {upload.state === "uploading" ? (
@@ -673,9 +875,13 @@ export default function ComposeScreen({
                     <span className={styles.dropIcon}>
                       <Icon name="play" />
                     </span>
-                    <span className={styles.dropTitle}>Choose a video or photo</span>
+                    <span className={styles.dropTitle}>
+                      Choose {postType === "voice" ? "an audio file" : `a ${postType}`}
+                    </span>
                     <span className={styles.dropSub}>
-                      Video goes to Mux, photos to storage — straight from your browser.
+                      {postType === "video"
+                        ? "Video goes to Mux — straight from your browser."
+                        : "Goes to private storage — straight from your browser."}
                     </span>
                     <button
                       type="button"
@@ -694,16 +900,31 @@ export default function ComposeScreen({
                   ) : null}
                 </div>
               )}
+              {/* The chosen type vs. what was actually picked. Named on both
+                  sides so the operator can see which half to change. */}
+              {typeError ? (
+                <div
+                  className={`${styles.help} ${styles.uploadError}`}
+                  data-testid="type-mismatch"
+                  role="alert"
+                >
+                  {typeError}
+                </div>
+              ) : null}
               <div className={styles.help}>
                 Upload the finished file, already edited and watermarked. The platform doesn&apos;t
                 modify what you upload.
               </div>
             </section>
+            ) : null}
 
-            {/* STEP 3 — words */}
+            {/* STEP 4 — words. For a text post the body IS the post, so the
+                field is required and labelled as such. */}
             <section className={styles.section}>
-              <div className={styles.stepLabel}>Step 3 · Words</div>
-              <h3 className={styles.sectionTitle}>Write the caption.</h3>
+              <div className={styles.stepLabel}>Step 4 · Words</div>
+              <h3 className={styles.sectionTitle}>
+                {isText ? "Write the post." : "Write the caption."}
+              </h3>
 
               <label className={styles.label} htmlFor="byline">
                 Trainer byline
@@ -742,7 +963,8 @@ export default function ComposeScreen({
 
               <div className={styles.captionRow}>
                 <label className={styles.label} htmlFor="caption">
-                  Caption
+                  {isText ? "Body" : "Caption"}
+                  {isText ? <span aria-hidden="true"> *</span> : null}
                 </label>
                 <span className={`${styles.counter} ${captionOver ? styles.counterOver : ""}`}>
                   {caption.length}/{CAPTION_MAX}
@@ -753,12 +975,20 @@ export default function ComposeScreen({
                 className={styles.textarea}
                 value={caption}
                 maxLength={CAPTION_MAX}
+                required={isText}
+                aria-required={isText || undefined}
                 data-testid="caption"
-                placeholder="Last fast gallop before Saturday — he's spot-on…"
+                placeholder={
+                  isText
+                    ? "Mahogany worked well this morning — he's spot-on for Saturday…"
+                    : "Last fast gallop before Saturday — he's spot-on…"
+                }
                 onChange={(e) => setCaption(e.target.value)}
               />
               <div className={styles.help}>
-                Keep it under {CAPTION_MAX} characters; sounds like the trainer would say it.
+                {isText
+                  ? `Required — the title and this body are the whole post. Keep it under ${CAPTION_MAX} characters; sounds like the trainer would say it.`
+                  : `Keep it under ${CAPTION_MAX} characters; sounds like the trainer would say it.`}
               </div>
             </section>
           </div>
@@ -776,7 +1006,7 @@ export default function ComposeScreen({
                     >
                       {initial!.status.charAt(0).toUpperCase() + initial!.status.slice(1)}
                     </span>
-                  ) : draftReady ? (
+                  ) : canAct ? (
                     <span className={`${styles.pill} ${styles.pillGreen} ${styles.pillDot}`}>Ready</span>
                   ) : (
                     <span className={`${styles.pill} ${styles.pillAmber} ${styles.pillDot}`}>Draft</span>
@@ -875,9 +1105,7 @@ export default function ComposeScreen({
                   data-testid="primary-action"
                   onClick={isEdit ? saveEdit : () => runAction(mode)}
                   disabled={
-                    isEdit
-                      ? busy
-                      : !draftReady || busy || (mode === "schedule" && !canSchedule)
+                    isEdit ? busy : !canAct || busy || (mode === "schedule" && !canSchedule)
                   }
                 >
                   {busy ? (isEdit ? "Saving…" : "Working…") : isEdit ? "Save changes" : primaryLabel}

@@ -569,8 +569,37 @@ The `dev-handover/` path was corrected in THIS file on 17 Aug but not in `.rx/mo
 sending readers to a directory that has never existed. Both are fixed as of ENG-611. If you correct a
 design-source path, correct it in **both** files.
 
-## PostPreview renders its media box for every type, including text
+## PostPreview renders its media box for every type, including text — FIXED in ENG-633
 A1 (ENG-558) guards the media CHILDREN (`mediaUrl && mediaType === "photo"` / `"video"`) and
-`resolveAspect` accepts `null`, so a text post does **not** crash the preview — but the empty
-`.postMedia` box is still drawn. ENG-611 deliberately did not touch it (A1 owns the file); dropping
-the box for a medialess post is open follow-up work, not a regression.
+`resolveAspect` accepts `null`, so a text post did **not** crash the preview — but the empty
+`.postMedia` box was still drawn. ENG-611 deliberately did not touch it (A1 owns the file).
+ENG-633 closed it: the box and the orientation readout are now gated on `hasMediaBox`.
+
+## `mediaType: null` reaching PostPreview means TEXT, not "no file picked yet"
+**This is the one to remember before touching anything in `app/(dash)/compose/`.**
+**Symptom:** ENG-633's ticket specified the fix as "hide the box when `mediaType === "text"`".
+Implemented literally, that passes its own unit tests and **leaves the real screen broken**.
+**Cause:** `ComposeScreen.tsx` reports a text post to the preview as `mediaType: isText ? null :
+postType` — the preview never receives the string `"text"` from the real screen. And `postType` is
+`useState<MediaType>(initial?.mediaType ?? "video")`, so it has **no "not chosen yet" state**:
+since ENG-611 put an explicit type picker in step 2, `null` arriving at the preview means text and
+nothing else.
+**Do this:** guard on POSITIVE membership in `UPLOAD_TYPES` (`mediaType !== null &&
+isUploadType(mediaType)`), never `!== "text"` — that covers both spellings, and `post.type`'s CHECK
+still permits `news`. And treat any pre-ENG-611 test passing `mediaType: null` to mean "no file
+chosen" as **stale**: it is now describing a text post. Two such tests in `PostPreview.test.tsx`
+had to be respelled to `photo` in ENG-633.
+**Wider lesson:** a ticket grilled before a sibling merges can encode the OLD contract. Read the
+caller before building the guard the ticket describes.
+
+## Two `rx:review` subagents in one worktree corrupt each other's test runs
+**Symptom:** a clean suite goes red mid-run with failures that vanish on re-check, and the diff
+"changes under you".
+**Cause:** `rx:review` does mutation testing — it edits the component, runs vitest, restores. Two
+of them dispatched in parallel against the SAME worktree interleave those edits, and any gate you
+run at the same time reads a half-mutated tree. One reviewer also restored the component from its
+own earlier snapshot, which would have silently reverted edits made in that window.
+**Do this:** snapshot your intended diff first (`git diff | shasum`, plus copies of the touched
+files) so you can prove the tree is unmutated before you commit; re-run the full gate only after
+every reviewer has finished. Better: give each concurrent reviewer its own worktree, or run them
+sequentially.

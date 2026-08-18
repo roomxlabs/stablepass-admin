@@ -12,7 +12,7 @@
 
 import { useState } from "react";
 import type { MeasureState, MediaDimensions, MediaType } from "./types";
-import { describeOrientation, displayHorseName, resolveAspect } from "./types";
+import { describeOrientation, displayHorseName, isUploadType, resolveAspect } from "./types";
 import HlsVideo from "./HlsVideo";
 import styles from "./compose.module.css";
 
@@ -57,6 +57,27 @@ export default function PostPreview({
   // and a photo sits at 16:10, agreeing with the readout above it.
   const aspect = resolveAspect(dims, mediaType);
 
+  // Only the three types that carry an uploaded asset get a media box. A text
+  // post's title and body ARE the post: the member card runs header → reactions
+  // → body with no box at all, so drawing an empty black "Media preview"
+  // placeholder here promises the operator a box no subscriber will ever see.
+  // That is the same class of lie A1 (ENG-558) deleted the fake web pane to
+  // remove, on the one type whose card anatomy differs most (ENG-633).
+  //
+  // Membership in UPLOAD_TYPES via `isUploadType`, never `!== "text"`: post.type
+  // still permits `news`, and page.tsx casts a loaded row's type straight to
+  // MediaType, so a negative test would wave a fifth type through into a box it
+  // has no asset for. One list, so the two can't diverge.
+  //
+  // `null` is deliberately on the no-box side. ComposeScreen reports a text post
+  // as `mediaType: null` rather than "text" (see its previewData comment), so a
+  // guard on the literal alone would leave the actual screen unfixed. Both the
+  // null and the "text" spellings are covered by tests.
+  //
+  // NOT "hide the box whenever there is no file": a photo/video/voice post shows
+  // its empty box before a file is picked, which is the operator's drop target.
+  const hasMediaBox = mediaType !== null && isUploadType(mediaType);
+
   return (
     <div className={`${styles.previewBlock} ${compact ? styles.previewCompact : ""}`}>
       {/* Detected, never chosen. Absent entirely until a file is picked, and
@@ -64,7 +85,13 @@ export default function PostPreview({
           role=status because the line CHANGES under the operator ("Measuring…"
           then the result) without them acting, so a screen reader has to be
           told. Polite, not assertive: it is advisory and never blocks posting. */}
-      {measure !== "off" ? (
+      {/* Also gated on hasMediaBox: describeOrientation has nothing to describe
+          on a post with no asset, and a stale "1920×1080 · Landscape 16:9" left
+          over from a file picked before the operator switched to Text would
+          describe media the post no longer has. ComposeScreen does reset
+          `measure` on a type change, but the preview must not depend on that to
+          stay honest. */}
+      {hasMediaBox && measure !== "off" ? (
         <div className={styles.previewReadout} role="status" data-testid="preview-readout">
           {measure === "measuring" ? "Measuring…" : describeOrientation(dims, mediaType)}
         </div>
@@ -100,62 +127,65 @@ export default function PostPreview({
 
           {/* Flush to the card edges, at the MEASURED ratio, neutral ground
               behind unpainted media. The CSS default is 16:10 so the box is
-              never 0-height while metadata loads. */}
-          <div className={styles.postMedia} data-testid="preview-media" style={{ aspectRatio: `${aspect}` }}>
-            {mediaUrl && mediaType === "photo" ? (
-              // eslint-disable-next-line @next/next/no-img-element -- local object URL, not a remote asset
-              <img
-                src={mediaUrl}
-                alt=""
-                data-testid="preview-img"
-                onLoad={(e) =>
-                  onMeasure?.({
-                    width: e.currentTarget.naturalWidth,
-                    height: e.currentTarget.naturalHeight,
-                  })
-                }
-                onError={() => onMeasure?.(null)}
-              />
-            ) : mediaUrl && mediaType === "video" ? (
-              // Playable in the modal, where there is room to vet the actual
-              // video — click the frame to start it. NOT playable in the
-              // compact rail: the native control bar plus its black band eats
-              // ~40% of that small box, and a member sees none of it, so the
-              // rail preview would lie about framing.
-              //
-              // The same argument applies to the modal until playback starts,
-              // which is why `controls` waits for `played` rather than being on
-              // from the outset: the considered look is the one that most needs
-              // an unobstructed frame.
-              <HlsVideo
-                src={mediaUrl}
-                controls={!compact && played}
-                muted={compact}
-                playsInline
-                preload="metadata"
-                data-testid="preview-video"
-                onClick={
-                  compact
-                    ? undefined
-                    : (e) => {
-                        const v = e.currentTarget;
-                        if (v.paused) void v.play();
-                        else v.pause();
-                      }
-                }
-                onPlay={() => setPlayed(true)}
-                onLoadedMetadata={(e) =>
-                  onMeasure?.({
-                    width: e.currentTarget.videoWidth,
-                    height: e.currentTarget.videoHeight,
-                  })
-                }
-                onError={() => onMeasure?.(null)}
-              />
-            ) : (
-              <div className={styles.postMediaEmpty}>Media preview</div>
-            )}
-          </div>
+              never 0-height while metadata loads. Absent entirely for a post
+              that carries no asset — see hasMediaBox. */}
+          {hasMediaBox ? (
+            <div className={styles.postMedia} data-testid="preview-media" style={{ aspectRatio: `${aspect}` }}>
+              {mediaUrl && mediaType === "photo" ? (
+                // eslint-disable-next-line @next/next/no-img-element -- local object URL, not a remote asset
+                <img
+                  src={mediaUrl}
+                  alt=""
+                  data-testid="preview-img"
+                  onLoad={(e) =>
+                    onMeasure?.({
+                      width: e.currentTarget.naturalWidth,
+                      height: e.currentTarget.naturalHeight,
+                    })
+                  }
+                  onError={() => onMeasure?.(null)}
+                />
+              ) : mediaUrl && mediaType === "video" ? (
+                // Playable in the modal, where there is room to vet the actual
+                // video — click the frame to start it. NOT playable in the
+                // compact rail: the native control bar plus its black band eats
+                // ~40% of that small box, and a member sees none of it, so the
+                // rail preview would lie about framing.
+                //
+                // The same argument applies to the modal until playback starts,
+                // which is why `controls` waits for `played` rather than being on
+                // from the outset: the considered look is the one that most needs
+                // an unobstructed frame.
+                <HlsVideo
+                  src={mediaUrl}
+                  controls={!compact && played}
+                  muted={compact}
+                  playsInline
+                  preload="metadata"
+                  data-testid="preview-video"
+                  onClick={
+                    compact
+                      ? undefined
+                      : (e) => {
+                          const v = e.currentTarget;
+                          if (v.paused) void v.play();
+                          else v.pause();
+                        }
+                  }
+                  onPlay={() => setPlayed(true)}
+                  onLoadedMetadata={(e) =>
+                    onMeasure?.({
+                      width: e.currentTarget.videoWidth,
+                      height: e.currentTarget.videoHeight,
+                    })
+                  }
+                  onError={() => onMeasure?.(null)}
+                />
+              ) : (
+                <div className={styles.postMediaEmpty}>Media preview</div>
+              )}
+            </div>
+          ) : null}
 
           {/* The real card's reaction bar + bookmark. Non-interactive here: the
               operator is looking at anatomy, not reacting to their own post. */}

@@ -8,7 +8,8 @@ import { afterEach, describe, expect, it } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import PostPreview, { type PostPreviewData } from "./PostPreview";
 import PreviewModal from "./PreviewModal";
-import type { MeasureState, MediaDimensions } from "./types";
+import type { MeasureState, MediaDimensions, MediaType } from "./types";
+import { UPLOAD_TYPES } from "./types";
 
 afterEach(cleanup);
 
@@ -188,8 +189,17 @@ describe("the media box tells the truth about aspect", () => {
     expect(readout).not.toContain("1920×1080");
   });
 
-  it("shows the empty block at 16:10 with no readout when no file is chosen", () => {
-    renderPreview({ mediaUrl: null, mediaType: null, measure: "off" });
+  // ENG-633 made the box conditional, so this is now the guard against
+  // over-correcting into "hide the box whenever there is no file". A photo post
+  // before the operator picks a file still gets its empty box: that box is the
+  // drop target, and the member card really will have one once the asset lands.
+  //
+  // It used to pass `mediaType: null` to mean "no file chosen yet". That
+  // spelling stopped meaning that at ENG-611 — the operator now chooses a type
+  // up front, and ComposeScreen sends null only for a TEXT post (see the text
+  // describe below) — so the upload-type case has to name its type.
+  it("still shows the empty block at 16:10 for a photo post with no file yet", () => {
+    renderPreview({ mediaUrl: null, mediaType: "photo", measure: "off" });
     expect(screen.queryByTestId("preview-readout")).toBeNull();
     expect(screen.getByTestId("preview-media").style.aspectRatio).toBe("1.6");
     expect(screen.getByText("Media preview")).toBeTruthy();
@@ -200,6 +210,88 @@ describe("the media box tells the truth about aspect", () => {
     // describe the rendition, not the asset. Silence beats a wrong number.
     renderPreview({ mediaUrl: "https://stream.example/x.m3u8?token=t", measure: "off" });
     expect(screen.queryByTestId("preview-readout")).toBeNull();
+  });
+});
+
+// ENG-633. A text post's title and body ARE the post — the member card runs
+// header -> reactions -> body with no media box at all. The preview drew one
+// anyway and captioned it "Media preview", promising the operator an anatomy no
+// subscriber will ever see. That is the same class of lie A1 deleted the fake
+// web pane to remove, on the one type whose card differs most.
+describe("a text post gets no media box", () => {
+  it("renders neither the box nor the placeholder", () => {
+    renderPreview({ mediaType: "text", mediaUrl: null });
+    expect(screen.queryByTestId("preview-media")).toBeNull();
+    expect(screen.queryByText("Media preview")).toBeNull();
+  });
+
+  it("renders no box for the null type either, which is what ComposeScreen actually sends", () => {
+    // ComposeScreen's previewData maps a text post to `mediaType: null`, not
+    // "text", because a text post has no type that carries media. Guarding on
+    // the "text" literal alone would pass its own test and leave the real
+    // screen showing the phantom box, so the null spelling is pinned too.
+    renderPreview({ mediaType: null, mediaUrl: null });
+    expect(screen.queryByTestId("preview-media")).toBeNull();
+    expect(screen.queryByText("Media preview")).toBeNull();
+  });
+
+  it("suppresses the orientation readout even with a measurement still in state", () => {
+    // describeOrientation has nothing to describe on a post with no asset.
+    // These dims are the leftover from a file picked BEFORE the operator
+    // switched to Text: printing them would describe media this post no longer
+    // has. ComposeScreen does clear `measure` on a type change, but the preview
+    // must not need it to stay honest.
+    renderPreview({
+      mediaType: "text",
+      mediaUrl: null,
+      dims: { width: 1920, height: 1080 },
+      measure: "done",
+    });
+    expect(screen.queryByTestId("preview-readout")).toBeNull();
+    expect(screen.queryByRole("status")).toBeNull();
+    expect(screen.queryByText(/Landscape|Portrait|Square|Members see it/)).toBeNull();
+  });
+
+  it("still renders the rest of the card — badge, name, byline, reactions, body", () => {
+    // Removing the box must not quietly remove anything else with it.
+    renderPreview({ mediaType: "text", mediaUrl: null, racesToday: true });
+    expect(screen.getByTestId("preview-race-badge").textContent).toBe("Race day");
+    expect(screen.getByText("Mahogany")).toBeTruthy();
+    expect(screen.getByText("Chris Waller")).toBeTruthy();
+    expect(screen.getByTestId("preview-reactions")).toBeTruthy();
+    expect(screen.getByTestId("preview-bookmark")).toBeTruthy();
+    expect(screen.getByTestId("preview-caption").textContent).toBe(
+      "Last fast gallop before Saturday.",
+    );
+  });
+
+  // Deliberately asserts the BOX, not the "Media preview" copy. That copy is
+  // right for video and photo (pinned above), but the member card renders a
+  // voice post as an inline player, not a black frame — so asserting the copy
+  // for voice here would cement a placeholder that is itself a known fidelity
+  // question, and a later voice ticket would read it as a settled decision.
+  // Out of ENG-633's scope either way: what this test owes the ticket is that
+  // all three keep their box.
+  it("gives no box to a type that is neither an upload type nor text", () => {
+    // The guard is MEMBERSHIP in UPLOAD_TYPES, not `!== "text"`. post.type's
+    // CHECK still permits `news`, and page.tsx casts a loaded row's type
+    // straight to MediaType, so a negative guard would wave a fifth type
+    // through into a box it has no asset for. Nothing authors `news` today
+    // (page.tsx filters on EDITABLE_TYPES first), so this pins the REASONING
+    // rather than a live path — swap the component to `!== "text"` and only
+    // this test fails.
+    renderPreview({ mediaType: "news" as MediaType, mediaUrl: null });
+    expect(screen.queryByTestId("preview-media")).toBeNull();
+  });
+
+  it("keeps the box for every type that DOES carry an asset, file picked or not", () => {
+    // Driven off UPLOAD_TYPES itself rather than a fresh literal, so a fifth
+    // post type cannot diverge the component's list from this one.
+    for (const type of UPLOAD_TYPES) {
+      renderPreview({ mediaType: type, mediaUrl: null, measure: "off" });
+      expect(screen.getByTestId("preview-media")).toBeTruthy();
+      cleanup();
+    }
   });
 });
 
@@ -240,9 +332,40 @@ describe("guardrail: no watermarking in admin", () => {
     expect(media.firstElementChild?.tagName).toBe("VIDEO");
 
     // And with no file it is the empty block alone, not an overlay host.
+    // Spelled `photo` since ENG-633: a type that carries an asset is the case
+    // that still HAS a box to keep clean. (A text post has no box at all now,
+    // which is covered in its own describe.)
     cleanup();
-    const empty = renderPreview({ mediaUrl: null, mediaType: null }).container;
+    const empty = renderPreview({ mediaUrl: null, mediaType: "photo" }).container;
     const emptyMedia = empty.querySelector("[data-testid='preview-media']");
+    expect(emptyMedia).not.toBeNull();
     expect(emptyMedia?.children).toHaveLength(1);
+  });
+
+  // ENG-633 introduced a render path with NO media box at all. The shape checks
+  // above are anchored on the box, so they see nothing on that path: without
+  // this test a text post could grow a baked-in overlay with the whole suite
+  // green. Cover the boxless branch by name, in both its spellings.
+  it("bakes none into the boxless text render either", () => {
+    for (const mediaType of ["text", null] as const) {
+      const { container } = renderPreview({ mediaType, mediaUrl: null, racesToday: true });
+      expect(screen.queryByTestId("preview-media")).toBeNull();
+      expect(container.querySelector("[class*='watermark' i]")).toBeNull();
+      expect(container.querySelector("[data-testid*='watermark' i]")).toBeNull();
+      expect(container.innerHTML.toLowerCase()).not.toContain("watermark");
+
+      // Name checks only catch an overlay that admits what it is, so pin the
+      // SHAPE of the boxless card too — exactly header, reaction bar, body.
+      // Without this an UNNAMED painted layer could sit on the one render path
+      // that has no media box to anchor the box-shape check above.
+      const card = screen.getByTestId("post-preview");
+      expect(card.children).toHaveLength(3);
+      expect([...card.children].map((c) => c.getAttribute("data-testid"))).toEqual([
+        null, // <header>, which carries no testid
+        "preview-reactions",
+        "preview-caption",
+      ]);
+      cleanup();
+    }
   });
 });

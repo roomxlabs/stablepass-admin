@@ -5,15 +5,25 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { supabaseBrowser } from "@/lib/supabase/client";
 import { signPhoto } from "@/lib/storage/photos";
-import { TRAINING_STATUSES, dollarsToCents, humanizeTrainingStatus } from "./format";
+import { HORSE_SEXES, TRAINING_STATUSES, dollarsToCents, horseSexLabel, humanizeTrainingStatus } from "./format";
 
-// Shared add/edit form — screens/07-add-horse.html. In edit mode the same
-// layout is reused (there is no separate edit mockup), prefilled and issuing
-// PATCH instead of POST. No owner field anywhere (guardrail: no owner PII).
+// Shared add/edit form — screens/07-add-horse.html (re-cut 18 Aug 2026). In
+// edit mode the same layout is reused (there is no separate edit mockup),
+// prefilled and issuing PATCH instead of POST. No owner field anywhere
+// (guardrail: no owner PII).
+//
+// Sex is now the horse's SEX (male|female) plus a separate Gelded flag. It used
+// to be a five-item select of race-day DESCRIPTIONS — Gelding / Colt / Filly /
+// Mare / Stallion — which is why a filly stayed a filly at eight: nothing ever
+// changed it. The description now derives in Postgres from sex + age + gelded:
+//
+//   filly   female, under 4        mare   female, 4 and over
+//   colt    entire male, under 4   horse  entire male, 4 and over
+//   gelding a gelded male, ANY age
+//
+// `Stallion` is dropped — it is not a race-day description in Australia.
 
 const PHOTO_BUCKET = "horse-photos";
-
-const SEX_OPTIONS = ["gelding", "colt", "filly", "mare", "stallion"] as const;
 
 export type Trainer = { id: string; display_name: string | null; stable_name: string | null };
 
@@ -22,7 +32,11 @@ export type HorseInitial = {
   stableName?: string;
   racingName?: string;
   foalingYear?: string;
+  // "" means NO SELECTION. A row whose `sex` is NULL (a legacy description the
+  // migration could not map) must stay unselected — defaulting it to a sex is
+  // exactly the guess this epic removes.
   sex?: string;
+  isGelded?: boolean;
   colour?: string;
   sire?: string;
   dam?: string;
@@ -56,7 +70,10 @@ export default function HorseForm({ mode, trainers, horseId, initial = {} }: Pro
     stableName: initial.stableName ?? "",
     racingName: initial.racingName ?? "",
     foalingYear: initial.foalingYear ?? "",
-    sex: initial.sex ?? "gelding",
+    // No default. An unset sex stays unset — the old form defaulted to
+    // "gelding", which is how a stable full of wrongly-described horses got in.
+    sex: initial.sex ?? "",
+    isGelded: initial.isGelded ?? false,
     colour: initial.colour ?? "",
     sire: initial.sire ?? "",
     dam: initial.dam ?? "",
@@ -86,8 +103,22 @@ export default function HorseForm({ mode, trainers, horseId, initial = {} }: Pro
     };
   }, [initial.photoUrl]);
 
-  const set = <K extends keyof HorseInitial>(key: K, value: string) =>
-    setForm((f) => ({ ...f, [key]: value }));
+  // Only the free-text/select fields; `isGelded` is boolean and has its own
+  // handlers below.
+  type StringField = {
+    [K in keyof HorseInitial]-?: HorseInitial[K] extends string | undefined ? K : never;
+  }[keyof HorseInitial];
+
+  const set = (key: StringField, value: string) => setForm((f) => ({ ...f, [key]: value }));
+
+  // Selecting Female CLEARS isGelded in the SAME state update — disabling the
+  // checkbox alone would leave a stale `true` in state, and the database CHECK
+  // (`not is_gelded or sex is not distinct from 'male'`) would reject the submit
+  // with a raw 23514. Clearing on "no selection" too, for the same reason.
+  const setSex = (value: string) =>
+    setForm((f) => ({ ...f, sex: value, isGelded: value === "male" ? f.isGelded : false }));
+
+  const setGelded = (value: boolean) => setForm((f) => ({ ...f, isGelded: value }));
 
   async function onPickPhoto(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
@@ -137,6 +168,7 @@ export default function HorseForm({ mode, trainers, horseId, initial = {} }: Pro
         stableName: form.stableName || undefined,
         racingName: form.racingName || undefined,
         sex: form.sex || undefined,
+        isGelded: form.isGelded,
         colour: form.colour || undefined,
         foalingYear,
         story: form.story || undefined,
@@ -251,14 +283,55 @@ export default function HorseForm({ mode, trainers, horseId, initial = {} }: Pro
                   <div className="adm-help">Age is calculated automatically — every horse turns a year older on 1 August.</div>
                 </div>
                 <div>
-                  <label className="adm-label">Sex</label>
-                  <select className="adm-input" value={form.sex} onChange={(e) => set("sex", e.target.value)}>
-                    {SEX_OPTIONS.map((s) => (
+                  <label className="adm-label" htmlFor="horse-sex">
+                    Sex
+                  </label>
+                  {/* Exactly two SELECTABLE options, Male and Female.
+                      The disabled placeholder is not a third choice — it is the
+                      only way to render "no sex on record" honestly. With two
+                      bare options and value="", HTML's own reset rule ("if no
+                      option is selected, select the first non-disabled one")
+                      silently selects MALE, which is precisely the defaulting
+                      this ticket removes. `disabled` keeps it out of the reset
+                      and out of reach once a sex has been stated. */}
+                  <select
+                    id="horse-sex"
+                    className="adm-input"
+                    value={form.sex}
+                    onChange={(e) => setSex(e.target.value)}
+                  >
+                    <option value="" disabled hidden>
+                      Select a sex
+                    </option>
+                    {HORSE_SEXES.map((s) => (
                       <option key={s} value={s}>
-                        {s[0].toUpperCase() + s.slice(1)}
+                        {horseSexLabel(s)}
                       </option>
                     ))}
                   </select>
+                  <label
+                    htmlFor="horse-gelded"
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 8,
+                      marginTop: 8,
+                      fontSize: 13,
+                      cursor: form.sex === "male" ? "pointer" : "not-allowed",
+                      opacity: form.sex === "male" ? 1 : 0.6,
+                    }}
+                  >
+                    <input
+                      id="horse-gelded"
+                      type="checkbox"
+                      style={{ accentColor: "var(--brand-green)" }}
+                      checked={form.isGelded}
+                      disabled={form.sex !== "male"}
+                      onChange={(e) => setGelded(e.target.checked)}
+                    />
+                    Gelded
+                  </label>
+                  <div className="adm-help">Shows as &ldquo;gelding&rdquo; at any age, overriding colt or horse.</div>
                 </div>
                 <div>
                   <label className="adm-label">Colour</label>

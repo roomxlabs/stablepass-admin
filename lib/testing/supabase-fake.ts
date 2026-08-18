@@ -24,7 +24,35 @@ export type FakeState = {
   functions: Record<string, { data?: any; error?: any }>;
   rpcs: Record<string, { data?: any; error?: any }>;
   storage: { signed?: { data?: any; error?: any } };
-  calls: { functions: { name: string; body: any }[]; or: string[]; from: string[]; rpc: { name: string; args: any }[] };
+  calls: {
+    functions: { name: string; body: any }[];
+    or: string[];
+    from: string[];
+    rpc: { name: string; args: any }[];
+    /**
+     * The PAYLOAD of every insert/update/delete, per table (ENG-611).
+     *
+     * The builder used to swallow its arguments, which meant a test could only
+     * ever assert that a mutation did not error — never that it wrote the
+     * right thing. A route that inserted the wrong `type`, or forgot to record
+     * `media_url`, passed just as green as a correct one. Recording the
+     * payload is what lets a test guard the write itself.
+     */
+    mutations: {
+      table: string;
+      op: "insert" | "update" | "delete";
+      payload: any;
+      /**
+       * The `.eq()` filters the chain carried, so a test can prove WHICH row a
+       * mutation targeted. Without this a rollback assertion is satisfied by a
+       * `.delete()` with no filter at all — i.e. by a statement that would
+       * delete the whole table.
+       */
+      filters: { column: string; value: any }[];
+    }[];
+    /** Storage signed-upload targets requested, so "text makes no Storage call" is provable. */
+    storage: { bucket: string; path: string }[];
+  };
 };
 
 type Builder = {
@@ -54,14 +82,32 @@ type Builder = {
 
 function makeBuilder(state: FakeState, table: string): Builder {
   let op: "select" | "mutate" = "select";
+  // Shared with the recorded mutation (same array reference), so `.eq()` calls
+  // chained AFTER .delete()/.update() are still captured.
+  const filters: { column: string; value: any }[] = [];
   const script = () => state.tables[table] ?? {};
   const pick = (): ScriptResult => (op === "mutate" ? script().mutate : script().select) ?? {};
   const b: Builder = {
     select: () => b,
-    insert: () => { op = "mutate"; return b; },
-    update: () => { op = "mutate"; return b; },
-    delete: () => { op = "mutate"; return b; },
-    eq: () => b,
+    insert: (payload?: any) => {
+      op = "mutate";
+      state.calls.mutations.push({ table, op: "insert", payload, filters });
+      return b;
+    },
+    update: (payload?: any) => {
+      op = "mutate";
+      state.calls.mutations.push({ table, op: "update", payload, filters });
+      return b;
+    },
+    delete: () => {
+      op = "mutate";
+      state.calls.mutations.push({ table, op: "delete", payload: undefined, filters });
+      return b;
+    },
+    eq: (column?: any, value?: any) => {
+      filters.push({ column, value });
+      return b;
+    },
     neq: () => b,
     is: () => b,
     in: () => b,
@@ -117,11 +163,15 @@ export function makeFakeClient(state: FakeState) {
     },
     storage: {
       from: (bucket: string) => ({
-        createSignedUploadUrl: async (path: string) =>
-          state.storage.signed ?? {
-            data: { signedUrl: `https://storage.local/${bucket}/${path}`, token: "tok", path },
-            error: null,
-          },
+        createSignedUploadUrl: async (path: string) => {
+          state.calls.storage.push({ bucket, path });
+          return (
+            state.storage.signed ?? {
+              data: { signedUrl: `https://storage.local/${bucket}/${path}`, token: "tok", path },
+              error: null,
+            }
+          );
+        },
       }),
     },
   };
@@ -135,6 +185,6 @@ export function blankState(): FakeState {
     functions: {},
     rpcs: {},
     storage: {},
-    calls: { functions: [], or: [], from: [], rpc: [] },
+    calls: { functions: [], or: [], from: [], rpc: [], mutations: [], storage: [] },
   };
 }

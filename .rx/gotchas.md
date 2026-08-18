@@ -18,12 +18,22 @@ Video → Mux, image/voice → Storage — the actual upload/watermark is orches
 ## Tests are the pass/fail
 Each route ticket needs a test asserting the 403-for-non-admin branch + the happy-path status/envelope.
 
-## Mockups path drifts from .rx/mockups.md
-`.rx/mockups.md` says `../docs/dev-handover/mockups/web/admin/`, but the real screens live at
-`../dev-handover/StablePass-mockups/mockups/web/admin/screens/` and the shared design system is
-`../dev-handover/StablePass-mockups/mockups/web/style.css` (same tokens as member web). Build FE from
-that file; pull real values (`--brand-green:#285D50`, `--brand-green-darker:#122E26`, `--cream:#FAF7F2`,
-Inter/Cormorant) rather than eyeballing.
+## ~~Mockups path drifts from .rx/mockups.md~~ — BOTH paths in this file were wrong (fixed 17 Aug 2026)
+**This entry used to name `../dev-handover/StablePass-mockups/mockups/web/admin/screens/`. There is no
+`dev-handover/` anywhere in the workspace and there never was** — so did the entry further down this
+file, and so did `.rx/mockups.md` itself. All three were guesses that got copied forward. The real
+root, verified by the round 5 grill and now correct in `.rx/mockups.md`:
+
+```sh
+ls "$(git rev-parse --git-common-dir)/../../../06-stage1-design/mockups/web/admin/screens/"
+```
+
+i.e. `06-stage1-design/mockups/web/admin/screens/` for the 10 admin screens, with the shared design
+system at `06-stage1-design/mockups/web/style.css`. The `git-common-dir` form is the one to use: in a
+`git worktree`, `..` is `.claude/worktrees/`, so a plain relative path resolves somewhere else.
+Pull real token values (`--brand-green:#285D50`, `--cream:#FAF7F2`, `--muted:#6B6963`,
+`--line:#E2DED6`, Inter/Cormorant) from `style.css` rather than eyeballing.
+**Run the `ls` before "correcting" any mockup path in this repo, and paste the output when you do.**
 
 ## ~~The admin sign-in mockup is stale on 2FA~~ — REVERSED by ENG-370: the MOCKUP was right
 **This entry used to say "build email+password only, 2FA is out of scope in v1". That is now wrong —
@@ -95,11 +105,10 @@ Basic-auth header from `MUX_TOKEN_ID`/`MUX_TOKEN_SECRET`; `playback_policy: ["si
 a reusable scriptable client (per-table `select` vs `mutate` results, `functions.invoke`,
 `storage.createSignedUploadUrl`) — reuse it for the other admin route tickets.
 
-## Mockups live OUTSIDE the repo — real path differs from `.rx/mockups.md`
-`.rx/mockups.md` writes the source as `../docs/dev-handover/mockups/web/admin/`, but the files actually
-sit at `<repo>/../dev-handover/StablePass-mockups/mockups/web/admin/screens/` (and the shared design
-system at `.../mockups/web/style.css`). Resolve with `find … -name '<NN>-*.html'` rather than trusting
-the manifest path. Build live from the HTML + `style.css` (real token values), not from memory.
+## ~~Mockups live OUTSIDE the repo — real path differs from `.rx/mockups.md`~~ — SUPERSEDED
+Second copy of the same wrong guess; see the corrected entry near the top of this file. The mockups
+**do** live outside the repo, but at `06-stage1-design/mockups/web/admin/screens/`, not under any
+`dev-handover/` directory. Build live from the HTML + `style.css`, not from memory.
 
 ## A resource LIST screen needs no GET endpoint — Server Component reads via `supabaseServer()`
 The admin list pages are Server Components under `app/(dash)/<res>/page.tsx` that query the RLS admin
@@ -338,12 +347,18 @@ regression and `npm run e2e` always leaves a dirty tree. Two consequences:
 Quantify before judging: `magick compare -metric AE old.png new.png /tmp/d.png`, then crop the bbox
 and look. Don't eyeball full-page shots.
 
-## `06-compose-preview.png` is committed in an UNPAINTED state
-The preview modal is screenshotted before its blob-URL `<img>` elements decode, so the baseline shows
-`.postMedia`'s brand-green-dark background instead of the photos. Reproduces deterministically under
-`next start` (the old `next dev` harness's extra latency hid it). Harness timing, NOT a product bug —
-but the committed baseline is misleading evidence. Fix when touched: `await img.decode()` + a double
-`requestAnimationFrame` before the shot in `e2e/compose.spec.ts`.
+## ~~`06-compose-preview.png` is committed in an UNPAINTED state~~ — FIXED in ENG-558
+Was: the preview modal got screenshotted before its blob-URL media decoded, so the baseline showed the
+empty media ground instead of the file. `e2e/compose.spec.ts` now has a `settle(page, where)` helper —
+wait for the media element to report real intrinsic size, then a double `requestAnimationFrame` (one
+frame to lay out at the new aspect, one to paint it) — and every compose shot goes through it.
+
+**The trap inside the fix: SCOPE the wait to the pane you are shooting.** The modal duplicates every
+preview `data-testid`, and the rail's copy comes first in DOM order and is already decoded, so an
+unscoped `document.querySelector('[data-testid="preview-media"]')` resolves against the rail and
+returns instantly — silently reintroducing the exact "shot before it painted" flake, but only for the
+modal. `settle()` takes `"rail" | "modal"` and prefixes `[data-testid="preview-panel"] ` for the
+latter. Any new spec that screenshots a duplicated component needs the same treatment.
 
 ## Gate tickets: check the integration branch's own ancestry before PR-ing to main
 `stablepass-be`'s `feature/analytics-v1` turned out to be `feature/member-api-v1` + ONE commit, and
@@ -453,3 +468,138 @@ Two `rx:review` agents mutation-testing the same worktree concurrently corrupted
 readings (one observed `signOutCalls === 2` because the other's identical mutation was live). Both
 recovered, but serialize them — or give each a private copy — or a crash mid-mutation leaves the
 tree dirty.
+
+## A preview component that claims parity WILL drift — pin it, don't trust it (ENG-558)
+`PostPreview.tsx` has said "duplicated in the admin repo so Compose can preview exactly what a
+subscriber will see" since it was written. By Aug 2026 it was wrong in five independent ways at once:
+a hardcoded `Race day` badge, no reaction bar or bookmark, the caption above the reactions instead of
+below, a raw ALL-CAPS racing name, and a fixed `aspect-ratio: 16/9`. **Nothing failed.** Every drift
+was invisible to the suite because no test asserted parity — they asserted the component rendered.
+
+Three habits that actually catch this:
+1. **The second copy is the bug.** Compose had a hand-rolled "mini" card in `ComposeScreen.tsx` AND a
+   `PostPreview` in the modal, i.e. three copies of the member card counting mobile's. They diverged.
+   One component rendered twice (a `compact` prop for scale) cannot.
+2. **Assert tree ORDER, not just presence.** "Caption below the reaction bar" is a `compareDocumentPosition`
+   assertion; `getByTestId("caption")` passes whatever the order is.
+3. **Assert the ABSENCE of the thing that used to be hardcoded.** The badge test that matters is the
+   one for a horse with NO race today.
+
+## Vitest stubs CSS modules — every visual CSS change is unpinned by default (ENG-558)
+`styles.postCard` is a stub object under Vitest, so a render test cannot see a border, a colour or an
+`aspect-ratio`. **All four card-parity CSS changes in this ticket could be reverted with the suite
+still fully green.** The fix is `compose-css.test.ts`: read `compose.module.css` off disk as text and
+regex the specific declarations (no border, `16/10` fallback, neutral ground not `--brand-green-dark`,
+Inter 500 `#3a3a38`). Ugly, and the only thing standing between a design decision and a silent revert.
+Same trick pins DELETIONS: it asserts the dead `.phone`/`.web`/`.frames`/`.mini*` rules stay gone.
+
+## Measure the picked FILE, never the HLS rendition (ENG-558)
+Edit mode previews a Mux signed HLS source, and hls.js starts on a low-bitrate rendition, so
+`videoWidth`/`videoHeight` report e.g. 640x360 for a 1080p asset. A readout that confidently prints
+the wrong number is worse than no readout, so `MeasureState` has a third value — `off` — and edit mode
+uses it: no readout at all. Only a file the operator just picked off their own disk is measured.
+
+Related, and the reason a measurement timeout is NOT needed here: `HlsVideo` only engages hls.js when
+`isHlsSrc(src)` (the path ends `.m3u8`). A local `blob:` object URL therefore goes down the plain
+`video.src = src` path, where a decode failure fires a real `error` event. **If you ever point the
+measured preview at an HLS source, that stops being true** — hls.js swallows its failures and the
+readout would hang on "Measuring…" forever, which is exactly what PR #36 needed an 8s deadline for.
+
+## Derive a printed orientation word from the printed RATIO, not the raw float (ENG-558)
+1080x1081 is portrait by a hair but its label rounds to `1:1`, so a float-derived word rendered
+"Portrait 1:1" in the operator's readout — a line arguing with itself. `ratioParts()` returns the two
+numbers actually shown and the word is derived from those. Any readout that prints both a category and
+a rounded value has this bug latent in it.
+
+## Screenshot evidence for an aspect-ratio change needs a REAL file (ENG-558)
+The 1x1 PNG the compose spec already used proves nothing about aspect — every ratio looks the same. No
+ffmpeg on the box, and real client footage must never reach a PR screenshot, so `e2e/compose.spec.ts`
+records synthetic webm in-page via `canvas.captureStream()` + `MediaRecorder` at exact dimensions. The
+`<video>` then reports true intrinsic size. Paint corner ticks + a centre cross + the size as text, so
+a centre crop is self-evident in the PNG and the shot is self-describing.
+
+## Before styling a "parity" component, grep the stylesheet for the one that already exists (ENG-558)
+The re-scope's own first cut of the Race day badge invented `.raceBadge`: solid `--brand-green`,
+uppercase, weight 700. The mockup writes that badge three times on the compose screen as
+`<span class="pill green dot">`, and `.pill` / `.pillGreen` / `.pillDot` were **already in
+`compose.module.css`**, already a byte-for-byte match, and already rendering the Status chip one panel
+above the preview. The result was two design languages for the same component on one screen — and a
+regression from base, which had used the pill classes correctly.
+
+The badge now composes them and `.raceBadge` carries only the mockup's inline `font-size: 10.5px` plus
+`flex-shrink: 0`. **Rule of thumb: a ticket whose job is parity is exactly the ticket most likely to
+hand-roll a component that already exists.** Grep first; a new class for an existing mockup component
+is a smell, not a shortcut. Fresh-eyes review caught this one, the screenshots made it obvious, and no
+test could have — see the CSS-module entry above for why.
+
+## Anchor a "duplicate selector" CSS assertion to the line start (ENG-558)
+`compose-css.test.ts#rule()` reads a rule out of the raw stylesheet, so it must reject a **second**
+declaration of the same selector — the later one is what the cascade applies, and appending
+`.postCard { border: 1px solid var(--line) }` to the file otherwise reverts a parity fix with a green
+suite. That matters here because ENG-611 is sequenced straight after ENG-558 into this same file.
+
+The naive version (`indexOf(sel + " {")` twice) is wrong: `.previewCompact .postCard {` **contains**
+`.postCard {`, so every legitimate descendant override reads as a duplicate and the guard fails on
+correct code. Only count occurrences at index 0 or immediately after a newline.
+
+## The supabase-fake swallowed mutation payloads until ENG-611
+**Symptom:** a route test could assert a mutation did not error, but never that it wrote the right
+thing — a route that inserted the wrong `type`, or forgot `media_url`, went green.
+**Cause:** `makeBuilder`'s `insert`/`update`/`delete` discarded their arguments.
+**Do this:** `state.calls.mutations` (`{ table, op, payload }[]`) and `state.calls.storage`
+(`{ bucket, path }[]`) now record them. Guard the PAYLOAD, e.g.
+
+```ts
+expect(state.calls.mutations).toContainEqual(
+  expect.objectContaining({ table: "post", op: "update", payload: { media_url: "p1/original" } }),
+);
+```
+`state.calls.storage.length === 0` is how you prove a `text` post made no Storage call at all.
+
+## Compose's post type is CHOSEN, not sniffed (ENG-611)
+`ComposeScreen` used to derive the type from the picked file's MIME. It no longer does: step 2 is an
+explicit 4-option picker (`video|photo|voice|text`; `news` is deliberately absent) and the MIME is
+**validation only** — a mismatch raises `data-testid="type-mismatch"` and never reclassifies the post.
+**Consequence for any test that picks a file:** the default type is `video`, so a test that uploads an
+image or audio file MUST select that type first or the pick is (correctly) rejected. This broke the
+existing photo e2e spec and had to be fixed in the same PR.
+
+## `.rx/mockups.md` was still stale after gotchas.md was fixed
+The `dev-handover/` path was corrected in THIS file on 17 Aug but not in `.rx/mockups.md`, which kept
+sending readers to a directory that has never existed. Both are fixed as of ENG-611. If you correct a
+design-source path, correct it in **both** files.
+
+## PostPreview renders its media box for every type, including text — FIXED in ENG-633
+A1 (ENG-558) guards the media CHILDREN (`mediaUrl && mediaType === "photo"` / `"video"`) and
+`resolveAspect` accepts `null`, so a text post did **not** crash the preview — but the empty
+`.postMedia` box was still drawn. ENG-611 deliberately did not touch it (A1 owns the file).
+ENG-633 closed it: the box and the orientation readout are now gated on `hasMediaBox`.
+
+## `mediaType: null` reaching PostPreview means TEXT, not "no file picked yet"
+**This is the one to remember before touching anything in `app/(dash)/compose/`.**
+**Symptom:** ENG-633's ticket specified the fix as "hide the box when `mediaType === "text"`".
+Implemented literally, that passes its own unit tests and **leaves the real screen broken**.
+**Cause:** `ComposeScreen.tsx` reports a text post to the preview as `mediaType: isText ? null :
+postType` — the preview never receives the string `"text"` from the real screen. And `postType` is
+`useState<MediaType>(initial?.mediaType ?? "video")`, so it has **no "not chosen yet" state**:
+since ENG-611 put an explicit type picker in step 2, `null` arriving at the preview means text and
+nothing else.
+**Do this:** guard on POSITIVE membership in `UPLOAD_TYPES` (`mediaType !== null &&
+isUploadType(mediaType)`), never `!== "text"` — that covers both spellings, and `post.type`'s CHECK
+still permits `news`. And treat any pre-ENG-611 test passing `mediaType: null` to mean "no file
+chosen" as **stale**: it is now describing a text post. Two such tests in `PostPreview.test.tsx`
+had to be respelled to `photo` in ENG-633.
+**Wider lesson:** a ticket grilled before a sibling merges can encode the OLD contract. Read the
+caller before building the guard the ticket describes.
+
+## Two `rx:review` subagents in one worktree corrupt each other's test runs
+**Symptom:** a clean suite goes red mid-run with failures that vanish on re-check, and the diff
+"changes under you".
+**Cause:** `rx:review` does mutation testing — it edits the component, runs vitest, restores. Two
+of them dispatched in parallel against the SAME worktree interleave those edits, and any gate you
+run at the same time reads a half-mutated tree. One reviewer also restored the component from its
+own earlier snapshot, which would have silently reverted edits made in that window.
+**Do this:** snapshot your intended diff first (`git diff | shasum`, plus copies of the touched
+files) so you can prove the tree is unmutated before you commit; re-run the full gate only after
+every reviewer has finished. Better: give each concurrent reviewer its own worktree, or run them
+sequentially.

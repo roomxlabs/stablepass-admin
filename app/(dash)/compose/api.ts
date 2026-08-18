@@ -18,12 +18,21 @@ async function readData<T>(res: Response): Promise<T> {
   return (json?.data ?? null) as T;
 }
 
-/** Create the draft + get its direct-upload target. `POST /api/admin/posts` → 202. */
+/**
+ * Create the draft + get its direct-upload target. `POST /api/admin/posts` → 202.
+ *
+ * `type` is passed straight through, unchanged, to the route — the operator's
+ * explicit choice from step 2, never anything this layer derives. A `text`
+ * draft carries its `body` (the route requires a non-empty one) and comes back
+ * with NO upload target, which is why `CreateDraftResponse.uploadUrl` is
+ * optional.
+ */
 export async function createDraft(input: {
   horseId: string;
   type: MediaType;
   sourceTrainerId: string;
   title?: string;
+  body?: string;
 }): Promise<CreateDraftResponse> {
   const res = await fetch("/api/admin/posts", {
     method: "POST",

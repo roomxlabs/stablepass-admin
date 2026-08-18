@@ -3,11 +3,38 @@
 // (fill:none; stroke:currentColor) except `play`, which is a solid glyph.
 import type { ReactNode } from "react";
 
-export type IconName = "home" | "play" | "bookmark" | "horseHead" | "user" | "search" | "logOut";
+export type IconName =
+  | "home"
+  | "play"
+  | "bookmark"
+  | "horseHead"
+  | "user"
+  | "search"
+  | "logOut"
+  // Compose's post-type picker (ENG-611). Added to the mockups' icons.js in the
+  // same 17 Aug re-cut that drew the picker, and lifted here verbatim.
+  | "image"
+  | "mic"
+  | "text";
 
 const PATHS: Record<Exclude<IconName, "play">, ReactNode> = {
   home: <path d="M3 11l9-8 9 8M5 9.5V21h14V9.5" />,
   bookmark: <path d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16l7-5 7 5z" />,
+  image: (
+    <>
+      <rect x="3" y="5" width="18" height="14" rx="2" />
+      <circle cx="8.5" cy="10" r="1.5" />
+      <path d="M21 16l-5-5-4.5 4.5L9 13l-6 6" />
+    </>
+  ),
+  mic: (
+    <>
+      <rect x="9" y="3" width="6" height="11" rx="3" />
+      <path d="M5 11a7 7 0 0014 0" />
+      <path d="M12 18v3" />
+    </>
+  ),
+  text: <path d="M4 6h16M4 11h16M4 16h10" />,
   user: (
     <>
       <circle cx="12" cy="8" r="4" />

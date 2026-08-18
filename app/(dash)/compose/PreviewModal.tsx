@@ -1,7 +1,13 @@
 "use client";
 
-// Full "Preview on mobile & web" — the same post rendered in two device
-// frames so the operator sees both surfaces before publishing.
+// ONE honest preview of the member card.
+//
+// This used to be "Preview · mobile & web", rendering THE SAME <PostPreview>
+// in both panes with only the surrounding frame differing — so the web pane
+// was decoration, and a preview that lies is worse than one pane that tells
+// the truth (ENG-558, decision (b)). The switch is replaced by a sentence
+// saying in words what web actually does differently; a third faithful copy of
+// the member card was rejected as a standing maintenance tax.
 import { useEffect } from "react";
 import PostPreview, { type PostPreviewData } from "./PostPreview";
 import styles from "./compose.module.css";
@@ -27,43 +33,30 @@ export default function PreviewModal({
   if (!open) return null;
 
   return (
-    <div className={styles.modalRoot} role="dialog" aria-modal="true" aria-label="Post preview" data-testid="preview-modal">
+    <div
+      className={styles.modalRoot}
+      role="dialog"
+      aria-modal="true"
+      aria-label="Post preview"
+      data-testid="preview-modal"
+    >
       <div className={styles.modalBackdrop} onClick={onClose} />
-      <div className={styles.modalPanel}>
+      <div className={styles.modalPanel} data-testid="preview-panel">
         <div className={styles.modalHead}>
-          <h2 className={styles.modalTitle}>Preview · mobile &amp; web</h2>
-          <button type="button" className={styles.modalClose} onClick={onClose} aria-label="Close preview">
+          <h2 className={styles.modalTitle}>Preview</h2>
+          <button
+            type="button"
+            className={styles.modalClose}
+            onClick={onClose}
+            aria-label="Close preview"
+          >
             ×
           </button>
         </div>
 
-        <div className={styles.frames}>
-          <div>
-            <div className={styles.frameLabel}>Mobile</div>
-            <div className={styles.phone}>
-              <div className={styles.phoneScreen}>
-                <PostPreview data={data} />
-              </div>
-            </div>
-          </div>
-
-          <div>
-            <div className={styles.frameLabel}>Web</div>
-            <div className={styles.web}>
-              <div className={styles.webChrome}>
-                <div className={styles.webDots}>
-                  <span />
-                  <span />
-                  <span />
-                </div>
-                <div className={styles.webUrl}>app.stablepass.co</div>
-              </div>
-              <div className={styles.webScreen}>
-                <PostPreview data={data} />
-              </div>
-            </div>
-          </div>
-        </div>
+        {/* Measurement is owned by the always-mounted sidebar preview; this
+            one only displays what was measured. */}
+        <PostPreview data={data} />
       </div>
     </div>
   );

@@ -118,3 +118,54 @@ describe("parseWebsiteUrl — protocol allow-list (table-driven)", () => {
     },
   );
 });
+
+
+// Obfuscated schemes and control characters. These already fail today; pinning
+// them matters because they are exactly what a future "simplification" of the
+// check (say, to `trimmed.startsWith("http")`) would quietly let through, and
+// because the WHATWG parser strips tabs/newlines/leading-C0 BEFORE deciding the
+// protocol - so the scheme a human reads is not always the scheme that results.
+describe("parseWebsiteUrl - obfuscated schemes and control characters", () => {
+  it.each([
+    ["mixed case javascript", "JaVaScRiPt:alert(1)"],
+    ["uppercase javascript", "JAVASCRIPT:alert(1)"],
+    ["tab inside the scheme", "java\tscript:alert(1)"],
+    ["newline inside the scheme", "java\nscript:alert(1)"],
+    ["carriage return inside the scheme", "java\rscript:alert(1)"],
+    ["tab before the colon", "javascript\t:alert(1)"],
+    ["leading NUL", "\u0000javascript:alert(1)"],
+    ["leading SOH", "\u0001javascript:alert(1)"],
+    ["leading unit separator", "\u001fjavascript:alert(1)"],
+    ["mixed case vbscript", "VbScRiPt:msgbox(1)"],
+  ])("rejects %s", (_label, value) => {
+    const r = parseWebsiteUrl(value);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.message).toBe(WEBSITE_URL_MESSAGE);
+  });
+
+  // A control character anywhere is refused even when the scheme is fine: we
+  // store the caller's original, so an accepted value must be exactly what every
+  // later consumer re-parses. A NUL additionally cannot be stored by Postgres at
+  // all, and would surface as a raw driver error instead of our message.
+  it.each([
+    ["leading NUL on a valid url", "\u0000https://x.com"],
+    ["trailing NUL on a valid url", "https://x.com\u0000"],
+    ["tab inside the host", "https://x\t.com"],
+    ["newline inside the path", "https://x.com/a\nb"],
+    ["DEL inside the path", "https://x.com/a\u007fb"],
+  ])("rejects %s", (_label, value) => {
+    const r = parseWebsiteUrl(value);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.message).toBe(WEBSITE_URL_MESSAGE);
+  });
+
+  // The scheme comparison is on the PARSED protocol, which the URL parser has
+  // already lower-cased - so an upper-case http(s) scheme is legitimate and must
+  // still be accepted, returned verbatim.
+  it.each(["HTTP://X.COM", "HttPs://wallerracing.com.au", "Https://x.com/Path"])(
+    "accepts %j and returns it unchanged",
+    (value) => {
+      expect(parseWebsiteUrl(value)).toEqual({ ok: true, value });
+    },
+  );
+});

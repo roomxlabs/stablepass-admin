@@ -117,17 +117,42 @@ describe("slug-collision diagnosis - drift guard against stablepass-be", () => {
   it("no later migration adds another unique constraint to trainer", () => {
     // A `unique (name)` added by a later ALTER would break the diagnosis just as
     // thoroughly as one in the original CREATE TABLE, and would be easy to miss.
+    //
+    // Scanned per STATEMENT, not per line. An earlier version of this test
+    // required `unique` and `trainer` on the same physical line, which the house
+    // one-line style happens to satisfy - but it silently missed the wrapped form
+    //
+    //   alter table trainer
+    //     add constraint trainer_name_uniq unique (name);
+    //
+    // where line 1 has no `unique` and line 2's only `trainer` is inside
+    // `trainer_name_uniq` (an underscore is a word character, so `\btrainer\b`
+    // does not match it). A drift guard with a bypass is exactly the green-suite-
+    // that-proves-nothing this file exists to prevent.
     const offenders: string[] = [];
     for (const file of listBeMigrations()) {
       if (file === "20260704120001_schema.sql") continue;
       const sql = readBeFile(`${MIGRATIONS_DIR}/${file}`, () => true);
-      for (const raw of sql.split("\n")) {
-        const line = raw.trim();
-        if (line.startsWith("--")) continue;
-        if (!/\bunique\b/i.test(line)) continue;
-        // `trainer` as a whole word, so trainer_contact / trainer_website_click
-        // (which legitimately carry their own constraints) do not trip this.
-        if (/\btrainer\b/i.test(line)) offenders.push(`${file}: ${line}`);
+
+      // Strip `--` comments, then split into statements and flatten whitespace so
+      // a wrapped statement reads as one line.
+      const statements = sql
+        .split("\n")
+        .map((l) => l.replace(/--.*$/, ""))
+        .join("\n")
+        .split(";")
+        .map((st) => st.replace(/\s+/g, " ").trim().toLowerCase())
+        .filter(Boolean);
+
+      for (const st of statements) {
+        if (!/\bunique\b/.test(st)) continue;
+        // Match the TABLE being altered/indexed, not any mention of the word.
+        // `\btrainer\b` alone would fire on `references trainer(id)` inside
+        // trainer_website_click, which legitimately carries its own constraints.
+        const altersTrainer = /^alter table (only )?trainer\b/.test(st);
+        const indexesTrainer = /^create unique index\b.*\bon (only )?trainer\b/.test(st);
+        const createsTrainer = /^create table (if not exists )?trainer\b/.test(st);
+        if (altersTrainer || indexesTrainer || createsTrainer) offenders.push(`${file}: ${st}`);
       }
     }
     expect(offenders).toEqual([]);

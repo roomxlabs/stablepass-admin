@@ -14,7 +14,7 @@
 //   * parse with `new URL()`, and
 //   * accept ONLY the `http:` / `https:` protocols.
 //
-// Two consequences of mirroring it exactly, both intended:
+// Two consequences of that rule, both intended:
 //
 //   * A bare domain ("wallerracing.com.au") is REJECTED. It is not a parseable
 //     absolute URL, so web renders no link at all for it. Accepting it here
@@ -22,6 +22,12 @@
 //   * `javascript:` (and `data:`, `file:`, …) parse fine but are refused on the
 //     protocol check — the same check web relies on, applied a layer earlier so
 //     the value never reaches the database.
+//
+// It mirrors safeHref in ONE direction only: this module rejects everything web
+// would refuse to render, plus control characters (see parseWebsiteUrl). Being
+// STRICTER than the consumer is always safe - a value web would have dropped
+// simply never gets stored. Being LOOSER is what silently stores invisible
+// links, which is the failure this module exists to prevent.
 //
 // We return the caller's TRIMMED ORIGINAL rather than `url.href`, for the same
 // reason web does: `new URL()` normalises, and normalisation rewrites what the
@@ -51,6 +57,24 @@ export function parseWebsiteUrl(raw: unknown): WebsiteUrlResult {
 
   const trimmed = raw.trim();
   if (trimmed === "") return { ok: true, value: null };
+
+  // The ONE deliberate divergence from web's safeHref. It only ever rejects MORE
+  // than web renders, never less, so it cannot store a value web would silently
+  // drop - the direction that matters.
+  //
+  // Control characters in a URL are never typed on purpose; they exist to smuggle
+  // a scheme past a human reader ("java\tscript:"). The WHATWG parser strips them
+  // BEFORE deciding the protocol, so such a value passes the check below and is
+  // then stored with the control character still in it. Two concrete reasons not
+  // to allow that:
+  //
+  //   * Postgres `text` cannot hold a NUL, so "\u0000https://x.com" survives to
+  //     the insert and comes back as a raw driver error (`insert_failed`) rather
+  //     than this module's message - a confusing 400 for a value nameable here.
+  //   * We store the caller's ORIGINAL, so whatever we accept is exactly what
+  //     every later consumer re-parses. Keeping it control-character-free is what
+  //     makes relying on that round trip safe.
+  if (/[\u0000-\u001F\u007F]/.test(trimmed)) return { ok: false, message: WEBSITE_URL_MESSAGE };
 
   let protocol: string;
   try {

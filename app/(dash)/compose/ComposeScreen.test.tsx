@@ -1106,6 +1106,25 @@ describe("ENG-745 · a label this build does not know", () => {
 // and the media_url mirror that has to follow it.
 // ---------------------------------------------------------------------------
 describe("ENG-748 · multi-photo compose", () => {
+  // This block provides its OWN object-URL stub and restores it, so nothing
+  // here depends on a global another describe happened to leak (ENG-748 C2).
+  const realCreate = (URL as unknown as { createObjectURL?: unknown }).createObjectURL;
+  let urlSeq = 0;
+  beforeEach(() => {
+    Object.defineProperty(URL, "createObjectURL", {
+      value: () => `blob:eng748-${++urlSeq}`,
+      configurable: true,
+      writable: true,
+    });
+  });
+  afterEach(() => {
+    Object.defineProperty(URL, "createObjectURL", {
+      value: realCreate,
+      configurable: true,
+      writable: true,
+    });
+  });
+
   /** N photo Files, named so display order is legible in a failure message. */
   function photoFiles(n: number): File[] {
     return Array.from(
@@ -1150,11 +1169,22 @@ describe("ENG-748 · multi-photo compose", () => {
     await screen.findByTestId("upload-done");
   }
 
-  /** The strip's display order, read off the tiles' thumbnails. */
+  /**
+   * The strip's display order, read off each tile's `data-photo-path`.
+   *
+   * NOT off `img src`. jsdom has no `URL.createObjectURL`, so `previewUrl` is
+   * null and no <img> renders — `stripOrder()` returned ["","",""] and every
+   * order assertion compared empty strings to empty strings. The block only
+   * appeared to work because an unrelated earlier `describe` stubs
+   * `URL.createObjectURL` onto the global in its `beforeEach` and never
+   * restores it, so this block inherited a stub it never asked for. Run with
+   * `-t "reorder"` and the same tests passed with `movePhoto` deleted.
+   * Confirmed both ways before fixing (ENG-748 C2).
+   */
   const stripOrder = () =>
     screen
       .getAllByTestId(/^photo-tile-\d+$/)
-      .map((t) => t.querySelector("img")?.getAttribute("src") ?? "");
+      .map((t) => t.getAttribute("data-photo-path") ?? "");
 
   describe("the multiple attribute is photo-only", () => {
     it("sets `multiple` once the operator chooses Photo", () => {
@@ -1329,9 +1359,10 @@ describe("ENG-748 · multi-photo compose", () => {
       // `mediaUrl` (the first file picked, which never moves), so after a
       // reorder the screen said three different things at once — frame "photo
       // 1 / gallop-1.png", strip "photo 3 is the cover", card "photo 3".
-      // Asserted on the caption line, not the <img>: jsdom has no
-      // URL.createObjectURL, so `previewUrl` is null here and no image element
-      // is rendered at all. The e2e screenshot is what proves the picture
+      // Asserted on the caption line rather than the <img> src. jsdom has no
+      // URL.createObjectURL of its own; this block stubs one in its beforeEach
+      // (see above) so images DO render here, but the caption is the assertion
+      // that stays meaningful either way. The e2e screenshot proves the picture
       // itself follows; this pins the text that names it.
       await pickPhotos(3);
       expect(screen.getByTestId("media-filled").textContent).toContain("p1.jpg");
@@ -1448,6 +1479,113 @@ describe("ENG-748 · multi-photo compose", () => {
       await waitFor(() => expect(api.patchPost).toHaveBeenCalled());
       expect(api.patchPost.mock.calls[0][1].media).toEqual(["p1/photo-2", "p1/original"]);
     });
+  });
+
+  // ENG-748 C1 (found in review) — the screen -> preview seam. Before this,
+  // ComposeScreen.test.tsx never referenced preview-dots / preview-count /
+  // preview-dot-* even ONCE, so both "filter the carousel to uploaded photos"
+  // and "send them in reverse" were mutations that stayed green. PostPreview's
+  // own tests pass `photos` in by hand, which proves the component and nothing
+  // about who fills it.
+  describe("the preview carousel shows what will actually be PERSISTED", () => {
+    it("a failed upload leaves NO dots — 1 stored photo renders like a legacy post", async () => {
+      api.createDraft.mockResolvedValue(draftWithSlots(2));
+      api.patchPost.mockResolvedValue(undefined);
+      api.publishPost.mockResolvedValue(undefined);
+      api.uploadPhotoToStorage
+        .mockResolvedValueOnce(undefined)
+        .mockRejectedValueOnce(new Error("network died"));
+
+      renderScreen();
+      pickHorse("horse-opt-h1");
+      selectType("photo");
+      fireEvent.change(screen.getByTestId("media-input"), { target: { files: photoFiles(2) } });
+      await waitFor(() => expect(api.uploadPhotoToStorage).toHaveBeenCalledTimes(2));
+      await screen.findByTestId("photo-retry-1");
+
+      // ENG-740: a post with one stored photo must render exactly like one with
+      // zero post_media rows — no dots, no pager. Two tiles are still in the
+      // strip (the operator can retry or remove), but only one will be stored.
+      expect(screen.queryAllByTestId(/^preview-dot-\d+$/)).toHaveLength(0);
+      expect(screen.queryByTestId("preview-count")).toBeNull();
+      // And the rail is honest about the discrepancy rather than claiming 2.
+      expect(screen.getByTestId("photo-strip-help").textContent).toContain("1 of 2 uploaded");
+    });
+
+    it("counts and pages only the uploaded photos when one of three fails", async () => {
+      api.createDraft.mockResolvedValue(draftWithSlots(3));
+      api.patchPost.mockResolvedValue(undefined);
+      api.publishPost.mockResolvedValue(undefined);
+      api.uploadPhotoToStorage
+        .mockResolvedValueOnce(undefined)
+        .mockRejectedValueOnce(new Error("network died"))
+        .mockResolvedValueOnce(undefined);
+
+      renderScreen();
+      pickHorse("horse-opt-h1");
+      selectType("photo");
+      fireEvent.change(screen.getByTestId("media-input"), { target: { files: photoFiles(3) } });
+      await waitFor(() => expect(api.uploadPhotoToStorage).toHaveBeenCalledTimes(3));
+      await screen.findByTestId("photo-retry-1");
+
+      // Two stored -> a 2-page carousel, not the 3 that were picked.
+      await waitFor(() => expect(screen.getByTestId("preview-count").textContent).toBe("1/2"));
+      expect(screen.queryAllByTestId(/^preview-dot-\d+$/)).toHaveLength(2);
+    });
+
+    it("draws a dot per photo, in DISPLAY order, once all three land", async () => {
+      await pickPhotos(3);
+      expect(screen.getByTestId("preview-count").textContent).toBe("1/3");
+      expect(screen.queryAllByTestId(/^preview-dot-\d+$/)).toHaveLength(3);
+
+      // Reorder, and the carousel opens on the new cover — the same photo the
+      // strip badges and the same path that becomes post.media_url.
+      fireEvent.click(screen.getByTestId("photo-up-2"));
+      fireEvent.click(screen.getByTestId("photo-up-1"));
+      expect(stripOrder()[0]).toBe("p1/photo-2");
+      expect(screen.getByTestId("preview-count").textContent).toBe("1/3");
+
+      // M38 — the carousel must be in DISPLAY order, not merely the right
+      // length. Reversing it kept the count at "1/3" and stayed green, so
+      // assert the photo the carousel OPENS on is the same one the Step 3
+      // frame shows: both must be the cover, i.e. display position 0.
+      const frameImg = screen.getByTestId("media-filled").querySelector("img");
+      const previewImg = screen.getByTestId("preview-img");
+      expect(frameImg?.getAttribute("src")).toBeTruthy();
+      expect(previewImg.getAttribute("src")).toBe(frameImg?.getAttribute("src"));
+
+      fireEvent.click(screen.getByTestId("primary-action"));
+      await waitFor(() => expect(api.patchPost).toHaveBeenCalled());
+      expect((api.patchPost.mock.calls[0][1].media as string[])[0]).toBe("p1/photo-2");
+    });
+  });
+
+  it("C5: never sends a media set for a non-photo post type", async () => {
+    // The photo-only gate on mediaPatch is inert today only because
+    // resetMedia() runs before setPostType, two functions away. Pin it.
+    api.createDraft.mockResolvedValue({
+      id: "v1",
+      status: "draft",
+      type: "video",
+      watermarked: false,
+      uploadUrl: "https://mux.example/upload",
+      muxUploadId: "up1",
+    });
+    api.uploadVideoToMux.mockResolvedValue(undefined);
+    api.patchPost.mockResolvedValue(undefined);
+    api.publishPost.mockResolvedValue(undefined);
+
+    renderScreen();
+    pickHorse("horse-opt-h1");
+    selectType("video");
+    fireEvent.change(screen.getByTestId("media-input"), {
+      target: { files: [new File([new Uint8Array([1])], "clip.mp4", { type: "video/mp4" })] },
+    });
+    await screen.findByTestId("upload-done");
+    fireEvent.click(screen.getByTestId("primary-action"));
+    await waitFor(() => expect(api.patchPost).toHaveBeenCalled());
+    // Absent, not empty: `media: []` would DELETE a post's photos.
+    expect(api.patchPost.mock.calls[0][1]).not.toHaveProperty("media");
   });
 
   describe("a mid-way upload failure", () => {

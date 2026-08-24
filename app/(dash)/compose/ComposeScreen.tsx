@@ -277,6 +277,11 @@ export default function ComposeScreen({
   }, [horses, search]);
 
   const isText = postType === "text";
+  /**
+   * A photo post outside edit mode always goes through the multi-photo set
+   * path — for readiness AND for what gets persisted.
+   */
+  const usesPhotoSet = postType === "photo" && !isEdit;
   /** The photos that actually landed in Storage, in display order. */
   const readyPhotos = uploadedPhotos(photos);
   /**
@@ -315,7 +320,12 @@ export default function ComposeScreen({
    * `post.media_url`.
    */
   const mediaPatch: { media?: string[] } =
-    postType === "photo" && readyPhotos.length > 0
+    // `usesPhotoSet`, not `postType === "photo"`: edit mode has no media
+    // editing, so it must never send a set either. Note this gate is currently
+    // belt-and-braces — `resetMedia()` runs before `setPostType`, so `photos`
+    // is already empty for any other type — which is exactly why it is worth
+    // stating rather than relying on the ordering of two calls elsewhere.
+    usesPhotoSet && readyPhotos.length > 0
       ? { media: mediaSetPayload(photos).map((r) => r.mediaUrl) }
       : {};
   /**
@@ -334,7 +344,6 @@ export default function ComposeScreen({
    * which was still "done" from the upload that had since been removed, so the
    * screen offered to publish a photo post with no photos.
    */
-  const usesPhotoSet = postType === "photo" && !isEdit;
   const draftReady =
     !!draft &&
     (usesPhotoSet ? photosSettled && readyPhotos.length > 0 : upload.state === "done");
@@ -901,9 +910,23 @@ export default function ComposeScreen({
     // to the plain `mediaUrl` for every other type and for a single photo.
     mediaUrl:
       (postType === "photo" && photos.find((p) => p.path === coverPath)?.previewUrl) || mediaUrl,
+    // ENG-748 (C1, found in review) — the carousel shows the photos that will
+    // actually BE THERE: `readyPhotos`, never the raw list.
+    //
+    // Built from `photos` it counted still-uploading and FAILED tiles, so two
+    // picks with one failure drew "1/2" and two dots for a post that persists a
+    // single post_media row — which ENG-740 says must render exactly like a
+    // one-photo post, with no dots and no pager. Worse, `PostPreview` uses
+    // `gallery[index]` in preference to `mediaUrl`, so the card opened on the
+    // FAILED photo while the strip's Cover badge and the Step 3 frame both
+    // correctly showed another one. Three surfaces, two answers — the same bug
+    // the Step 3 frame fix killed, left alive one component over.
+    //
+    // No `.filter(Boolean)`: a null previewUrl would silently reindex the
+    // gallery against the strip. `readyPhotos` all have one.
     photos:
-      postType === "photo" && photos.length > 1
-        ? photos.map((p) => p.previewUrl ?? "").filter(Boolean)
+      postType === "photo" && readyPhotos.length > 1
+        ? readyPhotos.map((p) => p.previewUrl ?? "")
         : undefined,
     // Real race-day data off the picked horse — the badge used to be hardcoded
     // on every post, which made the preview claim a race that wasn't running.
@@ -914,10 +937,17 @@ export default function ComposeScreen({
 
   const primaryLabel =
     mode === "publish" ? "Publish now" : mode === "schedule" ? "Schedule" : "Save as draft";
+  // Counts what will be PUBLISHED (uploaded), not what was picked — and says so
+  // when they differ, so a failed upload is visible in the rail rather than
+  // inflating the count (ENG-748 C1).
   const mediaLabel = isText
     ? "None — text post"
-    : photos.length > 1
-      ? `${photos.length} photos`
+    : photos.length > 0
+      ? readyPhotos.length === photos.length
+        ? readyPhotos.length === 1
+          ? "1 photo"
+          : `${readyPhotos.length} photos`
+        : `${readyPhotos.length} of ${photos.length} photos`
       : file || mediaUrl
         ? `1 ${postType}`
         : "None yet";
@@ -1306,6 +1336,12 @@ export default function ComposeScreen({
                         key={p.id}
                         className={`${styles.photoTile} ${p.state === "error" ? styles.photoTileBad : ""}`}
                         data-testid={`photo-tile-${i}`}
+                        // A stable per-photo identity that exists even when
+                        // there is no object URL to render an <img> from —
+                        // jsdom has no URL.createObjectURL, so a test that reads
+                        // display order off `img src` compares empty strings and
+                        // proves nothing (ENG-748 C2).
+                        data-photo-path={p.path}
                       >
                         <div className={styles.photoThumbWrap}>
                           {p.previewUrl ? (
@@ -1383,8 +1419,11 @@ export default function ComposeScreen({
                     ))}
                   </div>
                   <div className={styles.help} data-testid="photo-strip-help">
-                    {photos.length} of {MAX_PHOTOS} photos. The first is the cover — it is what the
-                    feed and the member card show.
+                    {readyPhotos.length === photos.length
+                      ? `${photos.length} of ${MAX_PHOTOS} photos.`
+                      : `${readyPhotos.length} of ${photos.length} uploaded (max ${MAX_PHOTOS}).`}{" "}
+                    The first uploaded photo is the cover — it is what the feed and the member card
+                    show.
                   </div>
                 </>
               ) : null}

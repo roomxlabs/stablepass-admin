@@ -126,12 +126,16 @@ export function isMissingMediaTable(error: {
  * on the same ordinal; deriving them makes both unrepresentable rather than
  * merely rejected.
  *
+ * `postId`, when given, additionally requires every path to sit under that
+ * post's prefix — see the check below.
+ *
  * Duplicate paths are refused rather than de-duplicated: two ordered rows
  * pointing at one object is a writer bug, and silently collapsing it would
  * change the count the operator just saw in the strip.
  */
 export function normaliseMediaSet(
   value: unknown,
+  postId?: string,
 ): { sortOrder: number; mediaUrl: string }[] | null {
   if (!Array.isArray(value)) return null;
   if (value.length === 0 || value.length > MAX_PHOTOS) return null;
@@ -149,6 +153,15 @@ export function normaliseMediaSet(
     // A bare object path, never a URL (house rule) and never absolute — a
     // leading slash or a scheme here would be signed into a 404 at read time.
     if (!path || path.startsWith("/") || path.includes("://")) return null;
+    // ENG-740's convention is `<postId>/original` and `<postId>/photo-<n>`, so
+    // an object belonging to a DIFFERENT post is not a valid member of this
+    // post's set. Without this, `PATCH /posts/A { media: ["B/original"] }`
+    // cross-links B's object into A's row 0 and therefore into A's mirror.
+    // Admin-only, so not a privilege escalation — but it makes the validation
+    // actually enforce the convention it claims to check, and it turns a
+    // copy-paste of the wrong id into a 400 instead of two posts sharing a
+    // photo that either can later delete.
+    if (postId && !path.startsWith(`${postId}/`)) return null;
     paths.push(path);
   }
 

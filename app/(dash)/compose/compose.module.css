@@ -928,7 +928,7 @@
   background: var(--cream-dark);
 }
 .photoTileBad {
-  border-color: #b3261e;
+  border-color: var(--red);
 }
 .photoThumbWrap {
   position: relative;
@@ -996,7 +996,7 @@
   cursor: default;
 }
 .photoBtnKill {
-  color: #b3261e;
+  color: var(--red);
 }
 .photoState {
   font-family: var(--font-sans);
@@ -1008,5 +1008,5 @@
   white-space: nowrap;
 }
 .photoStateBad {
-  color: #b3261e;
+  color: var(--red);
 }

@@ -124,6 +124,23 @@ async function settle(page: Page, where: "rail" | "modal" = "rail") {
   );
 }
 
+/**
+ * Scroll to the very top and let two frames pass before a `fullPage` shot.
+ *
+ * The sidebar and topbar are `position: fixed`. Playwright's fullPage capture
+ * stitches the page while those stay pinned to the VIEWPORT, so a shot taken
+ * after scrolling down to click something paints them partway down the image,
+ * overlapping the content, with a blank gutter above. That is what corrupted
+ * the first cut of 25-compose-multi-reorder.png — the ticket's single most
+ * important piece of visual evidence. Caught in review by reading the pixels.
+ */
+async function topOfPage(page: Page) {
+  await page.evaluate(() => window.scrollTo(0, 0));
+  await page.evaluate(
+    () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => r(null)))),
+  );
+}
+
 /** The ordinal painted on the tile at each strip position, via its thumbnail. */
 async function stripSrcs(page: Page): Promise<string[]> {
   return page.locator('[data-testid^="photo-tile-"] img').evaluateAll((imgs) =>
@@ -170,6 +187,7 @@ test("compose: three photos upload, reorder, and preview as a carousel", async (
   await settle(page);
 
   // EVIDENCE 1 — the multi-upload: three numbered tiles, 1 is the cover.
+  await topOfPage(page);
   await page.screenshot({
     path: "e2e/__screenshots__/24-compose-multi-upload.png",
     fullPage: true,
@@ -198,6 +216,7 @@ test("compose: three photos upload, reorder, and preview as a carousel", async (
   );
   await settle(page);
 
+  await topOfPage(page);
   await page.screenshot({
     path: "e2e/__screenshots__/25-compose-multi-reorder.png",
     fullPage: true,
@@ -252,6 +271,7 @@ test("compose: a single photo gets no carousel — 1 and 0 render alike", async 
   await expect(page.getByTestId("photo-up-0")).toBeDisabled();
   await expect(page.getByTestId("photo-down-0")).toBeDisabled();
 
+  await topOfPage(page);
   await page.screenshot({
     path: "e2e/__screenshots__/28-compose-single-photo.png",
     fullPage: true,

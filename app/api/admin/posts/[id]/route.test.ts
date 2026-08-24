@@ -162,14 +162,14 @@ describe("ENG-748 · post_media set + media_url mirror", () => {
   it("a 3-path media set → 200; the post_media upsert carries sort_order 0,1,2 in request order, with the (post_id,sort_order) arbiter", async () => {
     asAdmin();
     state.tables.post = { mutate: { single: { id: "p1" } } };
-    const media = ["a/original", "a/photo-1", "a/photo-2"];
+    const media = ["p1/original", "p1/photo-1", "p1/photo-2"];
     const r = await PATCH(patchReq({ media }), ctx("p1"));
     expect(r.status).toBe(200);
     const upsertCall = state.calls.mutations.find((m) => m.table === "post_media" && m.op === "upsert");
     expect(upsertCall?.payload).toEqual([
-      { post_id: "p1", sort_order: 0, media_url: "a/original" },
-      { post_id: "p1", sort_order: 1, media_url: "a/photo-1" },
-      { post_id: "p1", sort_order: 2, media_url: "a/photo-2" },
+      { post_id: "p1", sort_order: 0, media_url: "p1/original" },
+      { post_id: "p1", sort_order: 1, media_url: "p1/photo-1" },
+      { post_id: "p1", sort_order: 2, media_url: "p1/photo-2" },
     ]);
     expect(upsertCall?.options).toEqual({ onConflict: "post_id,sort_order" });
   });
@@ -203,7 +203,7 @@ describe("ENG-748 · post_media set + media_url mirror", () => {
   it("trims the tail: deletes post_media rows scoped to this post at sort_order >= the new set's length", async () => {
     asAdmin();
     state.tables.post = { mutate: { single: { id: "p1" } } };
-    const r = await PATCH(patchReq({ media: ["a", "b"] }), ctx("p1"));
+    const r = await PATCH(patchReq({ media: ["p1/original", "p1/photo-1"] }), ctx("p1"));
     expect(r.status).toBe(200);
     const deleteCall = state.calls.mutations.find((m) => m.table === "post_media" && m.op === "delete");
     // Scoped by post_id (not a bare trim of the whole table) AND by the
@@ -219,16 +219,122 @@ describe("ENG-748 · post_media set + media_url mirror", () => {
   // ORDERING PROOF — the whole design rationale in the route's comment: upsert
   // first (nothing destroyed if it fails), delete second (trims the tail once
   // the head is already correct), post update last (mirror rides along).
-  it("ORDERING PROOF: post_media upsert runs before the post_media delete, which runs before the post update", async () => {
+  // ENG-748 F1 — the ordering is the durability design, so it is pinned as a
+  // test rather than left to a comment. Reversed in review: `post` (carrying
+  // the mirror) must be written BEFORE post_media, so that the realistic
+  // failure — a rejected post field — cannot leave rewritten ordered rows
+  // behind an unmoved mirror.
+  it("ORDERING PROOF: the post update (with the mirror) runs BEFORE post_media is touched", async () => {
     asAdmin();
     state.tables.post = { mutate: { single: { id: "p1" } } };
-    await PATCH(patchReq({ media: ["a", "b"] }), ctx("p1"));
+    await PATCH(patchReq({ media: ["p1/original", "p1/photo-1"] }), ctx("p1"));
+    const idxUpdate = state.calls.mutations.findIndex((m) => m.table === "post" && m.op === "update");
     const idxUpsert = state.calls.mutations.findIndex((m) => m.table === "post_media" && m.op === "upsert");
     const idxDelete = state.calls.mutations.findIndex((m) => m.table === "post_media" && m.op === "delete");
-    const idxUpdate = state.calls.mutations.findIndex((m) => m.table === "post" && m.op === "update");
-    expect(idxUpsert).toBeGreaterThanOrEqual(0);
+    expect(idxUpdate).toBeGreaterThanOrEqual(0);
+    expect(idxUpsert).toBeGreaterThan(idxUpdate);
+    // The trim runs last: by then rows 0..n-1 and the mirror are already right,
+    // so a trim failure leaves stale TRAILING rows, which the next save fixes.
     expect(idxDelete).toBeGreaterThan(idxUpsert);
-    expect(idxUpdate).toBeGreaterThan(idxDelete);
+  });
+
+  it("F1 REGRESSION: a failed post update leaves post_media COMPLETELY untouched", async () => {
+    // The divergence found in review. Before the reorder, the upsert and trim
+    // had already run by the time the post update failed, so post_media row 0
+    // was the new cover while post.media_url still pointed at the old one —
+    // silent and durable, on a response that told the operator it had failed.
+    asAdmin();
+    state.tables.post = {
+      mutate: { error: { code: "22007", message: "invalid input syntax" } },
+    };
+    const r = await PATCH(
+      patchReq({ media: ["p1/photo-2", "p1/original"], expiresAt: "not-a-date" }),
+      ctx("p1"),
+    );
+    expect(r.status).toBe(400);
+    // Nothing was written to the ordered table, so the previous set is still
+    // readable AND still agrees with the mirror that was never moved.
+    expect(state.calls.mutations.some((m) => m.table === "post_media")).toBe(false);
+  });
+
+  it("F1 REGRESSION: a missing post (404) also leaves post_media untouched", async () => {
+    asAdmin();
+    state.tables.post = { mutate: { single: null } };
+    // Path is prefixed with the post being addressed, so it passes validation
+    // and actually reaches the post update — which is what makes this a real
+    // 404 test. It also pins reviewer advisory 11: because the post update now
+    // runs BEFORE post_media, a missing post returns the contract's 404 rather
+    // than a 400 from the post_media foreign key firing first.
+    const r = await PATCH(patchReq({ media: ["gone/original"] }), ctx("gone"));
+    expect(r.status).toBe(404);
+    expect(state.calls.mutations.some((m) => m.table === "post_media")).toBe(false);
+  });
+
+  it("F1 REGRESSION: an off-list label rejects the whole save without rewriting the order", async () => {
+    // The route's own 23514 backstop exists precisely for a preset this build
+    // does not know about — a realistic failure, and one that used to land
+    // after the rows had been rewritten.
+    asAdmin();
+    const r = await PATCH(
+      patchReq({ media: ["p1/photo-2", "p1/original"], label: "Not A Real Preset" }),
+      ctx("p1"),
+    );
+    expect(r.status).toBe(400);
+    expect(state.calls.mutations.some((m) => m.table === "post_media")).toBe(false);
+  });
+
+  // ENG-748 C3/C4 (mutations that SURVIVED the first review) — the module's doc
+  // comment makes load-bearing claims that nothing was testing.
+  it("C3: IGNORES a wire-supplied sortOrder and numbers by position instead", async () => {
+    // "A client-supplied sortOrder is exactly how a gapped {0,3,7} set reaches
+    // a table whose CHECK cannot see it." Mutating normaliseMediaSet to honour
+    // entry.sortOrder left the whole suite green before this test existed.
+    asAdmin();
+    state.tables.post = { mutate: { single: { id: "p1" } } };
+    const r = await PATCH(
+      patchReq({
+        media: [
+          { mediaUrl: "p1/photo-7", sortOrder: 7 },
+          { mediaUrl: "p1/photo-3", sortOrder: 3 },
+        ],
+      }),
+      ctx("p1"),
+    );
+    expect(r.status).toBe(200);
+    const upsert = state.calls.mutations.find((m) => m.table === "post_media" && m.op === "upsert");
+    // Contiguous 0,1 from ARRAY POSITION — not 7,3 from the wire.
+    expect(upsert?.payload).toEqual([
+      { post_id: "p1", sort_order: 0, media_url: "p1/photo-7" },
+      { post_id: "p1", sort_order: 1, media_url: "p1/photo-3" },
+    ]);
+  });
+
+  it("C4: the mirror carries the NORMALISED path, byte-identical to row 0", async () => {
+    // Taking the mirror from the raw b.media[0] instead of rows[0] survived,
+    // because the only difference on tested input was .trim(). A padded path
+    // would then write a trimmed value to post_media and an untrimmed one to
+    // post.media_url — mirror != row 0, the exact invariant this ticket holds.
+    asAdmin();
+    state.tables.post = { mutate: { single: { id: "p1" } } };
+    const r = await PATCH(patchReq({ media: ["  p1/original  ", "p1/photo-1"] }), ctx("p1"));
+    expect(r.status).toBe(200);
+    const upsert = state.calls.mutations.find((m) => m.table === "post_media" && m.op === "upsert");
+    const update = state.calls.mutations.find((m) => m.table === "post" && m.op === "update");
+    expect(upsert?.payload[0].media_url).toBe("p1/original");
+    expect(update?.payload.media_url).toBe("p1/original");
+    // The invariant itself, asserted directly rather than via two literals.
+    expect(update?.payload.media_url).toBe(upsert?.payload[0].media_url);
+  });
+
+  it("refuses another post's object rather than cross-linking it into this set", async () => {
+    // <postId>/... is ENG-740's convention; an object under a DIFFERENT post is
+    // not a member of this post's set. Without the prefix check this wrote B's
+    // object into A's row 0 and therefore into A's mirror.
+    asAdmin();
+    const r = await PATCH(patchReq({ media: ["other-post/original"] }), ctx("p1"));
+    expect(r.status).toBe(400);
+    expect((await r.json()).error.code).toBe("validation_failed");
+    expect(state.calls.mutations.some((m) => m.table === "post_media")).toBe(false);
   });
 
   it("media: [] → 400 validation_failed, no post_media mutation at all", async () => {
@@ -252,7 +358,7 @@ describe("ENG-748 · post_media set + media_url mirror", () => {
 
   it("a duplicate path in media → 400 validation_failed", async () => {
     asAdmin();
-    const r = await PATCH(patchReq({ media: ["a", "a"] }), ctx("p1"));
+    const r = await PATCH(patchReq({ media: ["p1/original", "p1/original"] }), ctx("p1"));
     expect(r.status).toBe(400);
     const j = await r.json();
     expect(j.error.code).toBe("validation_failed");
@@ -306,13 +412,19 @@ describe("ENG-748 · post_media set + media_url mirror", () => {
     it("a MULTI photo set fails loudly with 503 rather than silently dropping photos", async () => {
       asAdmin();
       state.tables.post_media = missing;
+      // The post update runs FIRST now (F1), so it has to succeed before the
+      // media write is even attempted.
+      state.tables.post = { mutate: { single: { id: "p1" } } };
       const r = await PATCH(patchReq({ media: ["p1/original", "p1/photo-1"] }), ctx("p1"));
       expect(r.status).toBe(503);
       const j = await r.json();
       expect(j.error.code).toBe("media_unavailable");
       expect(j.error.message).toContain("post_media");
-      // Nothing was written to post either — the save did not half-happen.
-      expect(state.calls.mutations.some((m) => m.table === "post" && m.op === "update")).toBe(false);
+      // The post update DID land, and that is deliberate (F1): it runs first,
+      // so the operator keeps their caption and the post renders as a single
+      // photo showing the cover they chose, rather than losing the edit too.
+      const update = state.calls.mutations.find((m) => m.table === "post" && m.op === "update");
+      expect(update?.payload).toMatchObject({ media_url: "p1/original" });
     });
 
     it("42P01 is treated the same as the PostgREST cache miss", async () => {
@@ -329,6 +441,7 @@ describe("ENG-748 · post_media set + media_url mirror", () => {
       state.tables.post_media = {
         mutate: { error: { code: "42501", message: "new row violates row-level security policy" } },
       };
+      state.tables.post = { mutate: { single: { id: "p1" } } };
       const r = await PATCH(patchReq({ media: ["p1/original"] }), ctx("p1"));
       expect(r.status).toBe(400);
       expect((await r.json()).error.code).toBe("update_failed");
@@ -340,7 +453,8 @@ describe("ENG-748 · post_media set + media_url mirror", () => {
     state.tables.post_media = {
       mutate: { error: { code: "23505", message: "duplicate key value violates unique constraint" } },
     };
-    const r = await PATCH(patchReq({ media: ["a", "b"] }), ctx("p1"));
+    state.tables.post = { mutate: { single: { id: "p1" } } };
+    const r = await PATCH(patchReq({ media: ["p1/original", "p1/photo-1"] }), ctx("p1"));
     expect(r.status).toBe(400);
     const j = await r.json();
     expect(j.error.code).toBe("validation_failed");
@@ -357,7 +471,8 @@ describe("ENG-748 · post_media set + media_url mirror", () => {
         },
       },
     };
-    const r = await PATCH(patchReq({ media: ["a", "b"] }), ctx("p1"));
+    state.tables.post = { mutate: { single: { id: "p1" } } };
+    const r = await PATCH(patchReq({ media: ["p1/original", "p1/photo-1"] }), ctx("p1"));
     expect(r.status).toBe(400);
     const j = await r.json();
     expect(j.error.code).toBe("validation_failed");
@@ -377,7 +492,8 @@ describe("ENG-748 · post_media set + media_url mirror", () => {
         },
       },
     };
-    const r = await PATCH(patchReq({ media: ["a", "b"] }), ctx("p1"));
+    state.tables.post = { mutate: { single: { id: "p1" } } };
+    const r = await PATCH(patchReq({ media: ["p1/original", "p1/photo-1"] }), ctx("p1"));
     expect(r.status).toBe(400);
     const j = await r.json();
     expect(j.error.code).toBe("update_failed");
@@ -386,11 +502,11 @@ describe("ENG-748 · post_media set + media_url mirror", () => {
 
   it("combined { title, media } → the single post update payload carries BOTH title and media_url", async () => {
     asAdmin();
-    state.tables.post = { mutate: { single: { id: "p1" } } };
-    const r = await PATCH(patchReq({ title: "New Title", media: ["a/original"] }), ctx("p1"));
+    state.tables.post = { mutate: { single: { id: "p1", title: "New Title" } } };
+    const r = await PATCH(patchReq({ title: "New Title", media: ["p1/original"] }), ctx("p1"));
     expect(r.status).toBe(200);
     const updateCall = state.calls.mutations.find((m) => m.table === "post" && m.op === "update");
-    expect(updateCall?.payload).toMatchObject({ title: "New Title", media_url: "a/original" });
+    expect(updateCall?.payload).toMatchObject({ title: "New Title", media_url: "p1/original" });
   });
 
   // Regression: this guard used to be `Object.keys(patch).length === 0` alone,

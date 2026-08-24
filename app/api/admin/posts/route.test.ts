@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { makeFakeClient, blankState, type FakeState } from "@/lib/testing/supabase-fake";
+import { POST_LABEL_PRESETS } from "@/lib/posts/labels";
 
 const state: FakeState = blankState();
 
@@ -261,6 +262,122 @@ describe("POST /api/admin/posts — create draft", () => {
     const r = await POST(postReq({ type: "photo" }));
     expect(r.status).toBe(400);
   });
+
+  // ENG-745 — post-label presets.
+  it("label absent → insert carries label: null", async () => {
+    asAdmin();
+    state.tables.horse = { select: { single: { id: "h1" } } };
+    state.tables.post = { mutate: { single: { id: "p1", status: "draft", type: "photo", horse_id: "h1" } } };
+    await POST(postReq({ horseId: "h1", type: "photo", sourceTrainerId: "t1" }));
+    const insertCall = state.calls.mutations.find((m) => m.table === "post" && m.op === "insert");
+    expect(insertCall?.payload).toMatchObject({ label: null });
+  });
+
+  it("a valid preset label → insert carries that exact string", async () => {
+    asAdmin();
+    state.tables.horse = { select: { single: { id: "h1" } } };
+    state.tables.post = { mutate: { single: { id: "p1", status: "draft", type: "photo", horse_id: "h1" } } };
+    await POST(postReq({ horseId: "h1", type: "photo", sourceTrainerId: "t1", label: "Trackwork" }));
+    const insertCall = state.calls.mutations.find((m) => m.table === "post" && m.op === "insert");
+    expect(insertCall?.payload).toMatchObject({ label: "Trackwork" });
+  });
+
+  it.each([null, ""] as const)("explicit label %j → insert carries null", async (label) => {
+    asAdmin();
+    state.tables.horse = { select: { single: { id: "h1" } } };
+    state.tables.post = { mutate: { single: { id: "p1", status: "draft", type: "photo", horse_id: "h1" } } };
+    await POST(postReq({ horseId: "h1", type: "photo", sourceTrainerId: "t1", label }));
+    const insertCall = state.calls.mutations.find((m) => m.table === "post" && m.op === "insert");
+    expect(insertCall?.payload).toMatchObject({ label: null });
+  });
+
+  it("an off-list label ('Betting Tips') → 400 validation_failed, no insert attempted", async () => {
+    asAdmin();
+    const r = await POST(
+      postReq({ horseId: "h1", type: "photo", sourceTrainerId: "t1", label: "Betting Tips" }),
+    );
+    expect(r.status).toBe(400);
+    const j = await r.json();
+    expect(j.error.code).toBe("validation_failed");
+    expect(state.calls.mutations).toHaveLength(0);
+  });
+
+  it("a hyphen near-miss ('Race Day - Today') → 400 validation_failed", async () => {
+    asAdmin();
+    const r = await POST(
+      postReq({ horseId: "h1", type: "photo", sourceTrainerId: "t1", label: "Race Day - Today" }),
+    );
+    expect(r.status).toBe(400);
+    const j = await r.json();
+    expect(j.error.code).toBe("validation_failed");
+    expect(state.calls.mutations).toHaveLength(0);
+  });
+
+  it("the middle-dot preset ('Race Day · Today') is accepted", async () => {
+    asAdmin();
+    // Copied off the preset list itself (not retyped) — the separator is the
+    // byte-exact U+00B7 MIDDLE DOT, not a hyphen.
+    const label = POST_LABEL_PRESETS.find((p) => p.includes("Race Day"));
+    state.tables.horse = { select: { single: { id: "h1" } } };
+    state.tables.post = { mutate: { single: { id: "p1", status: "draft", type: "photo", horse_id: "h1" } } };
+    const r = await POST(postReq({ horseId: "h1", type: "photo", sourceTrainerId: "t1", label }));
+    expect(r.status).toBe(202);
+    const insertCall = state.calls.mutations.find((m) => m.table === "post" && m.op === "insert");
+    expect(insertCall?.payload).toMatchObject({ label });
+  });
+
+  it("insert violating the label CHECK (23514) → 400 validation_failed, not insert_failed", async () => {
+    asAdmin();
+    state.tables.horse = { select: { single: { id: "h1" } } };
+    // Postgres names the constraint in the message; PostgREST passes it through.
+    state.tables.post = {
+      mutate: {
+        error: {
+          code: "23514",
+          message: 'new row for relation "post" violates check constraint "post_label_preset"',
+        },
+      },
+    };
+    const r = await POST(
+      postReq({ horseId: "h1", type: "photo", sourceTrainerId: "t1", label: "Trackwork" }),
+    );
+    expect(r.status).toBe(400);
+    const j = await r.json();
+    expect(j.error.code).toBe("validation_failed");
+    expect(j.error.message).toContain("13 presets");
+  });
+
+  // Scoped by constraint NAME: `post` also CHECKs type/status/aspect_ratio and
+  // they all raise 23514, so matching the bare code turned an unrelated
+  // constraint failure into a misleading message about a field nobody sent.
+  it("a 23514 from a DIFFERENT constraint keeps its own message", async () => {
+    asAdmin();
+    state.tables.horse = { select: { single: { id: "h1" } } };
+    state.tables.post = {
+      mutate: {
+        error: {
+          code: "23514",
+          message:
+            'new row for relation "post" violates check constraint "post_aspect_ratio_positive"',
+        },
+      },
+    };
+    const r = await POST(postReq({ horseId: "h1", type: "photo", sourceTrainerId: "t1" }));
+    expect(r.status).toBe(400);
+    const j = await r.json();
+    expect(j.error.code).toBe("insert_failed");
+    expect(j.error.message).toContain("post_aspect_ratio_positive");
+    expect(j.error.message).not.toContain("13 presets");
+  });
+
+  it("403s for a non-admin sending a label — never reaches the DB", async () => {
+    asNonAdmin();
+    const r = await POST(
+      postReq({ horseId: "h1", type: "photo", sourceTrainerId: "t1", label: "Trackwork" }),
+    );
+    expect(r.status).toBe(403);
+    expect(state.calls.mutations).toHaveLength(0);
+  });
 });
 
 describe("GET /api/admin/posts — list + search", () => {
@@ -292,5 +409,20 @@ describe("GET /api/admin/posts — list + search", () => {
     expect(orExpr).toContain("body.ilike.%melb%");
     expect(orExpr).toContain("horse_id.in.(h1)");
     expect(orExpr).toContain("source_trainer_id.in.(t1)");
+  });
+
+  // ENG-745 — the fake's builder doesn't record the `.select(...)` column
+  // string, so this proves the pass-through the select is FOR: a row carrying
+  // `label` comes back through the envelope unchanged.
+  it("returns a scripted row's label through the envelope unchanged", async () => {
+    asAdmin();
+    state.tables.post = {
+      select: { rows: [{ id: "p1", label: "Trackwork" }, { id: "p2", label: null }], count: 2 },
+    };
+    const r = await GET(new Request("http://t/api/admin/posts"));
+    expect(r.status).toBe(200);
+    const j = await r.json();
+    expect(j.data[0].label).toBe("Trackwork");
+    expect(j.data[1].label).toBeNull();
   });
 });

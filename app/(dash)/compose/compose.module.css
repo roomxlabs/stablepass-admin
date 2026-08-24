@@ -109,10 +109,6 @@
   font-variant-numeric: tabular-nums;
   flex-shrink: 0;
 }
-.counterOver {
-  color: var(--red);
-  font-weight: 600;
-}
 
 /* ---- Horse search + results --------------------------------------------- */
 .searchWrap {

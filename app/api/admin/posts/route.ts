@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { requireAdmin } from "@/lib/auth/admin";
 import { ok, fail } from "@/lib/api/envelope";
 import { createMuxDirectUpload, MuxError } from "@/lib/mux";
+import { isLabelCheckViolation, LABEL_ERROR_MESSAGE, normalisePostLabel } from "@/lib/posts/labels";
 
 const POST_MEDIA_BUCKET = "post-media"; // T15 private bucket (photo/voice)
 // ENG-611: widened from video|photo. `post.type`'s CHECK has permitted all of
@@ -29,7 +30,9 @@ export async function GET(req: Request) {
   let query = sb
     .from("post")
     .select(
-      "id,horse_id,type,status,title,body,like_count,published_at,scheduled_for,created_at,horse:horse_id(display_name,racing_name),trainer:source_trainer_id(name)",
+      // `label` (ENG-745) is selected so the posts library can render the
+      // category chip; that rendering is a later slice, this only carries it.
+      "id,horse_id,type,status,title,body,label,like_count,published_at,scheduled_for,created_at,horse:horse_id(display_name,racing_name),trainer:source_trainer_id(name)",
       { count: "exact" },
     )
     .order("created_at", { ascending: false });
@@ -87,7 +90,7 @@ export async function POST(req: Request) {
   const { sb } = g;
 
   const payload = await req.json().catch(() => ({}));
-  const { horseId, type, title, body, sourceTrainerId, expiresAt } = payload ?? {};
+  const { horseId, type, title, body, sourceTrainerId, expiresAt, label } = payload ?? {};
 
   // A horse is required for EVERY type, text included: post.horse_id is NOT
   // NULL and it is what the member app renders in the byline.
@@ -106,6 +109,14 @@ export async function POST(req: Request) {
   if (type === "text" && !hasBody)
     return fail("validation_failed", "A text post requires a non-empty body.", 400);
 
+  // `label` is optional and nullable (ENG-745). Absent or null → no label, which
+  // is what every post created before 2026-08-19 has and what renders no pill.
+  // An off-list value is rejected HERE with a readable message rather than being
+  // left to the CHECK, but the 23514 mapping below still stands as the backstop.
+  const labelValue = "label" in (payload ?? {}) ? normalisePostLabel(label) : null;
+  if (labelValue === undefined)
+    return fail("validation_failed", LABEL_ERROR_MESSAGE, 400);
+
   // Horse must exist — a clean 404 rather than a raw FK violation.
   const { data: horse } = await sb.from("horse").select("id").eq("id", horseId).maybeSingle();
   if (!horse) return fail("horse_not_found", "Horse not found.", 404);
@@ -121,9 +132,17 @@ export async function POST(req: Request) {
       status: "draft",
       watermarked: false,
       expires_at: expiresAt ?? null,
+      label: labelValue,
     })
-    .select("id,status,type,horse_id,created_at")
+    .select("id,status,type,horse_id,created_at,label")
     .single();
+  // A `post_label_preset` violation is the operator sending a category this
+  // build does not know about (a preset dropped by a later migration, say), not
+  // a server fault — surface it as the same 400 the up-front check produces.
+  // Matched by constraint NAME: a bare 23514 would also swallow `post`'s type /
+  // status / aspect-ratio CHECKs and mislabel them as a category problem.
+  if (isLabelCheckViolation(error))
+    return fail("validation_failed", LABEL_ERROR_MESSAGE, 400);
   if (error || !draft) return fail("insert_failed", error?.message ?? "Could not create draft.", 400);
 
   // text → done. No upload target, so no Storage/Mux call to make and nothing

@@ -334,6 +334,38 @@ const COMPOSE_HORSES = [
   { id: "h1", display_name: "Mahogany", racing_name: "Mahogany", photo_url: null, stable_name: "Randwick", trainer_id: "t1", trainer: { id: "t1", name: "Chris Waller", display_name: "Chris Waller" } },
   { id: "h2", display_name: "Black Caviar", racing_name: "Black Caviar", photo_url: null, stable_name: "Caulfield", trainer_id: "t2", trainer: { id: "t2", name: "Peter Moody", display_name: "Peter Moody" } },
   { id: "h3", display_name: "Winx", racing_name: "Winx", photo_url: null, stable_name: "Rosehill", trainer_id: "t1", trainer: { id: "t1", name: "Chris Waller", display_name: "Chris Waller" } },
+  // ENG-745 — the roster runs past 8 on purpose. The picker used to
+  // `.slice(0, 8)` both branches, so with the search box empty (how it opens)
+  // everything from the 9th on was unreachable. Three fixtures could never
+  // catch that; these nine are what make the regression visible, in the e2e
+  // shots and in any future run. None contain "Mah", so the existing specs'
+  // `fill("Mah")` + `horse-opt-h1` path is unaffected.
+  { id: "h4", display_name: "Anamoe", racing_name: "Anamoe", photo_url: null, stable_name: "Randwick", trainer_id: "t3", trainer: { id: "t3", name: "James Cummings", display_name: "James Cummings" } },
+  { id: "h5", display_name: "Northern Star", racing_name: "Northern Star", photo_url: null, stable_name: "Caulfield", trainer_id: "t2", trainer: { id: "t2", name: "Peter Moody", display_name: "Peter Moody" } },
+  { id: "h6", display_name: "Verry Elleegant", racing_name: "Verry Elleegant", photo_url: null, stable_name: "Rosehill", trainer_id: "t1", trainer: { id: "t1", name: "Chris Waller", display_name: "Chris Waller" } },
+  { id: "h7", display_name: "Saxon Warrior", racing_name: "Saxon Warrior", photo_url: null, stable_name: "Flemington", trainer_id: "t3", trainer: { id: "t3", name: "James Cummings", display_name: "James Cummings" } },
+  { id: "h8", display_name: "Magic Time", racing_name: "Magic Time", photo_url: null, stable_name: "Caulfield", trainer_id: "t2", trainer: { id: "t2", name: "Peter Moody", display_name: "Peter Moody" } },
+  { id: "h9", display_name: "Nature Strip", racing_name: "Nature Strip", photo_url: null, stable_name: "Randwick", trainer_id: "t1", trainer: { id: "t1", name: "Chris Waller", display_name: "Chris Waller" } },
+  { id: "h10", display_name: "Golden Slipper", racing_name: "Golden Slipper", photo_url: null, stable_name: "Rosehill", trainer_id: "t2", trainer: { id: "t2", name: "Peter Moody", display_name: "Peter Moody" } },
+  { id: "h11", display_name: "Sunlight", racing_name: "Sunlight", photo_url: null, stable_name: "Flemington", trainer_id: "t3", trainer: { id: "t3", name: "James Cummings", display_name: "James Cummings" } },
+  { id: "h12", display_name: "Zoustar", racing_name: "Zoustar", photo_url: null, stable_name: "Randwick", trainer_id: "t1", trainer: { id: "t1", name: "Chris Waller", display_name: "Chris Waller" } },
+];
+
+const HORSE_EMBED = { id: "h1", display_name: "Mahogany", racing_name: "Mahogany", photo_url: null, stable_name: "Randwick", trainer_id: "t1", trainer: { id: "t1", name: "Chris Waller", display_name: "Chris Waller" } };
+
+// Compose EDIT-mode posts (ENG-745). `/compose?id=<postId>` is the ONLY path
+// that exercises page.tsx's post read and its EditInitial seeding, and page.tsx
+// is an async server component that no unit test can reach — the ComposeScreen
+// unit tests hand `initial` in directly, so they prove nothing about whether the
+// page actually selects and passes `label`. Both states are seeded: ce1 carries
+// a label, ce2 is deliberately unlabelled (the pre-2026-08-19 state that must
+// open on "No label" and stay that way).
+//
+// Text posts on purpose: `text` short-circuits the media branch in page.tsx, so
+// neither Storage signing nor Mux playback resolution has to be mocked.
+const COMPOSE_EDIT_POSTS = [
+  { id: "ce1", type: "text", status: "draft", title: "Barrier trial complete", body: "Pleased with the way he finished off.", label: "Trial", source_trainer_id: "t1", scheduled_for: null, media_url: null, mux_playback_id: null, horse: HORSE_EMBED },
+  { id: "ce2", type: "text", status: "draft", title: "Quiet day in the box", body: "Nothing much to report today.", label: null, source_trainer_id: "t1", scheduled_for: null, media_url: null, mux_playback_id: null, horse: HORSE_EMBED },
 ];
 
 // Active horses for the quiet-horse check. h1 posted this week (loud); h2/h3
@@ -630,6 +662,63 @@ export function startMockSupabase() {
       sendJson(res, 200, []);
       return;
     }
+    // Compose EDIT mode (ENG-745): `/compose?id=<postId>` reads ONE post with
+    // the horse + trainer embed.
+    //
+    // Discriminated on `mux_playback_id` in the select AND an `id=eq.` filter.
+    // BOTH are required, and the filter is the load-bearing half: the posts
+    // LIBRARY server read (app/(dash)/posts/page.tsx:19) also selects
+    // `mux_playback_id`, so keying on the column alone swallowed the library's
+    // list read and handed it this branch's single-row lookup — which, with no
+    // id to match, returned `[]` and rendered an empty table. Only compose's
+    // `.eq("id", id).maybeSingle()` carries `id=eq.`.
+    //
+    // It must also sit AHEAD of the posts-library branch below: that branch
+    // matches on `status`, which compose's edit select carries too, so behind
+    // it the library's fixture ARRAY would satisfy a `.maybeSingle()`.
+    //
+    // Two handlers claiming one read, in both directions — the trap in
+    // .rx/gotchas.md, hit twice while writing this one branch.
+    const editIdParam = url.searchParams.get("id");
+    if (
+      req.method === "GET" &&
+      url.pathname === "/rest/v1/post" &&
+      // The NESTED trainer embed is what makes this read unique. Two other
+      // reads select `mux_playback_id` — the posts library list
+      // (app/(dash)/posts/page.tsx:19) and the preview route
+      // (app/api/admin/posts/[id]/preview/route.ts:19) — and the preview route
+      // filters by `id=eq.` as well, so neither the column nor the filter is
+      // enough on its own. Only compose's edit read asks for the horse's
+      // trainer through the horse.
+      decodeURIComponent(url.search).includes("trainer:trainer_id(id,name,display_name)") &&
+      editIdParam &&
+      editIdParam.startsWith("eq.")
+    ) {
+      const accept = req.headers["accept"] ?? "";
+      const wanted = editIdParam.slice(3);
+      const found = COMPOSE_EDIT_POSTS.find((p) => p.id === wanted) ?? null;
+      // Honour column projection for `label` specifically.
+      //
+      // The rest of this mock returns whole fixture rows and ignores `select`,
+      // which is normally harmless — but it makes the ONE thing page.tsx
+      // changed here (adding `label` to its select string) impossible to test:
+      // the row would carry a label whether or not the app asked for it, so
+      // deleting `label` from the select stays green while real PostgREST would
+      // return the column absent and edit mode would silently open every post
+      // on "No label". Drop it when it was not requested, so the e2e can tell.
+      const selected = decodeURIComponent(url.searchParams.get("select") ?? "");
+      let match = found;
+      if (found && !/(^|,)label(,|$)/.test(selected.split("horse:")[0])) {
+        match = { ...found };
+        delete match.label;
+      }
+      // .maybeSingle() does not set the pgrst.object Accept header in this
+      // postgrest-js version — honour the id filter regardless (see the horse
+      // branch above for the same caveat).
+      sendJson(res, 200, accept.includes("pgrst.object") ? match : match ? [match] : []);
+      return;
+    }
+
     // Posts library (T7 / ENG-177). The list read selects `status` — which the
     // trainers' post read (source_trainer_id,published_at,created_at) does not —
     // so use that to serve the full post-library fixtures here, ahead of the

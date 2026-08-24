@@ -28,8 +28,20 @@ import type {
   TrainerOption,
 } from "./types";
 import styles from "./compose.module.css";
+import { isPostLabel, POST_LABEL_PRESETS } from "@/lib/posts/labels";
 
-const CAPTION_MAX = 240;
+/**
+ * ENG-745 removed the 240-character caption cap entirely — there is deliberately
+ * no `CAPTION_MAX` any more.
+ *
+ * It was enforced with `maxLength`, so the textarea silently swallowed every
+ * keystroke past 240 and an operator pasting a long trainer quote lost the tail
+ * with no message. Nothing downstream ever needed the limit: `post.body` is
+ * unbounded `text`, the BFF imposes no cap, and the member feed clamps the
+ * caption to two lines on the card, so a long body is a display concern that is
+ * already handled rather than a data problem. The counter stays, as a passive
+ * character count with no threshold and no red state.
+ */
 type PublishMode = "draft" | "schedule" | "publish";
 type UploadState = "idle" | "creating" | "uploading" | "done" | "error";
 type ActionState = { kind: "idle" | "working" | "ok" | "error"; message?: string };
@@ -115,6 +127,38 @@ export default function ComposeScreen({
   const [bylineId, setBylineId] = useState<string>(initial?.bylineId ?? "");
   const [title, setTitle] = useState(initial?.title ?? "");
   const [caption, setCaption] = useState(initial?.caption ?? "");
+  // "" is the "No label" option; it is sent to the BFF as an explicit null.
+  // Seeded from the post being edited, so an old unlabelled post opens on
+  // "No label" and stays unlabelled unless the operator picks one.
+  const [label, setLabel] = useState<string>(initial?.label ?? "");
+  const initialLabel = initial?.label ?? "";
+  /**
+   * A stored label this build has no preset for still gets an <option>, so the
+   * control can actually display it.
+   *
+   * Without one the <select> silently falls back to index 0 and reads "No
+   * label" while state holds the real value — the control lying about the post
+   * in front of you, and unfixable by choosing "No label" because that is
+   * already what it shows, so re-picking it fires no change event.
+   */
+  const unknownLabel = initialLabel !== "" && !isPostLabel(initialLabel) ? initialLabel : null;
+  /**
+   * The category fragment every save spreads in — and it is ABSENT unless the
+   * operator actually moved the picker.
+   *
+   * Absent, null and a preset are three different instructions to the route:
+   * absent leaves the column alone, null clears it, a preset sets it. Sending
+   * the current value unconditionally collapsed the first two, and that broke a
+   * post whose stored label this build does not recognise — which happens the
+   * moment stablepass-be adds or removes a preset and admin has not been
+   * redeployed, the same skew the route's 23514 backstop exists for. The picker
+   * could not display that value, so it fell back to "No label" while state
+   * still held the real one; editing only the caption then either 400'd the
+   * whole save or silently relabelled the post. Not writing what nobody touched
+   * makes all of that go away, and is what the operator meant anyway.
+   */
+  const labelPatch: { label?: string | null } =
+    label === initialLabel ? {} : { label: label === "" ? null : label };
 
   const [file, setFile] = useState<File | null>(null);
   /**
@@ -186,10 +230,21 @@ export default function ComposeScreen({
     [trainers, bylineId],
   );
 
+  /**
+   * Every match, NOT the first 8 (ENG-745).
+   *
+   * Both branches used to `.slice(0, 8)`, which made a stable of 20 horses look
+   * like a stable of 8: with the search box empty — how the picker opens — the
+   * 9th horse onward was unreachable, and there was no "8 of 20" affordance to
+   * suggest otherwise. The list is already scrollable (`.results` carries
+   * `max-height` + `overflow-y: auto`, pinned in compose-css.test.ts), so the
+   * full roster costs nothing but a scroll. The roster is client-side and in
+   * the low hundreds at most, so there is no windowing concern here.
+   */
   const matches = useMemo(() => {
     const q = search.trim().toLowerCase();
-    if (!q) return horses.slice(0, 8);
-    return horses.filter((h) => h.name.toLowerCase().includes(q)).slice(0, 8);
+    if (!q) return horses;
+    return horses.filter((h) => h.name.toLowerCase().includes(q));
   }, [horses, search]);
 
   const isText = postType === "text";
@@ -402,6 +457,7 @@ export default function ComposeScreen({
           sourceTrainerId: bylineId,
           title: title.trim() || undefined,
           body: caption,
+          ...labelPatch,
         });
         setDraft(current);
       }
@@ -411,6 +467,7 @@ export default function ComposeScreen({
         title: title.trim() || null,
         body: caption,
         sourceTrainerId: bylineId,
+        ...labelPatch,
       });
 
       if (next === "publish") {
@@ -468,6 +525,7 @@ export default function ComposeScreen({
         title: title.trim() || null,
         body: caption,
         sourceTrainerId: bylineId,
+        ...labelPatch,
       });
       setAction({ kind: "ok", message: "Changes saved." });
       router.push("/posts");
@@ -487,6 +545,7 @@ export default function ComposeScreen({
         title: title.trim() || null,
         body: caption,
         sourceTrainerId: bylineId,
+        ...labelPatch,
       });
       await publishPost(initial.id);
       setAction({ kind: "ok", message: "Post published." });
@@ -519,6 +578,7 @@ export default function ComposeScreen({
         title: title.trim() || null,
         body: caption,
         sourceTrainerId: bylineId,
+        ...labelPatch,
       });
       await schedulePost(initial.id, when.toISOString());
       setAction({
@@ -550,7 +610,6 @@ export default function ComposeScreen({
     measure,
   };
 
-  const captionOver = caption.length > CAPTION_MAX;
   const primaryLabel =
     mode === "publish" ? "Publish now" : mode === "schedule" ? "Schedule" : "Save as draft";
   const mediaLabel = isText ? "None — text post" : file || mediaUrl ? `1 ${postType}` : "None yet";
@@ -667,8 +726,15 @@ export default function ComposeScreen({
                           >
                             <span className={styles.resultThumb}>
                               {h.photoUrl ? (
+                                /* Lazy since ENG-745 dropped the slice(0, 8):
+                                   the list is the whole roster now, but only
+                                   ~4 rows are visible in the 260px scroll box,
+                                   so eager loading would fire one signed-URL
+                                   request per horse the moment the picker
+                                   opens. The directive below must stay on the
+                                   line directly above the <img>. */
                                 // eslint-disable-next-line @next/next/no-img-element -- remote horse thumb, fixed box
-                                <img src={h.photoUrl} alt="" />
+                                <img src={h.photoUrl} alt="" loading="lazy" />
                               ) : null}
                             </span>
                             <span>
@@ -961,20 +1027,59 @@ export default function ComposeScreen({
                 style={{ marginBottom: 14 }}
               />
 
+              {/*
+                ENG-745 — the editorial category behind the green pill on the
+                member card. A <select> rather than a row of 13 pills: at 13
+                presets a pill row wraps to three lines and swamps the two
+                fields it sits between, and this matches the Trainer byline
+                control directly above it, which is the metadata section's
+                established language in the mockup.
+
+                "No label" is a real, selectable option, not a disabled
+                placeholder — clearing a category is something an operator must
+                be able to do, and it is the state every pre-2026-08-19 post is
+                already in.
+              */}
+              <label className={styles.label} htmlFor="post-label">
+                Label
+              </label>
+              <select
+                id="post-label"
+                className={styles.select}
+                value={label}
+                data-testid="label-select"
+                onChange={(e) => setLabel(e.target.value)}
+                style={{ marginBottom: 14 }}
+              >
+                <option value="">No label</option>
+                {unknownLabel ? (
+                  // Not one of this build's presets — shown so the operator can
+                  // see what the post actually carries and decide, instead of
+                  // the control quietly claiming it has none.
+                  <option value={unknownLabel}>{unknownLabel} (not in this version)</option>
+                ) : null}
+                {POST_LABEL_PRESETS.map((preset) => (
+                  <option key={preset} value={preset}>
+                    {preset}
+                  </option>
+                ))}
+              </select>
+
               <div className={styles.captionRow}>
                 <label className={styles.label} htmlFor="caption">
                   {isText ? "Body" : "Caption"}
                   {isText ? <span aria-hidden="true"> *</span> : null}
                 </label>
-                <span className={`${styles.counter} ${captionOver ? styles.counterOver : ""}`}>
-                  {caption.length}/{CAPTION_MAX}
+                {/* Passive count, no threshold and no red state — there is no
+                    limit left to be over (ENG-745). */}
+                <span className={styles.counter} data-testid="caption-counter">
+                  {caption.length} characters
                 </span>
               </div>
               <textarea
                 id="caption"
                 className={styles.textarea}
                 value={caption}
-                maxLength={CAPTION_MAX}
                 required={isText}
                 aria-required={isText || undefined}
                 data-testid="caption"
@@ -987,8 +1092,8 @@ export default function ComposeScreen({
               />
               <div className={styles.help}>
                 {isText
-                  ? `Required — the title and this body are the whole post. Keep it under ${CAPTION_MAX} characters; sounds like the trainer would say it.`
-                  : `Keep it under ${CAPTION_MAX} characters; sounds like the trainer would say it.`}
+                  ? "Required — the title and this body are the whole post. Write it so it sounds like the trainer would say it."
+                  : "Sounds like the trainer would say it. The feed shows the first couple of lines, so lead with what matters."}
               </div>
             </section>
           </div>

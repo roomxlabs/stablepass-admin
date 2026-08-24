@@ -669,3 +669,58 @@ commit. Harmless here (same behaviour, 575 px / 0.026% apart) but it breaks prov
 **Do this:** give the reviewer an `rsync` copy of the worktree with `node_modules` symlinked, or
 tell it explicitly not to run `npm run e2e` / `npx playwright`. If it already ran, re-shoot from the
 clean tree before committing and say so.
+
+## A cross-repo "contract" test must read git REVS, not the sibling's working tree (ENG-745)
+**Symptom:** `lib/posts/labels.test.ts` — which pins admin's 13 post-label presets against
+stablepass-be's `docs/specs/api-contract.md` + the `post_label_preset` migration — failed with
+"cannot reach the preset source of truth", pointing at a path that was *correct*.
+**Cause:** the sibling repo was checked out on `main`, where the round-6 label work does not exist
+yet. The file genuinely was not on disk. Resolving `<workspace>/stablepass-be/<path>` and
+`readFileSync`-ing it makes the guard depend on whatever branch a DIFFERENT repo happens to have
+checked out, which has nothing to do with drift.
+**Do this:** resolve the sibling root via `dirname(resolve(gitCommonDir))` where `gitCommonDir` is
+`git rev-parse --git-common-dir` (NOT `process.cwd()` — under a worktree that is
+`<repo>/.claude/worktrees/<name>`). **The `resolve()` is load-bearing and easy to miss:**
+`--git-common-dir` returns an ABSOLUTE path only from inside a linked worktree; in a normal checkout
+it returns the bare relative string `.git`, so `dirname()` yields `"."` and the sibling path comes out
+relative. Every lookup then misses and the guard fails for a reason unrelated to drift — green for the
+loop (which runs in a worktree), RED for every human dev. Verify any such test in a plain clone, not
+just in the worktree you wrote it in. Then read content with
+`git -C <sibling> show <rev>:<path>` over a fallback chain of revs, working tree first, then
+`origin/feature/<epic>-v1`, then `origin/main`, then `HEAD`. Include the `main` entries so the guard
+survives the integration branch being merged and deleted. Fail loudly if no rev has it — a skipped
+drift guard is a green suite that proves nothing.
+
+## The compose e2e horse fixture had 3 horses, so it could not see a slice at 8 (ENG-745)
+`COMPOSE_HORSES` in `e2e/mock-supabase.mjs` held three horses for four epics, while
+`ComposeScreen` sliced the picker to `horses.slice(0, 8)`. No test or screenshot could ever have
+caught the truncation, because the fixture never reached the cut. Now twelve. **Rule of thumb: a
+fixture smaller than the limit under test cannot test the limit** — when a ticket removes a cap, a
+slice or a page size, check the fixture actually exceeds it first. The nine added names deliberately
+avoid "Mah" so the existing specs' `fill("Mah")` → `horse-opt-h1` path is unaffected.
+
+## Discriminating a mock handler: check EVERY other read that selects your column (ENG-745)
+Adding a compose-edit branch to `e2e/mock-supabase.mjs` keyed on `mux_playback_id` "which only this
+read selects". It does not. `app/(dash)/posts/page.tsx` selects it for the library list, and
+`app/api/admin/posts/[id]/preview/route.ts` selects it AND filters `id=eq.` — so neither the column
+nor the id filter is a discriminator on its own. Placed ahead of the library branch, it swallowed the
+list read and rendered an empty posts table; the vitest suite stayed fully green and only the full
+Playwright run caught it. The working discriminator was the NESTED embed
+`trainer:trainer_id(id,name,display_name)`, which only compose's edit read asks for.
+**Do this:** before adding a branch, `grep -rn "<your column>" app/ lib/` and read every hit's select
+string, then run the WHOLE e2e suite, not the spec you are writing. Both of this file's existing
+warnings (order matters; match the table name exactly) were already written down — and still got hit
+twice in one branch, in both directions.
+
+## `.resultName` / `.resultSub` run together in the compose horse picker (open, pre-existing)
+The picker rows render `Magic Timeby Peter Moody`: `compose.module.css:162-170` styles two adjacent
+inline spans with no separator, and `.resultSub`'s `margin-top: 1px` implies `display: block` was
+intended. Same pattern elsewhere on the screen ("Choose a videoVideo goes to Mux"). Pre-existing and
+NOT fixed by ENG-745 (out of its decisions; R5 lands in that file next). It was equally visible with
+the old 3-horse fixture — nobody had looked. One line to fix when someone owns that surface.
+
+## No `.rx/fe-harness.md` in stablepass-admin, but the harness is real (ENG-745)
+implement Step 0 wants a `.rx/fe-harness.md` manifest before UI work. This repo has none, yet it has
+a complete, working Playwright harness (`e2e/` + `mock-supabase.mjs` on :8787 + `__screenshots__/`)
+that six epics have used. Reuse it; do not treat the missing manifest as BLOCKED. Someone should
+write the manifest to describe what already exists.

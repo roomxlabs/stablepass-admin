@@ -642,3 +642,30 @@ that the carve-out's own text and rationale cover an isolated worktree opening a
 ("without this carve-out a loop worker finishes its ticket, cannot ship it, and leaves the work
 staged and uncommitted, which is more fragile than a commit"). Say so explicitly in the PR when
 you rely on it. Never commit on `main` or push straight to an integration branch either way.
+
+
+## Mobile's OWN comments about the clamp are aspirational — verify against lib/feed.ts (ENG-747)
+**Symptom:** a comment in `app/(dash)/compose/types.ts` claimed "portrait PHOTOS keep the 4:5 clamp
+on the member card". Fresh-eyes review proved it false, and it had been copied straight out of
+`stablepass-mobile/src/components/post-card.tsx`'s comment on `REEL_ASPECT_MIN`, which says the
+same thing.
+**Cause:** `lib/feed.ts:189` is `aspectRatio: typeof row.aspect_ratio === 'number' ? ... : null`.
+A photo has no Mux asset, so the column is null/absent, so mobile's `resolveAspect(null)` returns
+`ASPECT_DEFAULT` 16:10. A portrait photo can never REACH the 4:5 clamp — it is not exempt from it,
+it just never gets there. Both repos' comments described intent, not behaviour.
+**Do this:** when mirroring the member card, take the rule from the CODE PATH (`lib/feed.ts` ->
+`post-card.tsx`'s `isReel`/`aspectStyle`), never from a prose comment in either repo, and say in
+your own comment which one you verified. Cross-repo duplicated constants are only as good as the
+last person who checked them.
+
+## Don't run `rx:review` against the LIVE worktree if it may run e2e (ENG-747)
+**Symptom:** the reviewer's Playwright run re-captured `e2e/__screenshots__/08-*.png` mid-review,
+minutes before the worker committed — so the committed PR evidence was the REVIEWER's capture, not
+the worker's, and nobody noticed until the reviewer disclosed it.
+**Cause:** the existing gotcha below covers two reviewers corrupting each other's MUTATIONS. This is
+the adjacent hazard: `page.screenshot({path})` overwrites baselines in place (see the entry above),
+so any reviewer that runs the e2e suite silently rewrites the artifacts the worker is about to
+commit. Harmless here (same behaviour, 575 px / 0.026% apart) but it breaks provenance.
+**Do this:** give the reviewer an `rsync` copy of the worktree with `node_modules` symlinked, or
+tell it explicitly not to run `npm run e2e` / `npx playwright`. If it already ran, re-shoot from the
+clean tree before committing and say so.

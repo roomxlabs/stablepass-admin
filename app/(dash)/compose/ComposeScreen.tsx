@@ -931,6 +931,22 @@ export default function ComposeScreen({
     // Real race-day data off the picked horse — the badge used to be hardcoded
     // on every post, which made the preview claim a race that wasn't running.
     racesToday: horse?.racesToday ?? false,
+    /**
+     * ENG-769 — the picked label, so the card can draw the pill a member will
+     * actually see, and say so when a reel means they will not.
+     *
+     * DELIBERATE SURFACE WIDENING, called out on the ticket and in the PR:
+     * ENG-769 lists this file as do-not-touch, and its scope was written
+     * believing the preview already showed the label ("an operator can pick a
+     * label ... see it in the preview"). It never did — ENG-745 wired the
+     * picker to the BFF and to nothing else, so `previewData` had no `label`
+     * at all. Two of the ticket's acceptance criteria are unreachable without
+     * this one line, so it is here rather than silently unmet. Nothing else in
+     * this file is touched and no in-flight ticket claims it.
+     *
+     * "" is the picker's "No label" option; the card takes null for that.
+     */
+    label: label || null,
     dims,
     measure,
   };

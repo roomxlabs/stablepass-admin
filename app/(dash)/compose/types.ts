@@ -211,6 +211,31 @@ export const ASPECT_MAX = 1.91;
 export const ASPECT_DEFAULT = 1.6;
 
 /**
+ * IS THIS ASSET A REEL? — the ONE predicate, mirroring the member card's
+ * `isReel` (stablepass-mobile `src/components/post-card.tsx`).
+ *
+ * Extracted by ENG-769 rather than left inline in `resolveAspect`, because the
+ * reel branch now decides two separate things that must never disagree: the
+ * BOX (this file) and the CHROME (PostPreview). Two independent copies of
+ * `mediaType === "video" && ratio < 1` is exactly the duplication that let the
+ * box and the member card drift apart twice already; one exported predicate
+ * means a future change to the rule cannot move the box without moving the
+ * furniture with it.
+ *
+ * THE THRESHOLD IS UNCHANGED, deliberately (ENG-769 decision 3): `< 1`,
+ * strict, on the RAW ratio before any clamp — the identical comparison
+ * `resolveAspect` already made. A SQUARE video is not a reel.
+ *
+ * `mediaType === "video"` rather than "not a photo", for the reason spelled
+ * out on `resolveAspect` below: `null` here means a TEXT post.
+ */
+export function isReelPreview(dims: MediaDimensions, mediaType: MediaType | null): boolean {
+  if (mediaType !== "video") return false;
+  if (!dims || !(dims.width > 0) || !(dims.height > 0)) return false;
+  return dims.width / dims.height < 1;
+}
+
+/**
  * The width/height the preview box should actually use: the file's own ratio,
  * clamped to what the member card will render. Unknown or degenerate input
  * falls back to 16:10 so the box is never 0-height.
@@ -239,7 +264,10 @@ export function resolveAspect(dims: MediaDimensions, mediaType: MediaType | null
   // previewData comment), and a voice post has no frame to measure. Both are
   // gated out of the media box upstream anyway, but the box must not depend
   // on that.
-  if (mediaType === "video" && ratio < 1) return Math.max(REEL_ASPECT_MIN, ratio);
+  // Delegates to the shared predicate (ENG-769) so the box and the chrome can
+  // never take different branches. Behaviour is byte-identical to the inline
+  // `mediaType === "video" && ratio < 1` it replaces.
+  if (isReelPreview(dims, mediaType)) return Math.max(REEL_ASPECT_MIN, ratio);
   return Math.min(ASPECT_MAX, Math.max(ASPECT_MIN, ratio));
 }
 

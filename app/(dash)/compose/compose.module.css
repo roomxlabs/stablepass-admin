@@ -1010,3 +1010,115 @@
 .photoStateBad {
   color: var(--red);
 }
+
+/* ---------------------------------------------------------------------------
+   REEL CHROME (ENG-769)
+
+   The member card gives a portrait VIDEO Instagram's reel treatment: no white
+   header row, the identity overlaid on the frame on a soft ink scrim. Values
+   mirror mobile's `reelTopScrim` / `reelHorse` / `reelByline` block in
+   stablepass-mobile `src/components/post-card.tsx` (Spacing.lg/xl = 16/20px,
+   Colors.ink #1A1A1A at 55%, white at 85%).
+
+   These are CSS facts no render test can see — Vitest stubs CSS modules — so
+   compose-css.test.ts pins them, per the note at the top of that file.
+   --------------------------------------------------------------------------- */
+
+/* Mobile's `reelCard: { paddingTop: 0 }` — the frame starts at the card's top
+   edge because there is no header row above it any more. */
+.postCardReel {
+  padding-top: 0;
+}
+
+.reelScrim {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 16px 20px 20px;
+  background: linear-gradient(to bottom, rgba(26, 26, 26, 0.55), transparent);
+  z-index: 2;
+  /* The video underneath is click-to-play in the modal; an overlay that ate
+     that click would break the one interaction this preview has. */
+  pointer-events: none;
+}
+
+/* The same avatar as the classic head (mobile reuses <Avatar size="sm"> in
+   both), plus a hairline so it separates from a bright frame. */
+.reelAvatar {
+  box-shadow: 0 0 0 1.5px rgba(255, 255, 255, 0.35);
+}
+
+.reelMeta {
+  flex: 1;
+  min-width: 0;
+  padding-right: 8px;
+}
+
+.reelHorse {
+  font-family: var(--font-sans);
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 20px;
+  color: #fff;
+  margin: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.reelByline {
+  font-size: 12px;
+  line-height: 16px;
+  color: rgba(255, 255, 255, 0.85);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ENG-769 — the editorial label pill (ENG-745's picker, mobile ENG-750's
+   pill). Brand green with cream type, sitting ABOVE the horse name. Classic
+   cards only: it lives inside the header row, which a reel does not draw. */
+.labelPill {
+  background: var(--brand-green);
+  color: var(--cream);
+  font-size: 10.5px;
+  letter-spacing: 0.945px;
+  text-transform: uppercase;
+  padding: 5px 12px;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+
+/* Why the pill is missing, said out loud rather than left for the operator to
+   notice. Amber-ish muted note under the card, not an error. */
+.previewReelNote {
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--muted);
+  background: var(--cream-dark);
+  border-left: 2px solid var(--brand-green);
+  border-radius: 4px;
+  padding: 8px 10px;
+  margin: 8px 0 0;
+}
+
+/* The sidebar scale, matching the compact rules for the classic head. */
+.previewCompact .reelScrim {
+  gap: 10px;
+  padding: 12px 14px 16px;
+}
+.previewCompact .reelHorse {
+  font-size: 13px;
+  line-height: 17px;
+}
+.previewCompact .reelByline {
+  font-size: 11px;
+  line-height: 14px;
+}
+.previewCompact .previewReelNote {
+  font-size: 11.5px;
+}

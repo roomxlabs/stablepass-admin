@@ -314,11 +314,19 @@ export default function ComposeScreen({
    * retry, so the operator can drop the failure and publish the rest.
    */
   const photosSettled = photos.length > 0 && !photos.some((p) => p.state === "uploading");
+  /**
+   * A photo post outside edit mode ALWAYS goes through the set path, so its
+   * readiness always comes from the set — never from `upload.state`.
+   *
+   * Gating on `photos.length > 0` instead was a real bug, caught by the
+   * remove-the-last-photo test: emptying the strip fell back to `upload.state`,
+   * which was still "done" from the upload that had since been removed, so the
+   * screen offered to publish a photo post with no photos.
+   */
+  const usesPhotoSet = postType === "photo" && !isEdit;
   const draftReady =
     !!draft &&
-    (postType === "photo" && photos.length > 0
-      ? photosSettled && readyPhotos.length > 0
-      : upload.state === "done");
+    (usesPhotoSet ? photosSettled && readyPhotos.length > 0 : upload.state === "done");
   /**
    * A text post has no upload, so it can never satisfy `draftReady` — and its
    * draft does not even exist yet, because minting one is what picking a file

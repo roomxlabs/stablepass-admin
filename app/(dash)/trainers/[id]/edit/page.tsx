@@ -2,6 +2,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { supabaseServer } from "@/lib/supabase/server";
 import TrainerForm, { type ContactInput, type TrainerData } from "../../TrainerForm";
+import { toTrainerFormSeed, type TrainerDetailRow } from "../../data";
 import "../../trainers.css";
 
 // Edit trainer — reuses the add-trainer form (mockup 08), pre-filled. Loads the
@@ -19,7 +20,7 @@ export default async function EditTrainerPage({
 
   const { data: t } = await sb
     .from("trainer")
-    .select("id,name,display_name,stable_name,location,bio,photo_url,status")
+    .select("id,name,display_name,stable_name,location,bio,photo_url,status,marketing_visible,marketing_photo_path")
     .eq("id", id)
     .maybeSingle();
   if (!t) notFound();
@@ -30,16 +31,10 @@ export default async function EditTrainerPage({
     .eq("trainer_id", id)
     .order("created_at", { ascending: true });
 
-  const trainer: TrainerData = {
-    id: t.id,
-    name: t.name,
-    displayName: t.display_name ?? "",
-    stableName: t.stable_name ?? "",
-    location: t.location ?? "",
-    bio: t.bio ?? "",
-    photoUrl: t.photo_url ?? null,
-    status: t.status === "onboarding" ? "onboarding" : "active",
-  };
+  // ENG-766: the mapping lives in ./data so it is unit-testable — it seeds the
+  // "Show on marketing site" checkbox and tells the form which public object it
+  // is already responsible for.
+  const trainer: TrainerData = toTrainerFormSeed(t as TrainerDetailRow);
   const contacts: ContactInput[] = ((cRows ?? []) as Record<string, string>[]).map((c) => ({
     id: c.id,
     role: c.role ?? "",

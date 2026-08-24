@@ -113,9 +113,9 @@ const D = 24 * H;
 const ago = (ms) => new Date(Date.now() - ms).toISOString();
 
 const TRAINER_SEED = [
-  { id: "t1", name: "Chris Waller", stable_name: "Chris Waller Racing", location: "Rosehill, NSW", status: "active", horses: 12, email: "chris@wallerstable.com.au", lastPost: 2 * H },
+  { id: "t1", name: "Chris Waller", stable_name: "Chris Waller Racing", location: "Rosehill, NSW", status: "active", horses: 12, email: "chris@wallerstable.com.au", lastPost: 2 * H, marketing_visible: true },
   { id: "t2", name: "Peter Moody", stable_name: "Moody Racing", location: "Caulfield, VIC", status: "active", horses: 4, email: "peter@moody.com.au", lastPost: 6 * H },
-  { id: "t3", name: "James Cummings", stable_name: "Godolphin Australia", location: "Agnes Banks, NSW", status: "active", horses: 3, email: "james@godolphin.com.au", lastPost: D },
+  { id: "t3", name: "James Cummings", stable_name: "Godolphin Australia", location: "Agnes Banks, NSW", status: "active", horses: 3, email: "james@godolphin.com.au", lastPost: D, marketing_visible: true },
   { id: "t4", name: "Anthony & Sam Cummings", stable_name: "Leilani Lodge", location: "Randwick, NSW", status: "active", horses: 2, email: "team@leilanilodge.com.au", lastPost: 2 * D },
   { id: "t5", name: "Ciaron Maher", stable_name: "Ciaron Maher Racing", location: "Ballarat, VIC", status: "active", horses: 1, email: "team@maherracing.com", lastPost: 3 * D },
   { id: "t6", name: "Kris Lees", stable_name: "Lees Racing", location: "Newcastle, NSW", status: "active", horses: 1, email: "kris@leesracing.com.au", lastPost: 5 * D },
@@ -126,6 +126,9 @@ function buildDb(seed) {
   const trainers = seed.map((t) => ({
     id: t.id, name: t.name, display_name: t.name, slug: t.id,
     stable_name: t.stable_name, location: t.location, bio: null, photo_url: null, status: t.status,
+    // ENG-766: marketing-visibility flag + the public-bucket object path it
+    // publishes to. Fresh fixtures always start with no copied photo.
+    marketing_visible: t.marketing_visible === true, marketing_photo_path: null,
   }));
   const horses = [];
   const posts = [];
@@ -662,6 +665,77 @@ export function startMockSupabase() {
       sendJson(res, 200, []);
       return;
     }
+    // ---------------------------------------------------------------------
+    // ORDERING (resolved when main merged into feature/round6-v1, 25 Aug 2026)
+    //
+    // Two independently written groups landed at this exact anchor: the
+    // /rest/v1/trainer handlers (ENG-766) and the compose EDIT /rest/v1/post
+    // handler (ENG-745). Both sides' comments assert their branch is
+    // order-sensitive, so the merge looked like it needed a judgement call.
+    // It does not: the two groups discriminate on `url.pathname` with an exact
+    // `===` against DIFFERENT tables ("/rest/v1/trainer" vs "/rest/v1/post"),
+    // so they are mutually exclusive and NEITHER can shadow the other in
+    // either order. Each group's real constraint is only against the generic
+    // branches further down, and both are satisfied here:
+    //   * every /rest/v1/trainer branch is ahead of the generic
+    //     `startsWith("/rest/v1/")` dispatcher, which would otherwise answer
+    //     the edit page's `.maybeSingle()` with all six trainer rows;
+    //   * the compose edit branch is ahead of the posts-library branch, which
+    //     matches the broader `startsWith("/rest/v1/post")` + `status`.
+    // Grouped by table and ordered specific-before-generic, per the
+    // /rest/v1/horse block above.
+    // ---------------------------------------------------------------------
+
+    // /rest/v1/trainer — single row by id: the edit page's `.eq("id",
+    // id).maybeSingle()` (ENG-766). Same maybeSingle() trap noted on the horse
+    // fixture read above — it fetches as a LIST and enforces cardinality
+    // client-side, so without this branch the generic DB dispatcher below hands
+    // back every trainer row and the client-side cardinality check trips a
+    // false notFound(). Anchored `id=eq.` so it can't also match some future
+    // embedded filter.
+    if (req.method === "GET" && url.pathname === "/rest/v1/trainer" && /[?&]id=eq\./.test(url.search)) {
+      const id = decodeURIComponent(url.search.match(/[?&]id=eq\.([^&]+)/)?.[1] ?? "");
+      const match = DB.trainer.find((t) => t.id === id) ?? null;
+      const accept = req.headers["accept"] ?? "";
+      sendJson(res, 200, accept.includes("pgrst.object") ? match : match ? [match] : []);
+      return;
+    }
+
+    // POST /rest/v1/trainer — trainer create
+    // (app/api/admin/trainers/route.ts's `.insert(...).select(...).single()`).
+    // Echoes the posted row back with a fresh id so the add-trainer flow can
+    // proceed past the save. Must stay ahead of the generic dispatcher below.
+    if (req.method === "POST" && url.pathname === "/rest/v1/trainer") {
+      let body = {};
+      try {
+        body = JSON.parse(rawBody || "{}");
+      } catch {
+        body = {};
+      }
+      const row = { ...body, id: "tNEW" };
+      const accept = req.headers["accept"] ?? "";
+      sendJson(res, 201, accept.includes("pgrst.object") ? row : [row]);
+      return;
+    }
+
+    // PATCH /rest/v1/trainer?id=eq.<id> — trainer profile update
+    // (app/api/admin/trainers/[id]/route.ts's `.update(patch).eq("id",
+    // id).select(...).single()`), including the ENG-766 marketing fields.
+    // Echoes the patched fields back merged with the id from the query param.
+    if (req.method === "PATCH" && url.pathname === "/rest/v1/trainer" && /[?&]id=eq\./.test(url.search)) {
+      const id = decodeURIComponent(url.search.match(/[?&]id=eq\.([^&]+)/)?.[1] ?? "");
+      let body = {};
+      try {
+        body = JSON.parse(rawBody || "{}");
+      } catch {
+        body = {};
+      }
+      const row = { ...body, id };
+      const accept = req.headers["accept"] ?? "";
+      sendJson(res, 200, accept.includes("pgrst.object") ? row : [row]);
+      return;
+    }
+
     // Compose EDIT mode (ENG-745): `/compose?id=<postId>` reads ONE post with
     // the horse + trainer embed.
     //
@@ -718,7 +792,6 @@ export function startMockSupabase() {
       sendJson(res, 200, accept.includes("pgrst.object") ? match : match ? [match] : []);
       return;
     }
-
     // Posts library (T7 / ENG-177). The list read selects `status` — which the
     // trainers' post read (source_trainer_id,published_at,created_at) does not —
     // so use that to serve the full post-library fixtures here, ahead of the
@@ -747,7 +820,19 @@ export function startMockSupabase() {
     if (req.method === "GET" && url.pathname.startsWith("/rest/v1/")) {
       const table = url.pathname.slice("/rest/v1/".length);
       if (Object.prototype.hasOwnProperty.call(DB, table)) {
-        const rows = DB[table];
+        let rows = DB[table];
+        // ENG-766: honour a `trainer_id=eq.` filter. The trainers LIST reads
+        // trainer_contact unfiltered (and still gets every row), but the trainer
+        // EDIT page reads `.eq("trainer_id", id)` — and an unfiltered response
+        // there renders every stable's contacts on one trainer's form, which is
+        // both wrong evidence and a confusing screenshot.
+        // Scoped to trainer_contact deliberately: this sits in the SHARED
+        // generic dispatcher, and other tables (horse) also carry trainer_id.
+        const trainerId = url.searchParams.get("trainer_id");
+        if (table === "trainer_contact" && trainerId && trainerId.startsWith("eq.")) {
+          const want = trainerId.slice(3);
+          rows = rows.filter((r) => r.trainer_id === want);
+        }
         const accept = req.headers["accept"] ?? "";
         if (accept.includes("pgrst.object")) {
           sendJson(res, 200, rows[0] ?? null);

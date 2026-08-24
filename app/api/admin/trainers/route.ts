@@ -14,7 +14,11 @@ export async function POST(req: Request) {
     return fail("validation_failed", "name and slug are required.", 400);
   if (b.status && !["active", "onboarding"].includes(b.status))
     return fail("validation_failed", "status must be 'active' or 'onboarding'.", 400);
+  if (b.marketingVisible !== undefined && typeof b.marketingVisible !== "boolean")
+    return fail("validation_failed", "marketingVisible must be a boolean.", 400);
 
+  // marketing_visible defaults to false so a trainer is never published to
+  // the public marketing site by accident.
   const { data, error } = await sb
     .from("trainer")
     .insert({
@@ -26,8 +30,9 @@ export async function POST(req: Request) {
       bio: b.bio ?? null,
       photo_url: b.photoUrl ?? null,
       status: b.status ?? "active",
+      marketing_visible: b.marketingVisible === true,
     })
-    .select("id,name,display_name,slug,status")
+    .select("id,name,display_name,slug,status,marketing_visible")
     .single();
 
   if (error) {

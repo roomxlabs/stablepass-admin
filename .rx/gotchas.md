@@ -821,3 +821,71 @@ scrolling down to click the reorder buttons.
 before every `fullPage` shot in a spec that clicks anything below the fold — or screenshot the
 element instead of the page. And LOOK at every committed screenshot before you ship it: this one is
 the ticket's headline evidence and the corruption is obvious to a human and invisible to a test.
+
+## `npm test` cannot see a broken stylesheet — only `npm run build` can (ENG-766)
+Vitest stubs CSS modules, so a malformed `trainers.css` (an unbalanced `/* */`, e.g. from a careless
+`sed` on a comment header) passes typecheck AND the whole 480-test suite, then fails `next build` with
+a bare `at <unknown> (…/trainers.css:250:81)`. **Do this:** after ANY edit to a `.css` file, re-run
+`npm run build`, not just `npm test`. A quick balance check catches it first:
+`python3 -c "s=open('path.css').read(); print(s.count('/*'), s.count('*/'))"`.
+
+## Commit BEFORE mutation testing, or `git checkout --` silently reverts your fix (ENG-766)
+Mutation-testing with `apply mutation → run → git checkout -- <file>` restores from **HEAD**. With the
+fix still uncommitted, the first checkout reverts the fix itself, and every later mutation is applied to
+already-reverted code — so the "test failed as required" result is meaningless (the mutation was a
+no-op; the failure came from the missing fix). Observed live: it wiped four source fixes mid-run.
+**Do this:** commit, then mutate. Assert the mutation actually applied (`assert n != s`) and re-run the
+target after each restore to prove the tree is green again before the next mutation.
+
+## `page.screenshot` of a `(dash)` form exposes mock gaps the app never had (ENG-766)
+The first edit-page screenshot showed **7 contacts belonging to 7 different trainers**, because
+`e2e/mock-supabase.mjs`'s generic `/rest/v1/<table>` dispatcher ignores query filters and the edit page
+reads `.eq("trainer_id", id)`. The app is correct; the fixture is not. Also, `/trainers/:id/edit` needs
+an anchored `id=eq.` branch or it 404s (the documented `.maybeSingle()` cardinality trap), and there was
+**no PATCH handler for `/rest/v1/trainer` at all** — the trainer edit save had never been exercised in
+e2e. When adding a filter to the SHARED generic dispatcher, scope it to the one table
+(`table === "trainer_contact"`), since `horse` also carries `trainer_id`.
+
+## A test fake that ECHOES the request can never disagree with the implementation (ENG-766)
+`remove(keys)` faked as `paths.map(name => ({name}))` makes any assertion about the *response* vacuous:
+the implementation and the fake are the same source of truth. That hid a check on `FileObject.name`
+whose real wire shape was never measured — if `name` is relative to the prefix rather than the full key,
+every un-publish would have falsely failed, with a green suite. **Do this:** model what the SERVICE
+knows, not what the caller sent (here: report only the keys that actually exist), so the fake can
+contradict the code.
+
+## A too-wide PostgREST projection renders a screen EMPTY, not broken (ENG-766)
+Adding `marketing_visible` to the trainers list select against a DB where the column is not yet deployed
+returns an error that `listTrainers` swallows via `(trainers ?? [])`. The list renders empty while the
+filter chips — a separate `select("status")` — still count 8. There is no 500 and no console error.
+**Do this:** when a slice depends on another repo's migration, verify the columns exist in the TARGET
+project (`supabase migration list` in stablepass-be shows local vs remote), not just that the migration
+merged. Merged ≠ deployed; as of 24 Aug the live project trailed be `main` by two migrations.
+
+## Probe the live Supabase project without credentials via the public storage endpoint (ENG-766)
+`curl "https://<ref>.supabase.co/storage/v1/object/public/<bucket>/x.jpg"` needs no key and answers
+`NoSuchBucket` when the bucket is absent OR not public — useful as a fast deploy check. It does NOT
+distinguish "missing" from "private" (a private bucket that exists answers identically), so pair it with
+`supabase migration list` before concluding anything. Note `supabase/.temp/project-ref` is the linked
+project; `20260720120005_cron_schedules.sql` hardcodes a DIFFERENT ref, which is not the app's target.
+
+## Merging two "order-sensitive" mock branches: check the discriminator, not the comment (main -> feature/round6-v1, 25 Aug 2026)
+**Symptom:** `origin/main` (ENG-766, `/rest/v1/trainer` handlers) and `feature/round6-v1` (ENG-745,
+the compose EDIT `/rest/v1/post` handler) both added a branch at the SAME anchor in
+`e2e/mock-supabase.mjs`, and both carried comments insisting their branch is order-sensitive. That
+reads like a merge that needs a judgement call about which side wins.
+**Cause:** it is not one. The two groups discriminate on `url.pathname` with an exact `===` against
+DIFFERENT tables, so they are mutually exclusive and neither can shadow the other in either order.
+An "order-sensitive" comment describes a branch's relationship to the GENERIC branches below it
+(`startsWith("/rest/v1/post")` + `status`, and the catch-all `startsWith("/rest/v1/")`), never to an
+unrelated sibling. Resolve by asking which discriminators are supersets of which, not by trusting
+either side's prose.
+**The real trap in this merge:** both sides' new blocks ended with the identical three lines
+(`sendJson(res, 200, accept.includes("pgrst.object") ? match : ...); return; }`), so git hoisted that
+tail OUT of the conflict and placed it after `>>>>>>>`. Stripping the markers and keeping both sides
+therefore yields ONE shared tail for TWO `if` bodies: the first branch falls through into the second
+and only the second returns. It still parses. Reviewing the conflict hunk alone will not show it.
+**Do this:** when a conflict's two sides end in identical lines, do not hand-merge the hunk. Extract
+each side's block whole from `git show :2:<file>` and `:3:<file>`, confirm each is brace-balanced on
+its own (`node --check` proves syntax, not fall-through), then splice. And order the result
+specific-before-generic and grouped by table, the way the `/rest/v1/horse` block already documents.

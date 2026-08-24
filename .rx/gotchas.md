@@ -603,3 +603,50 @@ own earlier snapshot, which would have silently reverted edits made in that wind
 files) so you can prove the tree is unmutated before you commit; re-run the full gate only after
 every reviewer has finished. Better: give each concurrent reviewer its own worktree, or run them
 sequentially.
+
+## `npm test` cannot see a broken stylesheet — only `npm run build` can (ENG-766)
+Vitest stubs CSS modules, so a malformed `trainers.css` (an unbalanced `/* */`, e.g. from a careless
+`sed` on a comment header) passes typecheck AND the whole 480-test suite, then fails `next build` with
+a bare `at <unknown> (…/trainers.css:250:81)`. **Do this:** after ANY edit to a `.css` file, re-run
+`npm run build`, not just `npm test`. A quick balance check catches it first:
+`python3 -c "s=open('path.css').read(); print(s.count('/*'), s.count('*/'))"`.
+
+## Commit BEFORE mutation testing, or `git checkout --` silently reverts your fix (ENG-766)
+Mutation-testing with `apply mutation → run → git checkout -- <file>` restores from **HEAD**. With the
+fix still uncommitted, the first checkout reverts the fix itself, and every later mutation is applied to
+already-reverted code — so the "test failed as required" result is meaningless (the mutation was a
+no-op; the failure came from the missing fix). Observed live: it wiped four source fixes mid-run.
+**Do this:** commit, then mutate. Assert the mutation actually applied (`assert n != s`) and re-run the
+target after each restore to prove the tree is green again before the next mutation.
+
+## `page.screenshot` of a `(dash)` form exposes mock gaps the app never had (ENG-766)
+The first edit-page screenshot showed **7 contacts belonging to 7 different trainers**, because
+`e2e/mock-supabase.mjs`'s generic `/rest/v1/<table>` dispatcher ignores query filters and the edit page
+reads `.eq("trainer_id", id)`. The app is correct; the fixture is not. Also, `/trainers/:id/edit` needs
+an anchored `id=eq.` branch or it 404s (the documented `.maybeSingle()` cardinality trap), and there was
+**no PATCH handler for `/rest/v1/trainer` at all** — the trainer edit save had never been exercised in
+e2e. When adding a filter to the SHARED generic dispatcher, scope it to the one table
+(`table === "trainer_contact"`), since `horse` also carries `trainer_id`.
+
+## A test fake that ECHOES the request can never disagree with the implementation (ENG-766)
+`remove(keys)` faked as `paths.map(name => ({name}))` makes any assertion about the *response* vacuous:
+the implementation and the fake are the same source of truth. That hid a check on `FileObject.name`
+whose real wire shape was never measured — if `name` is relative to the prefix rather than the full key,
+every un-publish would have falsely failed, with a green suite. **Do this:** model what the SERVICE
+knows, not what the caller sent (here: report only the keys that actually exist), so the fake can
+contradict the code.
+
+## A too-wide PostgREST projection renders a screen EMPTY, not broken (ENG-766)
+Adding `marketing_visible` to the trainers list select against a DB where the column is not yet deployed
+returns an error that `listTrainers` swallows via `(trainers ?? [])`. The list renders empty while the
+filter chips — a separate `select("status")` — still count 8. There is no 500 and no console error.
+**Do this:** when a slice depends on another repo's migration, verify the columns exist in the TARGET
+project (`supabase migration list` in stablepass-be shows local vs remote), not just that the migration
+merged. Merged ≠ deployed; as of 24 Aug the live project trailed be `main` by two migrations.
+
+## Probe the live Supabase project without credentials via the public storage endpoint (ENG-766)
+`curl "https://<ref>.supabase.co/storage/v1/object/public/<bucket>/x.jpg"` needs no key and answers
+`NoSuchBucket` when the bucket is absent OR not public — useful as a fast deploy check. It does NOT
+distinguish "missing" from "private" (a private bucket that exists answers identically), so pair it with
+`supabase migration list` before concluding anything. Note `supabase/.temp/project-ref` is the linked
+project; `20260720120005_cron_schedules.sql` hardcodes a DIFFERENT ref, which is not the app's target.

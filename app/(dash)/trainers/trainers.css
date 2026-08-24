@@ -246,3 +246,53 @@ textarea.adm-input { min-height: 110px; resize: vertical; line-height: 1.55; }
   border-radius: var(--radius-sm);
   margin-bottom: 16px;
 }
+
+/* Marketing-site publication (ENG-766) -------------------------------- */
+/* Appended at the end of the file on purpose: ENG-746 also edits this screen,
+   so keeping these rules in one contiguous block at the tail keeps its rebase
+   to a trivial fast-forward. Colours come from the shared style.css tokens
+   except where noted on .form-warn below. */
+.adm-check { display: flex; align-items: flex-start; gap: 10px; cursor: pointer; }
+.adm-check input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  margin: 1px 0 0;
+  flex: none;
+  accent-color: var(--brand-green);
+  cursor: pointer;
+}
+.adm-check .adm-check-title { display: block; font-size: 13.5px; font-weight: 500; color: var(--ink); }
+.adm-check .adm-help { display: block; margin-top: 3px; }
+.adm-check-note {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+
+/* Retryable "photo not yet published" notice. Amber, not red: the profile save
+   itself succeeded — only the public photo copy is outstanding.
+   The amber pair is the same one `.pill.amber` uses above; style.css has no
+   token for it, so it is repeated here rather than silently diverging. */
+.form-warn {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  background: #FBF1D6;
+  border: 1px solid rgba(138, 103, 18, 0.35);
+  color: #8A6712;
+  font-size: 13px;
+  padding: 10px 14px;
+  border-radius: var(--radius-sm);
+  margin-bottom: 16px;
+}
+.form-warn .btn { flex: none; padding: 6px 14px; font-size: 12.5px; }
+
+/* "On site" badge on the trainers list. Outlined rather than filled so it reads
+   as secondary to the Active/Onboarding roster pill next to it. */
+.pill.site {
+  background: transparent;
+  border: 1px solid var(--brand-green);
+  color: var(--brand-green);
+}
+.adm-table td .pill + .pill { margin-left: 6px; }

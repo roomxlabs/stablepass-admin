@@ -142,6 +142,10 @@ export default async function TrainersPage({
                       ) : (
                         <span className="pill amber dot">Onboarding</span>
                       )}
+                      {/* ENG-766: published to the public stablepass.co strip. */}
+                      {row.marketingVisible ? (
+                        <span className="pill site" data-testid="on-site-badge">On site</span>
+                      ) : null}
                     </td>
                     <td className="actions">
                       <Link href={`/trainers/${row.id}/edit`}>Edit</Link>

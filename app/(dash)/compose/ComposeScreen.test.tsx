@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import ComposeScreen from "./ComposeScreen";
 import type { EditInitial, HorseOption, TrainerOption } from "./types";
+import { POST_LABEL_PRESETS } from "@/lib/posts/labels";
 
 // Mock the whole network layer so the component test never touches fetch /
 // Supabase / Mux. Each fn is a spy we assert against.
@@ -838,5 +839,185 @@ describe("ComposeScreen — preview measurement", () => {
     fireEvent.change(screen.getByTestId("horse-search"), { target: { value: "Black" } });
     fireEvent.click(screen.getByTestId("horse-opt-h2")); // Black Caviar — false
     expect(screen.queryByTestId("preview-race-badge")).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ENG-745 — label picker, the removed caption cap, and the full horse roster.
+// ---------------------------------------------------------------------------
+
+/** An edit-mode fixture; `label` is the field under test. */
+function editInitial(label: string | null): EditInitial {
+  return {
+    id: "post-745",
+    status: "published",
+    mediaType: "photo",
+    mediaUrl: "https://signed.example/photo.jpg",
+    title: "Old title",
+    caption: "Old caption",
+    bylineId: "t1",
+    label,
+    scheduledFor: null,
+    horse: HORSES[0],
+  };
+}
+
+describe("ENG-745 · label picker", () => {
+  it("offers No label plus all 13 presets, in the contract's order", () => {
+    renderScreen();
+    const select = screen.getByTestId("label-select") as HTMLSelectElement;
+    const options = [...select.options].map((o) => o.value);
+
+    // "" is the No label option; the rest must be the presets, in order and
+    // complete. Comparing the whole array (not `toContain` per preset) is what
+    // catches an accidental reorder or a dropped entry.
+    expect(options).toEqual(["", ...POST_LABEL_PRESETS]);
+    expect(select.options[0].textContent).toBe("No label");
+    // Not a disabled placeholder — clearing a category must be selectable.
+    expect(select.options[0].disabled).toBe(false);
+  });
+
+  it("renders the middle-dot preset with U+00B7, not a hyphen", () => {
+    renderScreen();
+    const select = screen.getByTestId("label-select") as HTMLSelectElement;
+    const raceDay = [...select.options].find((o) => o.value.startsWith("Race Day"));
+    expect(raceDay?.value).toBe("Race Day · Today");
+    expect(raceDay?.value).not.toContain("-");
+  });
+
+  it("defaults to No label when composing a new post", () => {
+    renderScreen();
+    expect((screen.getByTestId("label-select") as HTMLSelectElement).value).toBe("");
+  });
+
+  it("seeds the picker from the post being edited", () => {
+    render(<ComposeScreen horses={HORSES} trainers={TRAINERS} initial={editInitial("Trackwork")} />);
+    expect((screen.getByTestId("label-select") as HTMLSelectElement).value).toBe("Trackwork");
+  });
+
+  it("opens an OLD unlabelled post on No label and saves it back as null", async () => {
+    api.patchPost.mockResolvedValue(undefined);
+    render(<ComposeScreen horses={HORSES} trainers={TRAINERS} initial={editInitial(null)} />);
+    expect((screen.getByTestId("label-select") as HTMLSelectElement).value).toBe("");
+
+    // Save without touching the picker — the post must stay unlabelled rather
+    // than picking up whichever preset happened to be first in the list.
+    fireEvent.click(screen.getByTestId("primary-action"));
+    await waitFor(() =>
+      expect(api.patchPost).toHaveBeenCalledWith("post-745", expect.objectContaining({ label: null })),
+    );
+  });
+
+  it("sends the chosen preset on save", async () => {
+    api.patchPost.mockResolvedValue(undefined);
+    render(<ComposeScreen horses={HORSES} trainers={TRAINERS} initial={editInitial(null)} />);
+
+    fireEvent.change(screen.getByTestId("label-select"), { target: { value: "Jockey Comments" } });
+    fireEvent.click(screen.getByTestId("primary-action"));
+    await waitFor(() =>
+      expect(api.patchPost).toHaveBeenCalledWith(
+        "post-745",
+        expect.objectContaining({ label: "Jockey Comments" }),
+      ),
+    );
+  });
+
+  it("clears a label back to null when the operator picks No label", async () => {
+    api.patchPost.mockResolvedValue(undefined);
+    render(<ComposeScreen horses={HORSES} trainers={TRAINERS} initial={editInitial("Trackwork")} />);
+
+    fireEvent.change(screen.getByTestId("label-select"), { target: { value: "" } });
+    fireEvent.click(screen.getByTestId("primary-action"));
+    // "" is the picker's No label; the wire value must be a real null, because
+    // the route treats "" and null as a clear but absent as "leave alone".
+    await waitFor(() =>
+      expect(api.patchPost).toHaveBeenCalledWith("post-745", expect.objectContaining({ label: null })),
+    );
+  });
+});
+
+describe("ENG-745 · the caption cap is gone", () => {
+  it("puts NO maxLength on the caption input", () => {
+    renderScreen();
+    const caption = screen.getByTestId("caption") as HTMLTextAreaElement;
+    // THE regression assertion. `maxLength` is what silently truncated a pasted
+    // trainer quote at 240 with no message, so assert its ABSENCE: jsdom
+    // reports an unset maxLength as -1, and the attribute must not be there.
+    expect(caption.hasAttribute("maxlength")).toBe(false);
+    expect(caption.maxLength).toBe(-1);
+  });
+
+  it("accepts a 500-character caption in full and counts it passively", () => {
+    renderScreen();
+    const long = "x".repeat(500);
+    const caption = screen.getByTestId("caption") as HTMLTextAreaElement;
+    fireEvent.change(caption, { target: { value: long } });
+
+    expect(caption.value).toHaveLength(500);
+    expect(screen.getByTestId("caption-counter").textContent).toBe("500 characters");
+  });
+
+  it("shows a plain count with no limit and no over-limit state", () => {
+    renderScreen();
+    const counter = screen.getByTestId("caption-counter");
+    // No "/240", and nothing telling the operator to keep it under a limit
+    // that no longer exists anywhere in the stack.
+    expect(counter.textContent).toBe("0 characters");
+    expect(counter.textContent).not.toContain("/");
+    expect(screen.queryByText(/keep it under/i)).toBeNull();
+    expect(screen.queryByText(/240/)).toBeNull();
+  });
+});
+
+describe("ENG-745 · the horse picker is not truncated at 8", () => {
+  /** A roster bigger than the old slice, so the 9th onward is meaningful. */
+  const MANY: HorseOption[] = Array.from({ length: 12 }, (_, i) => ({
+    id: `hz${i + 1}`,
+    name: `Horse ${String(i + 1).padStart(2, "0")}`,
+    photoUrl: null,
+    stableName: "Randwick",
+    trainerId: "t1",
+    trainerName: "Chris Waller",
+    racesToday: false,
+  }));
+
+  function openPicker() {
+    render(<ComposeScreen horses={MANY} trainers={TRAINERS} />);
+    fireEvent.focus(screen.getByTestId("horse-search"));
+  }
+
+  it("lists every horse with an empty query, not just the first 8", () => {
+    openPicker();
+    const rows = within(screen.getByTestId("horse-results")).getAllByRole("button");
+    expect(rows).toHaveLength(12);
+    // The 9th and the last are the ones the old slice(0, 8) made unreachable —
+    // and with the search box empty, which is how the picker opens.
+    expect(screen.getByTestId("horse-opt-hz9")).toBeTruthy();
+    expect(screen.getByTestId("horse-opt-hz12")).toBeTruthy();
+  });
+
+  it("still narrows on the text filter", () => {
+    openPicker();
+    fireEvent.change(screen.getByTestId("horse-search"), { target: { value: "Horse 1" } });
+    // Substring match, so "Horse 1" narrows to Horse 10, 11 and 12 — NOT to
+    // "Horse 01", which contains "Horse 0". Three rows, down from twelve.
+    const rows = within(screen.getByTestId("horse-results")).getAllByRole("button");
+    expect(rows).toHaveLength(3);
+    expect(screen.getByTestId("horse-opt-hz12")).toBeTruthy();
+    expect(screen.queryByTestId("horse-opt-hz9")).toBeNull();
+    expect(screen.queryByTestId("horse-opt-hz1")).toBeNull();
+  });
+
+  it("keeps a filtered result set beyond 8 whole", () => {
+    openPicker();
+    fireEvent.change(screen.getByTestId("horse-search"), { target: { value: "Horse" } });
+    // All 12 match; the old code sliced this to 8 too.
+    expect(within(screen.getByTestId("horse-results")).getAllByRole("button")).toHaveLength(12);
+  });
+
+  it("selects a horse that used to be past the cut", () => {
+    openPicker();
+    fireEvent.click(screen.getByTestId("horse-opt-hz11"));
+    expect(screen.getByTestId("horse-pick").textContent).toContain("Horse 11");
   });
 });

@@ -161,3 +161,36 @@ describe("post-type picker fidelity (ENG-611)", () => {
     expect(audio).not.toMatch(/#1a1a1a/i);
   });
 });
+
+// ENG-745. Two CSS facts this ticket now DEPENDS on, neither of which any
+// render test can see (Vitest stubs CSS modules — see the header above).
+//
+// The horse picker stopped truncating its list at 8, which is only safe
+// because `.results` is a scroll box: without the max-height it becomes an
+// unbounded list that runs off the bottom of the panel on a 20-horse stable,
+// and the ticket's "all horses reachable" acceptance criterion quietly stops
+// being true. The scroll box already existed — that is exactly why it is worth
+// pinning, because "it was already there" is how it gets deleted as unused.
+describe("horse picker scrolls rather than truncates (ENG-745)", () => {
+  it("keeps the results list a bounded scroll box", () => {
+    const results = rule(".results");
+    expect(results).toMatch(/max-height:\s*\d+px/);
+    expect(results).toMatch(/overflow-y:\s*auto/);
+  });
+});
+
+describe("the caption counter has no over-limit state (ENG-745)", () => {
+  it("no longer ships a .counterOver rule", () => {
+    // The 240-character cap is gone, so there is no "over" to be in. The rule
+    // is deleted rather than left orphaned: left behind, the next person to
+    // touch the counter re-wires a red state to a limit that no longer exists.
+    expect(CSS, ".counterOver should have gone with the caption cap").not.toContain(".counterOver");
+  });
+
+  it("keeps the plain counter styling", () => {
+    const counter = rule(".counter");
+    expect(counter).toMatch(/font-variant-numeric:\s*tabular-nums/);
+    // A count that changes on every keystroke must not reflow the label row.
+    expect(counter).toMatch(/flex-shrink:\s*0/);
+  });
+});

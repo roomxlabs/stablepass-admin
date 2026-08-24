@@ -213,6 +213,12 @@ test("failed photo copy warning", async ({ page }) => {
     mimeType: "image/jpeg",
     buffer: PNG,
   });
+  // ENG-749: picking a file now opens the crop step, and its overlay would
+  // intercept the submit click below. This test is about the marketing copy
+  // failing, not about cropping, so take the use-as-is route — it uploads this
+  // exact PNG unchanged, which is what the test was written against.
+  await page.getByTestId("photo-crop-use-as-is").click();
+  await expect(page.getByTestId("photo-crop-dialog")).toBeHidden();
   await expect(page.getByText("Photo added")).toBeVisible({ timeout: 15000 });
 
   const cb = page.getByTestId("marketing-visible");

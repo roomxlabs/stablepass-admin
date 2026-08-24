@@ -678,8 +678,14 @@ stablepass-be's `docs/specs/api-contract.md` + the `post_label_preset` migration
 yet. The file genuinely was not on disk. Resolving `<workspace>/stablepass-be/<path>` and
 `readFileSync`-ing it makes the guard depend on whatever branch a DIFFERENT repo happens to have
 checked out, which has nothing to do with drift.
-**Do this:** resolve the sibling root via `git rev-parse --git-common-dir` (NOT `process.cwd()` —
-under a worktree that is `<repo>/.claude/worktrees/<name>`), then read content with
+**Do this:** resolve the sibling root via `dirname(resolve(gitCommonDir))` where `gitCommonDir` is
+`git rev-parse --git-common-dir` (NOT `process.cwd()` — under a worktree that is
+`<repo>/.claude/worktrees/<name>`). **The `resolve()` is load-bearing and easy to miss:**
+`--git-common-dir` returns an ABSOLUTE path only from inside a linked worktree; in a normal checkout
+it returns the bare relative string `.git`, so `dirname()` yields `"."` and the sibling path comes out
+relative. Every lookup then misses and the guard fails for a reason unrelated to drift — green for the
+loop (which runs in a worktree), RED for every human dev. Verify any such test in a plain clone, not
+just in the worktree you wrote it in. Then read content with
 `git -C <sibling> show <rev>:<path>` over a fallback chain of revs, working tree first, then
 `origin/feature/<epic>-v1`, then `origin/main`, then `HEAD`. Include the `main` entries so the guard
 survives the integration branch being merged and deleted. Fail loudly if no rev has it — a skipped
@@ -693,12 +699,25 @@ fixture smaller than the limit under test cannot test the limit** — when a tic
 slice or a page size, check the fixture actually exceeds it first. The nine added names deliberately
 avoid "Mah" so the existing specs' `fill("Mah")` → `horse-opt-h1` path is unaffected.
 
+## Discriminating a mock handler: check EVERY other read that selects your column (ENG-745)
+Adding a compose-edit branch to `e2e/mock-supabase.mjs` keyed on `mux_playback_id` "which only this
+read selects". It does not. `app/(dash)/posts/page.tsx` selects it for the library list, and
+`app/api/admin/posts/[id]/preview/route.ts` selects it AND filters `id=eq.` — so neither the column
+nor the id filter is a discriminator on its own. Placed ahead of the library branch, it swallowed the
+list read and rendered an empty posts table; the vitest suite stayed fully green and only the full
+Playwright run caught it. The working discriminator was the NESTED embed
+`trainer:trainer_id(id,name,display_name)`, which only compose's edit read asks for.
+**Do this:** before adding a branch, `grep -rn "<your column>" app/ lib/` and read every hit's select
+string, then run the WHOLE e2e suite, not the spec you are writing. Both of this file's existing
+warnings (order matters; match the table name exactly) were already written down — and still got hit
+twice in one branch, in both directions.
+
 ## `.resultName` / `.resultSub` run together in the compose horse picker (open, pre-existing)
 The picker rows render `Magic Timeby Peter Moody`: `compose.module.css:162-170` styles two adjacent
 inline spans with no separator, and `.resultSub`'s `margin-top: 1px` implies `display: block` was
 intended. Same pattern elsewhere on the screen ("Choose a videoVideo goes to Mux"). Pre-existing and
-NOT fixed by ENG-745 (out of its decisions; R5 lands in that file next) — it just became visible once
-the roster stopped being truncated to 8. One line to fix when someone owns that surface.
+NOT fixed by ENG-745 (out of its decisions; R5 lands in that file next). It was equally visible with
+the old 3-horse fixture — nobody had looked. One line to fix when someone owns that surface.
 
 ## No `.rx/fe-harness.md` in stablepass-admin, but the harness is real (ENG-745)
 implement Step 0 wants a `.rx/fe-harness.md` manifest before UI work. This repo has none, yet it has

@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { requireAdmin } from "@/lib/auth/admin";
 import { ok, fail } from "@/lib/api/envelope";
 import { createMuxDirectUpload, MuxError } from "@/lib/mux";
-import { isLabelCheckViolation, normalisePostLabel } from "@/lib/posts/labels";
+import { isLabelCheckViolation, LABEL_ERROR_MESSAGE, normalisePostLabel } from "@/lib/posts/labels";
 
 const POST_MEDIA_BUCKET = "post-media"; // T15 private bucket (photo/voice)
 // ENG-611: widened from video|photo. `post.type`'s CHECK has permitted all of
@@ -115,7 +115,7 @@ export async function POST(req: Request) {
   // left to the CHECK, but the 23514 mapping below still stands as the backstop.
   const labelValue = "label" in (payload ?? {}) ? normalisePostLabel(label) : null;
   if (labelValue === undefined)
-    return fail("validation_failed", "label must be one of the 13 presets, or null.", 400);
+    return fail("validation_failed", LABEL_ERROR_MESSAGE, 400);
 
   // Horse must exist — a clean 404 rather than a raw FK violation.
   const { data: horse } = await sb.from("horse").select("id").eq("id", horseId).maybeSingle();
@@ -142,7 +142,7 @@ export async function POST(req: Request) {
   // Matched by constraint NAME: a bare 23514 would also swallow `post`'s type /
   // status / aspect-ratio CHECKs and mislabel them as a category problem.
   if (isLabelCheckViolation(error))
-    return fail("validation_failed", "label must be one of the 13 presets, or null.", 400);
+    return fail("validation_failed", LABEL_ERROR_MESSAGE, 400);
   if (error || !draft) return fail("insert_failed", error?.message ?? "Could not create draft.", 400);
 
   // text → done. No upload target, so no Storage/Mux call to make and nothing

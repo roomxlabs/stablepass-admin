@@ -1,6 +1,6 @@
 import { requireAdmin } from "@/lib/auth/admin";
 import { ok, noContent, fail } from "@/lib/api/envelope";
-import { isLabelCheckViolation, normalisePostLabel } from "@/lib/posts/labels";
+import { isLabelCheckViolation, LABEL_ERROR_MESSAGE, normalisePostLabel } from "@/lib/posts/labels";
 
 // camelCase request field → post column.
 const FIELD_MAP: Record<string, string> = {
@@ -33,7 +33,7 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
   if ("label" in b) {
     const labelValue = normalisePostLabel(b.label);
     if (labelValue === undefined)
-      return fail("validation_failed", "label must be one of the 13 presets, or null.", 400);
+      return fail("validation_failed", LABEL_ERROR_MESSAGE, 400);
     patch.label = labelValue;
   }
 
@@ -46,7 +46,7 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
   // FIELD_MAP above with no validation of its own — so matching the code alone
   // reported every one of those as a label problem.
   if (isLabelCheckViolation(error))
-    return fail("validation_failed", "label must be one of the 13 presets, or null.", 400);
+    return fail("validation_failed", LABEL_ERROR_MESSAGE, 400);
   if (error) return fail("update_failed", error.message, 400);
   if (!data) return fail("not_found", "Post not found.", 404);
   return ok(data);

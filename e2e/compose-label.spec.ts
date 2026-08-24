@@ -44,6 +44,11 @@ test("label picker: the 13 presets plus No label", async ({ page }) => {
 
   await select.selectOption("Trackwork");
   await expect(select).toHaveValue("Trackwork");
+  // Scroll it into frame first: the metadata section sits below the fold at
+  // 1280x900, so an unscrolled viewport shot of "the label picker" captured
+  // steps 1-3 and not the control it is named for.
+  await select.scrollIntoViewIfNeeded();
+  await expect(select).toBeInViewport();
   await page.screenshot({ path: "e2e/__screenshots__/18-compose-label-picker.png" });
 
   // A native <select> renders its list in an OS popup that no screenshot can

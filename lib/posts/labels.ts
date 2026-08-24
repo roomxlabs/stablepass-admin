@@ -43,6 +43,14 @@ export type PostLabel = (typeof POST_LABEL_PRESETS)[number];
 /** Postgres check_violation — what an off-list `post.label` write raises. */
 export const CHECK_VIOLATION = "23514";
 
+/**
+ * The 400 message both routes return for a bad category.
+ *
+ * Exported rather than written out at each of the four call sites: it names the
+ * list's LENGTH, so a 14th preset silently makes every inline copy a lie.
+ */
+export const LABEL_ERROR_MESSAGE = `label must be one of the ${POST_LABEL_PRESETS.length} presets, or null.`;
+
 /** The CHECK constraint that enforces the preset list, by name. */
 export const LABEL_CONSTRAINT = "post_label_preset";
 

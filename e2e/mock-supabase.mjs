@@ -683,7 +683,14 @@ export function startMockSupabase() {
     if (
       req.method === "GET" &&
       url.pathname === "/rest/v1/post" &&
-      decodeURIComponent(url.search).includes("mux_playback_id") &&
+      // The NESTED trainer embed is what makes this read unique. Two other
+      // reads select `mux_playback_id` — the posts library list
+      // (app/(dash)/posts/page.tsx:19) and the preview route
+      // (app/api/admin/posts/[id]/preview/route.ts:19) — and the preview route
+      // filters by `id=eq.` as well, so neither the column nor the filter is
+      // enough on its own. Only compose's edit read asks for the horse's
+      // trainer through the horse.
+      decodeURIComponent(url.search).includes("trainer:trainer_id(id,name,display_name)") &&
       editIdParam &&
       editIdParam.startsWith("eq.")
     ) {

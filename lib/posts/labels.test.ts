@@ -12,7 +12,7 @@
 // one is exactly the failure this ticket exists to prevent.
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { isLabelCheckViolation, isPostLabel, normalisePostLabel, POST_LABEL_PRESETS } from "./labels";
 
@@ -30,7 +30,13 @@ function beRepoRoot(): string {
     cwd: process.cwd(),
     encoding: "utf8",
   }).trim();
-  const adminRoot = dirname(gitCommonDir.replace(/\/\.git\/?$/, "/.git"));
+  // `resolve` is load-bearing: --git-common-dir returns an ABSOLUTE path only
+  // from inside a linked worktree. In a normal checkout it returns the bare
+  // relative string ".git", so dirname() gives "." and the sibling path comes
+  // out relative — every lookup misses and the guard fails for a reason that
+  // has nothing to do with drift. That would make `npm test` red for every
+  // human dev while staying green for the loop, which runs in a worktree.
+  const adminRoot = dirname(resolve(gitCommonDir));
   return join(dirname(adminRoot), "stablepass-be");
 }
 

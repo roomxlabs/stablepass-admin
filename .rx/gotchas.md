@@ -794,3 +794,30 @@ only. But if the reviewer will MUTATE files, either (a) delete the copy's `.git`
 the diff as a patch file, or (b) tell it to restore with `cp` from a backup it makes itself, never
 with `git checkout`. Then verify before you commit:
 `git rev-parse HEAD` + `git status --porcelain` must match what you recorded before dispatching.
+
+## A test that reads `img src` in jsdom can be VACUOUS — and pass only via a leaked global (ENG-748)
+**Symptom:** three reorder tests asserted display order with
+`tiles.map(t => t.querySelector("img")?.getAttribute("src") ?? "")`. They passed. They also passed
+with the feature deleted — `movePhoto` mutated to `return list` left them green when run with
+`-t "reorder"`, and only went red in a whole-file run.
+**Cause, two layers.** (1) jsdom has no `URL.createObjectURL`, so `previewUrl` is null, no `<img>`
+renders, and the map returns `["","",""]` — comparing empty strings to empty strings. (2) It appeared
+to work in the full run only because an EARLIER, unrelated `describe` does
+`Object.defineProperty(URL, "createObjectURL", …)` in its `beforeEach` and **never restores it**, so
+later blocks silently inherit a stub they never asked for and whose presence depends on file order.
+**Do this:** every `describe` that needs an object URL must install AND restore its own stub in
+`beforeEach`/`afterEach`. Assert display order on an attribute that renders unconditionally — add a
+`data-*` carrying a stable id — never on `img src`. And validate any ordering test the only way that
+means anything: break the reordering function and run the test **in isolation** (`-t`), not just as
+part of the file. A whole-file pass can be borrowed from a neighbour; a `-t` pass cannot.
+
+## `fullPage` screenshots + `position: fixed` chrome = the sidebar painted mid-page (ENG-748)
+**Symptom:** `25-compose-multi-reorder.png` had the fixed sidebar and topbar rendered ~730px down the
+image, overlapping content, with a blank gutter above. `24-` and `28-` from the same spec were clean.
+**Cause:** Playwright's `fullPage` capture stitches the page while `position: fixed` elements stay
+pinned to the VIEWPORT. The clean shots were taken at scroll top; the corrupted one was taken after
+scrolling down to click the reorder buttons.
+**Do this:** `await page.evaluate(() => window.scrollTo(0, 0))` plus two `requestAnimationFrame`s
+before every `fullPage` shot in a spec that clicks anything below the fold — or screenshot the
+element instead of the page. And LOOK at every committed screenshot before you ship it: this one is
+the ticket's headline evidence and the corruption is obvious to a human and invisible to a test.

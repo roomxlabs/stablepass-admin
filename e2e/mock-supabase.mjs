@@ -334,6 +334,21 @@ const COMPOSE_HORSES = [
   { id: "h1", display_name: "Mahogany", racing_name: "Mahogany", photo_url: null, stable_name: "Randwick", trainer_id: "t1", trainer: { id: "t1", name: "Chris Waller", display_name: "Chris Waller" } },
   { id: "h2", display_name: "Black Caviar", racing_name: "Black Caviar", photo_url: null, stable_name: "Caulfield", trainer_id: "t2", trainer: { id: "t2", name: "Peter Moody", display_name: "Peter Moody" } },
   { id: "h3", display_name: "Winx", racing_name: "Winx", photo_url: null, stable_name: "Rosehill", trainer_id: "t1", trainer: { id: "t1", name: "Chris Waller", display_name: "Chris Waller" } },
+  // ENG-745 — the roster runs past 8 on purpose. The picker used to
+  // `.slice(0, 8)` both branches, so with the search box empty (how it opens)
+  // everything from the 9th on was unreachable. Three fixtures could never
+  // catch that; these nine are what make the regression visible, in the e2e
+  // shots and in any future run. None contain "Mah", so the existing specs'
+  // `fill("Mah")` + `horse-opt-h1` path is unaffected.
+  { id: "h4", display_name: "Anamoe", racing_name: "Anamoe", photo_url: null, stable_name: "Randwick", trainer_id: "t3", trainer: { id: "t3", name: "James Cummings", display_name: "James Cummings" } },
+  { id: "h5", display_name: "Northern Star", racing_name: "Northern Star", photo_url: null, stable_name: "Caulfield", trainer_id: "t2", trainer: { id: "t2", name: "Peter Moody", display_name: "Peter Moody" } },
+  { id: "h6", display_name: "Verry Elleegant", racing_name: "Verry Elleegant", photo_url: null, stable_name: "Rosehill", trainer_id: "t1", trainer: { id: "t1", name: "Chris Waller", display_name: "Chris Waller" } },
+  { id: "h7", display_name: "Saxon Warrior", racing_name: "Saxon Warrior", photo_url: null, stable_name: "Flemington", trainer_id: "t3", trainer: { id: "t3", name: "James Cummings", display_name: "James Cummings" } },
+  { id: "h8", display_name: "Magic Time", racing_name: "Magic Time", photo_url: null, stable_name: "Caulfield", trainer_id: "t2", trainer: { id: "t2", name: "Peter Moody", display_name: "Peter Moody" } },
+  { id: "h9", display_name: "Nature Strip", racing_name: "Nature Strip", photo_url: null, stable_name: "Randwick", trainer_id: "t1", trainer: { id: "t1", name: "Chris Waller", display_name: "Chris Waller" } },
+  { id: "h10", display_name: "Golden Slipper", racing_name: "Golden Slipper", photo_url: null, stable_name: "Rosehill", trainer_id: "t2", trainer: { id: "t2", name: "Peter Moody", display_name: "Peter Moody" } },
+  { id: "h11", display_name: "Sunlight", racing_name: "Sunlight", photo_url: null, stable_name: "Flemington", trainer_id: "t3", trainer: { id: "t3", name: "James Cummings", display_name: "James Cummings" } },
+  { id: "h12", display_name: "Zoustar", racing_name: "Zoustar", photo_url: null, stable_name: "Randwick", trainer_id: "t1", trainer: { id: "t1", name: "Chris Waller", display_name: "Chris Waller" } },
 ];
 
 // Active horses for the quiet-horse check. h1 posted this week (loud); h2/h3

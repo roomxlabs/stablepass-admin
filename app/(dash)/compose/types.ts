@@ -159,8 +159,31 @@ export type MediaDimensions = { width: number; height: number } | null;
  */
 export type MeasureState = "off" | "measuring" | "done";
 
-/** 4:5 — the tallest box a member ever sees. Taller media is cropped to it. */
+/**
+ * 4:5 — the tallest box a NON-REEL asset draws. Taller media is cropped to it.
+ *
+ * No longer "the tallest box a member ever sees": since the 18 Aug 2026 reel
+ * work a portrait VIDEO is exempt from this floor. See REEL_ASPECT_MIN.
+ */
 export const ASPECT_MIN = 0.8;
+/**
+ * 9:16 — the tallest box a REEL draws (client, 18 Aug 2026: a portrait video
+ * follows Instagram's reel treatment, full uncropped ratio, while everything
+ * else keeps the classic card). Only a portrait VIDEO takes this floor.
+ *
+ * A portrait PHOTO does not take it either, but not because it is clamped:
+ * a photo has no Mux asset, so `post.aspect_ratio` is null, so the member
+ * card's `resolveAspect(null)` returns 16:10 and the 4:5 floor is simply
+ * unreachable for it. This screen agrees by returning ASPECT_DEFAULT for a
+ * photo. (Mobile's own comment on REEL_ASPECT_MIN says portrait photos "keep
+ * the 4:5 clamp" — that is aspirational; `lib/feed.ts` nulls the ratio for
+ * anything without a Mux asset, so they never get there. Do not copy it.)
+ *
+ * Duplicated from mobile's REEL_ASPECT_MIN (src/components/post-card.tsx) for
+ * the same reason as the other clamp constants here: separate codebases, no
+ * shared package. The member card is the contract; keep the two in step.
+ */
+export const REEL_ASPECT_MIN = 9 / 16;
 /** 1.91:1 — the widest box a member ever sees. Wider media is cropped to it. */
 export const ASPECT_MAX = 1.91;
 /** 16:10 — used while measuring, and whenever the file cannot be measured. */
@@ -171,6 +194,10 @@ export const ASPECT_DEFAULT = 1.6;
  * clamped to what the member card will render. Unknown or degenerate input
  * falls back to 16:10 so the box is never 0-height.
  *
+ * A PORTRAIT VIDEO IS A REEL and is the one asset exempt from the 4:5 floor —
+ * it draws at its own ratio down to 9:16, exactly as the member card has done
+ * since 18 Aug 2026. See REEL_ASPECT_MIN and the reel branch below.
+ *
  * PHOTOS ALWAYS GET 16:10. A photo has no Mux asset, so it has no
  * `aspect_ratio`, so the member app renders it in the unknown-ratio box by
  * construction. Drawing a photo at its own ratio here would put the preview in
@@ -180,7 +207,19 @@ export const ASPECT_DEFAULT = 1.6;
 export function resolveAspect(dims: MediaDimensions, mediaType: MediaType | null = null): number {
   if (mediaType === "photo") return ASPECT_DEFAULT;
   if (!dims || !(dims.width > 0) || !(dims.height > 0)) return ASPECT_DEFAULT;
-  return Math.min(ASPECT_MAX, Math.max(ASPECT_MIN, dims.width / dims.height));
+  const ratio = dims.width / dims.height;
+  // THE REEL BRANCH, mirroring the member card: a portrait VIDEO draws at its
+  // own ratio down to 9:16 instead of being floored at 4:5. The RAW ratio
+  // decides, before any clamp — clamping first would floor a 9:16 at 0.8 and
+  // hide the very thing that makes it a reel.
+  //
+  // `mediaType === "video"` is deliberate rather than "not a photo": `null`
+  // here means a TEXT post (ComposeScreen reports text as null, see its
+  // previewData comment), and a voice post has no frame to measure. Both are
+  // gated out of the media box upstream anyway, but the box must not depend
+  // on that.
+  if (mediaType === "video" && ratio < 1) return Math.max(REEL_ASPECT_MIN, ratio);
+  return Math.min(ASPECT_MAX, Math.max(ASPECT_MIN, ratio));
 }
 
 function gcd(a: number, b: number): number {
@@ -240,7 +279,32 @@ export function describeOrientation(dims: MediaDimensions, mediaType: MediaType 
     // this ticket exists to surface — a 9:16 photo loses most of its height.
     const off = Math.abs(ratio - ASPECT_DEFAULT) > 0.05;
     membersSee = off ? "Members see it cropped to 16:10" : "Members see it at 16:10";
+  } else if (mediaType === "video" && ratio < ASPECT_MIN) {
+    // THE REEL BRANCH. Below 4:5 a portrait video is no longer cropped into a
+    // 4:5 box: it plays as a reel at its own ratio, floored at 9:16, so only
+    // something TALLER than 9:16 actually loses anything.
+    //
+    // NOTE THE TWO DIFFERENT THRESHOLDS, both deliberate. `resolveAspect`
+    // above switches at `ratio < 1`, mirroring the member card's `isReel`.
+    // This readout switches at `ratio < ASPECT_MIN` instead, because between
+    // 4:5 and square the reel and classic paths compute an IDENTICAL box, so
+    // the extra word would tell the operator nothing about framing — and the
+    // printed label can round to 1:1 there, which would put "Square … as a
+    // reel" on one line.
+    //
+    // What that costs, honestly: the member card flips to full reel CHROME at
+    // `ratio < 1` (overlaid header on ink scrims, no white header row), so a
+    // 0.9 portrait video is a reel for members while this line still says only
+    // "Members see it at 9:10". This preview does not model the reel chrome at
+    // all — the ratio matches, the chrome does not. Out of ENG-747's scope;
+    // see the follow-up on that ticket before extending this copy.
+    membersSee =
+      ratio < REEL_ASPECT_MIN
+        ? "Members see it as a reel, cropped to 9:16"
+        : `Members see it as a reel at ${label}`;
   } else if (ratio < ASPECT_MIN) {
+    // Not a video and not a photo: nothing measurable reaches here today, but
+    // the classic clamp stays the honest answer if anything ever does.
     membersSee = "Members see it cropped to 4:5";
   } else if (ratio > ASPECT_MAX) {
     membersSee = "Members see it cropped to 1.91:1";

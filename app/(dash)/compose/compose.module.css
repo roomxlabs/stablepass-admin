@@ -1,7 +1,11 @@
 /* Compose screen styles — ported 1:1 from the shared mockup
-   (dev-handover/StablePass-mockups/mockups/web/style.css, admin + member-post
-   sections). Scoped as a CSS module because globals.css only carries the shell
-   subset; values reference the global :root tokens so nothing is eyeballed. */
+   (06-stage1-design/mockups/web/style.css, admin + member-post sections; the
+   screen itself is web/admin/screens/03-compose.html). Scoped as a CSS module
+   because globals.css only carries the shell subset; values reference the
+   global :root tokens so nothing is eyeballed.
+
+   The path above used to read `dev-handover/StablePass-mockups/…`, which has
+   never existed anywhere in the workspace — see .rx/gotchas.md. */
 
 /* ---- Topbar buttons (mockup uses small btn-light in the topbar) ---------- */
 .btnLight {
@@ -231,6 +235,84 @@
   font-family: var(--font-sans);
 }
 
+/* ---- Post-type picker (Step 2, ENG-611) ----------------------------------
+   Ported rule-for-rule from `.type-picker` in the mockups' shared style.css
+   (06-stage1-design/mockups/web/style.css), added in the 17 Aug round 5 re-cut
+   that drew this step. Token values come from that stylesheet, not eyeballed:
+   --white ground, --line border, --radius-sm, and --brand-green /
+   --brand-green-soft for the selected option.
+
+   The radio itself is visually hidden but stays focusable and in the a11y tree
+   (opacity, not display:none) — the label is the visible control, so keyboard
+   and screen-reader users still get a real radio group. */
+.typePicker {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
+}
+.typeOption {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 12px 8px;
+  background: var(--white);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--muted);
+  cursor: pointer;
+  /* NOT in the mockup's rule: the mockup's `.type-picker input` is
+     `position:absolute` with no positioned ancestor, so it escapes to whatever
+     is positioned further up. Containing it here keeps the hidden radio inside
+     its own tile. */
+  position: relative;
+}
+.typeOption svg {
+  width: 18px;
+  height: 18px;
+}
+.typeOption input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+.typeOptionSelected {
+  border-color: var(--brand-green);
+  background: var(--brand-green-soft);
+  color: var(--brand-green);
+  font-weight: 600;
+  box-shadow: inset 0 0 0 1px var(--brand-green);
+}
+/* Keyboard focus has to be visible on the LABEL, because the input it belongs
+   to is the hidden one — without this, tabbing through the group is invisible.
+   1px offset, not 2: the grid gutter is 8px, and a 2px ring at 2px offset put
+   a focused tile's outline visually against its neighbour. */
+.typeOption:focus-within {
+  outline: 2px solid var(--brand-green);
+  outline-offset: 1px;
+}
+
+/* Edit mode: the post type is fixed, shown rather than picked. */
+.readOnlyRow {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.readOnlyValue {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--brand-green);
+}
+.readOnlyValue svg {
+  width: 18px;
+  height: 18px;
+}
+
 /* ---- Upload zone --------------------------------------------------------- */
 .uploadZone {
   background: var(--cream-dark);
@@ -299,6 +381,18 @@
   height: 100%;
   object-fit: cover;
   display: block;
+}
+/* Voice (ENG-611): audio has no picture, so the 360px media ground would be a
+   big black rectangle wrapped around a 54px control. Size to the control and
+   drop the ground entirely. */
+.previewAudio {
+  height: auto;
+  background: var(--cream-dark);
+  padding: 18px;
+}
+.previewAudio audio {
+  display: block;
+  width: 100%;
 }
 .previewPlay {
   position: absolute;
@@ -507,72 +601,36 @@
   font-size: 9px;
 }
 
-/* ---- Inline mini preview (right column) ---------------------------------- */
-.miniWrap {
+/* ---- Preview block (readout + member card + footnote) --------------------
+   ONE preview, used in the right column (compact) and in the modal. There used
+   to be a bespoke "mini" card here AND a PostPreview in the modal — two copies
+   of the same card, which is exactly how they drifted apart (ENG-558).
+   Design source: mockups/web/admin/screens/03-compose.html. */
+.previewBlock {
+  min-width: 0;
+}
+/* The detected-orientation line. Admin chrome with no member equivalent, so it
+   is built from the form's hint treatment (mockup: .preview-readout). */
+.previewReadout {
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  margin-bottom: 8px;
+}
+.previewTray {
   background: var(--cream-dark);
   padding: 14px;
   border-radius: 8px;
 }
-.miniCard {
-  background: var(--white);
-  border-radius: 12px;
-  padding: 14px;
-  box-shadow: 0 1px 0 var(--line);
-}
-.miniHead {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin-bottom: 10px;
-}
-.miniAvatar {
-  width: 36px;
-  height: 36px;
-  border-radius: 50%;
-  background: var(--brand-green);
-  color: var(--cream);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-family: var(--font-serif);
-  font-size: 14px;
-  font-weight: 600;
-  flex-shrink: 0;
-}
-.miniName {
-  font-weight: 500;
-  font-size: 14px;
-}
-.miniBy {
-  font-size: 11.5px;
+.previewFootnote {
+  font-size: 12px;
   color: var(--muted);
-}
-.miniMedia {
-  height: 180px;
-  background: #1a1a1a;
-  border-radius: 10px;
-  margin-bottom: 10px;
-  position: relative;
-  overflow: hidden;
-}
-.miniMedia img,
-.miniMedia video {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-}
-.miniBody {
-  font-size: 13px;
-  line-height: 1.5;
-  color: var(--ink);
-  white-space: pre-wrap;
-  word-break: break-word;
-}
-.miniCaption {
+  margin-top: 6px;
   text-align: center;
 }
 
-/* ---- Preview modal (mobile + web device frames) -------------------------- */
+/* ---- Preview modal ------------------------------------------------------- */
 .modalRoot {
   position: fixed;
   inset: 0;
@@ -591,10 +649,18 @@
 .modalPanel {
   position: relative;
   z-index: 1;
-  max-width: 1100px;
+  /* One pane, not two device frames — sized to the card, not to a grid, at a
+     member-realistic column width. The panel still scrolls: at the tallest
+     media box (4:5) on a short viewport the card exceeds 90vh, so the pane
+     owns the overflow rather than the page. */
+  max-width: 420px;
   width: 100%;
   max-height: 90vh;
   overflow-y: auto;
+}
+.modalPanel .previewReadout,
+.modalPanel .previewFootnote {
+  color: rgba(250, 247, 242, 0.7);
 }
 .modalHead {
   display: flex;
@@ -623,88 +689,18 @@
   justify-content: center;
   line-height: 1;
 }
-.frames {
-  display: grid;
-  grid-template-columns: 380px 1fr;
-  gap: 28px;
-  align-items: start;
-}
-.frameLabel {
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-  color: rgba(250, 247, 242, 0.7);
-  margin-bottom: 10px;
-}
-
-/* Phone frame */
-.phone {
-  background: #1a1a1a;
-  border-radius: 34px;
-  padding: 12px;
-  box-shadow: var(--shadow-lg);
-}
-.phoneScreen {
-  background: var(--cream);
-  border-radius: 24px;
-  overflow: hidden;
-  min-height: 520px;
-  padding: 14px;
-}
-
-/* Web (browser) frame */
-.web {
-  background: #1a1a1a;
-  border-radius: 12px;
-  overflow: hidden;
-  box-shadow: var(--shadow-lg);
-}
-.webChrome {
-  display: flex;
-  align-items: center;
-  padding: 8px 14px;
-  background: #2a2a2a;
-  gap: 12px;
-}
-.webDots {
-  display: flex;
-  gap: 6px;
-}
-.webDots span {
-  width: 10px;
-  height: 10px;
-  border-radius: 50%;
-  background: #444;
-}
-.webDots span:nth-child(1) {
-  background: #ff5f57;
-}
-.webDots span:nth-child(2) {
-  background: #ffbd2e;
-}
-.webDots span:nth-child(3) {
-  background: #28c940;
-}
-.webUrl {
-  flex: 1;
-  background: #3d3d3d;
-  border-radius: 6px;
-  padding: 4px 12px;
-  font-size: 11.5px;
-  color: #bfbfbf;
-}
-.webScreen {
-  background: var(--cream);
-  padding: 24px;
-}
-
-/* ---- Member post card (duplicated from the member web design) ------------ */
+/* ---- Member post card (duplicated from the member web design) ------------
+   Geometry locked with the member card (ENG-554): no border, media flush to
+   the card's edges, neutral ground behind unpainted media. The gutter lives on
+   the CHILDREN (margin: 0 18px), not as card padding, which is what lets the
+   media run edge to edge. */
 .postCard {
   background: var(--white);
-  border: 1px solid var(--line);
-  border-radius: var(--radius-md);
+  border: none;
+  border-radius: 12px;
+  box-shadow: 0 1px 0 var(--line);
   overflow: hidden;
+  padding: 18px 0;
   max-width: 560px;
   margin: 0 auto;
 }
@@ -712,7 +708,7 @@
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 16px 22px 14px;
+  margin: 0 18px 12px;
 }
 .postAvatar {
   width: 44px;
@@ -732,10 +728,15 @@
   flex: 1;
   min-width: 0;
 }
+/* Option D typography: Inter 500 on #3A3A38, matching mobile M1 and web W2.
+   Was var(--font-serif)/600 — the member card left Cormorant in ENG-419, and
+   this copy never followed. The colour is a literal on purpose: it is this
+   repo's CSS, not an import of mobile's token. */
 .postHorse {
-  font-family: var(--font-serif);
-  font-size: 18px;
-  font-weight: 600;
+  font-family: var(--font-sans);
+  font-size: 17px;
+  font-weight: 500;
+  color: #3a3a38;
   margin: 0;
   line-height: 1.2;
 }
@@ -748,11 +749,16 @@
   color: var(--brand-green);
   font-weight: 500;
 }
+/* aspect-ratio here is only the FALLBACK while metadata loads — PostPreview
+   sets the measured, clamped ratio inline. 16/10 so the box is never 0-height
+   and never flashes a wrong orientation. The ground is a neutral dark, not
+   --brand-green-dark: members never see a green frame. */
 .postMedia {
   position: relative;
-  background: var(--brand-green-dark);
-  aspect-ratio: 16/9;
+  background: #1a1a1a;
+  aspect-ratio: 16/10;
   overflow: hidden;
+  margin-bottom: 12px;
 }
 .postMedia img,
 .postMedia video {
@@ -770,48 +776,91 @@
   color: rgba(250, 247, 242, 0.6);
   font-size: 13px;
 }
-.postPlay {
-  position: absolute;
-  top: 50%;
-  left: 50%;
-  transform: translate(-50%, -50%);
-  width: 64px;
-  height: 64px;
-  border-radius: 50%;
-  background: rgba(255, 255, 255, 0.95);
+/* The real card's reaction bar + bookmark. Rendered non-interactive: no
+   button, no handler, no cursor affordance. */
+.postActions {
   display: flex;
   align-items: center;
-  justify-content: center;
-  color: var(--brand-green-dark);
+  gap: 10px;
+  margin: 0 18px;
 }
+.postActionHeart {
+  color: var(--brand-green);
+  display: inline-flex;
+}
+.postActionCount {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--ink);
+}
+.postActionSpacer {
+  flex: 1;
+}
+.postActionBookmark {
+  color: var(--muted);
+  display: inline-flex;
+}
+/* BELOW the reaction bar, Instagram-style, as on the member card (5 Aug). */
 .postBody {
-  padding: 16px 22px;
-  font-size: 15px;
-  line-height: 1.55;
+  margin: 12px 18px 0;
+  font-size: 14.5px;
+  line-height: 1.5;
   color: var(--ink);
   white-space: pre-wrap;
   word-break: break-word;
 }
+/* The race badge is a `.pill .pillGreen .pillDot` — the SAME treatment as the
+   Status chip two panels up, and a byte-for-byte match of the mockup rule
+   (mockups/web/style.css `.pill`). The mockup writes it three times on this
+   screen as `<span class="pill green dot">`, including inside the preview card
+   at 03-compose.html:198.
+
+   This class therefore carries no colour, weight, case or padding of its own —
+   an earlier cut of this ticket gave it a solid-green uppercase treatment,
+   which put two different design languages for the same component on one
+   screen (the "● Ready" chip and a "● RACE DAY" block). All it adds is the
+   size the mockup sets inline there, plus flex-shrink so a long horse name
+   cannot squeeze it. */
 .raceBadge {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  background: var(--brand-green);
-  color: var(--cream);
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  padding: 5px 11px;
-  border-radius: var(--radius-pill);
+  font-size: 10.5px;
+  flex-shrink: 0;
+}
+
+/* ---- Compact scale (the right-column pane the mockup draws) --------------
+   Same markup, same component — only the scale changes, so the two placements
+   can never drift into two different cards again. */
+.previewCompact .postCard {
+  padding: 14px 0;
+}
+.previewCompact .postHead {
+  gap: 10px;
+  margin: 0 14px 10px;
+}
+.previewCompact .postAvatar {
+  width: 36px;
+  height: 36px;
+  font-size: 14px;
+}
+.previewCompact .postHorse {
+  font-size: 14px;
+}
+.previewCompact .postByline {
+  font-size: 11.5px;
+}
+.previewCompact .postMedia {
+  margin-bottom: 10px;
+}
+.previewCompact .postActions {
+  margin: 0 14px;
+}
+.previewCompact .postBody {
+  margin: 10px 14px 0;
+  font-size: 13px;
 }
 
 /* ---- Responsive ---------------------------------------------------------- */
 @media (max-width: 1080px) {
   .grid {
-    grid-template-columns: 1fr;
-  }
-  .frames {
     grid-template-columns: 1fr;
   }
 }

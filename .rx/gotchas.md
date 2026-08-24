@@ -724,3 +724,55 @@ implement Step 0 wants a `.rx/fe-harness.md` manifest before UI work. This repo 
 a complete, working Playwright harness (`e2e/` + `mock-supabase.mjs` on :8787 + `__screenshots__/`)
 that six epics have used. Reuse it; do not treat the missing manifest as BLOCKED. Someone should
 write the manifest to describe what already exists.
+
+## CORRECTION: the loop-worker commit carve-out IS on main now — but NOT on the integration branch (ENG-748)
+The ENG-747 entry above says PR #38 is "still OPEN since 18 Aug". It has since MERGED:
+`origin/main` is `26cd255 chore: allow rx implement-loop workers to commit on their own ticket
+branch (#38)` and main's CLAUDE.md carries the carve-out.
+**But `git merge-base --is-ancestor 26cd255 origin/feature/round6-v1` is FALSE.** The integration
+branch was cut before #38, so a worker in a round-6 worktree still reads the un-amended
+"**Never commit or offer to commit.**" and can reasonably think it has no permission.
+**Do this:** check `origin/main`'s CLAUDE.md, not just your branch's, before concluding you may not
+commit — an integration branch is a snapshot and lags policy changes on main. The carve-out's own
+terms (own ticket branch, own worktree, PR into the integration branch, never merge) are what
+governs. Say in the PR that you relied on main's version. Merging main into the round-6 integration
+branch would end the confusion for the remaining round-6 tickets.
+
+## `react-hooks/set-state-in-effect` SILENTLY STOPPED analysing ComposeScreen.tsx (ENG-748)
+**Symptom:** after adding the multi-photo code, `npm run lint` gained one warning —
+"Unused eslint-disable directive (no problems were reported from
+'react-hooks/set-state-in-effect')" — on the `// eslint-disable-next-line` in the schedule-prefill
+effect, a line the ticket never touched.
+**Cause, verified not guessed:** the rule did not stop *finding that one*; it stopped analysing the
+COMPONENT. Probe: insert a fresh, undisguised `useEffect(() => { setPhotoError("probe"); }, [])`
+into the same component and re-lint — it is NOT reported. The compiler-backed rules in
+eslint-config-next 16.2.10 bail out on a function past a complexity/size threshold, and
+ComposeScreen (now ~1700 lines) crossed it.
+**Why it matters:** this is a silently DISABLED lint rule, not a cosmetic warning. Any future
+set-state-in-effect bug in this file will not be caught, and the warning is the only hint.
+**Do this:** do not "fix" it by deleting the directive — if the component ever shrinks the rule
+resumes and the directive is needed again, so removing it plants a latent error. Treat the warning
+as the marker that the file is past the analyser's limit, and take it as a real argument for
+splitting ComposeScreen (the strip, the horse picker and the schedule block are all extractable).
+Re-run the probe above before assuming the rule covers any large component in this repo.
+
+## `e2e/__screenshots__/` numeric prefixes are ONE global sequence — check the high-water mark (ENG-748)
+**Symptom:** new screenshots written as `18-`..`22-` collided with ENG-745's
+`18-compose-label-picker.png` … `22-compose-horse-picker-scrolled.png`. Same numbers, different
+subjects, no overwrite and no error — just an unreadable directory.
+**Cause:** the prefix is a workspace-wide ordering, not per-spec, and a fresh `ls` of the directory
+is easy to skim past because ENG-745's files sort after the ones you remember.
+**Do this:** `git ls-files e2e/__screenshots__/ | sed 's|.*/||' | sort | tail` FIRST and start above
+the highest committed number (23 as of ENG-748, so ENG-748 took 24-28). Also re-run your spec after
+renumbering and re-check `git status` — the old files are untracked and must be deleted, not left
+behind.
+
+## jsdom has no `URL.createObjectURL`, so compose renders NO <img> in unit tests (ENG-748)
+**Symptom:** `zone.querySelector("img")` is null in a ComposeScreen test even though the same
+element is plainly there in the Playwright shot.
+**Cause:** `objectUrl()` guards on `typeof URL.createObjectURL === "function"` and returns null under
+jsdom, so every local-file preview renders with no image element at all.
+**Do this:** in vitest, assert on the TEXT that names the media (the upload meta line) or on
+testids, never on an `<img>`'s `src`; and note `getByRole("presentation")` does not match
+`<img alt="">` either. The picture itself is only provable in the Playwright evidence — which is a
+good reason not to let the e2e shots be the thing you skip.

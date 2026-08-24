@@ -85,6 +85,34 @@ export function isMediaOrderViolation(error: {
 }
 
 /**
+ * True when the failure is "`post_media` is not there at all", rather than a
+ * problem with what we tried to write.
+ *
+ * This exists because of a DEPLOY-ORDER hazard this ticket introduced. Before
+ * ENG-748 a photo post touched only `post`; now every photo save also writes
+ * `post_media`, so admin deployed AHEAD of stablepass-be's migration would 400
+ * on posts that used to work — including single-photo ones, which have no need
+ * of the table at all. The gate (ENG-764) sequences be-deploys-first, but a
+ * regression that depends on humans getting an order right is still a
+ * regression.
+ *
+ * Postgres raises `42P01` (undefined_table); PostgREST usually answers from its
+ * schema cache first with `PGRST205`, so both are matched. Nothing else is —
+ * this must not swallow a permissions or constraint failure.
+ */
+export function isMissingMediaTable(error: {
+  code?: string;
+  message?: string;
+} | null): boolean {
+  if (!error) return false;
+  if (error.code === "42P01" || error.code === "PGRST205") return true;
+  // Defensive: some PostgREST versions report the cache miss with no usable
+  // code. Require the table name so this cannot match an unrelated failure.
+  const m = error.message ?? "";
+  return /could not find the table/i.test(m) && m.includes("post_media");
+}
+
+/**
  * Normalise a `media` array off a request body into the rows to persist.
  *
  * Accepts the paths in DISPLAY order — either bare strings or

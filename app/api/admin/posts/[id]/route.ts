@@ -1,7 +1,12 @@
 import { requireAdmin } from "@/lib/auth/admin";
 import { ok, noContent, fail } from "@/lib/api/envelope";
 import { isLabelCheckViolation, LABEL_ERROR_MESSAGE, normalisePostLabel } from "@/lib/posts/labels";
-import { isMediaOrderViolation, MEDIA_ERROR_MESSAGE, normaliseMediaSet } from "@/lib/posts/media";
+import {
+  isMediaOrderViolation,
+  isMissingMediaTable,
+  MEDIA_ERROR_MESSAGE,
+  normaliseMediaSet,
+} from "@/lib/posts/media";
 
 // camelCase request field → post column.
 const FIELD_MAP: Record<string, string> = {
@@ -74,18 +79,40 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
       rows.map((r) => ({ post_id: id, sort_order: r.sortOrder, media_url: r.mediaUrl })),
       { onConflict: "post_id,sort_order" },
     );
-    // A duplicate ordinal or one outside 0..9 is an editorial/client mistake,
-    // not a server fault — the same 400 the up-front normalise produces.
-    if (isMediaOrderViolation(upsertErr))
-      return fail("validation_failed", MEDIA_ERROR_MESSAGE, 400);
-    if (upsertErr) return fail("update_failed", upsertErr.message, 400);
 
-    const { error: trimErr } = await sb
-      .from("post_media")
-      .delete()
-      .eq("post_id", id)
-      .gte("sort_order", rows.length);
-    if (trimErr) return fail("update_failed", trimErr.message, 400);
+    // DEPLOY ORDER. `post_media` ships in stablepass-be (ENG-740) and the gate
+    // sequences be-deploys-first — but if admin lands ahead of that migration,
+    // this write fails on a table that does not exist yet.
+    //
+    // A SINGLE-photo post needs no row here: `post.media_url` alone is exactly
+    // what it rendered from before this ticket, and ENG-740's own contract says
+    // a post with zero post_media rows is a valid, complete single-photo post.
+    // So degrade to that rather than 400 a post that used to work — this ticket
+    // must not make single-photo posting depend on a migration it never needed.
+    //
+    // A MULTI-photo post genuinely cannot be stored, so it fails loudly and
+    // says why, instead of silently keeping the cover and dropping the rest.
+    const missingTable = isMissingMediaTable(upsertErr);
+    if (missingTable && rows.length > 1)
+      return fail(
+        "media_unavailable",
+        "Multi-photo posts need the post_media table, which is not deployed yet. Publish this as a single photo, or deploy the stablepass-be migration first.",
+        503,
+      );
+    if (!missingTable) {
+      // A duplicate ordinal or one outside 0..9 is an editorial/client mistake,
+      // not a server fault — the same 400 the up-front normalise produces.
+      if (isMediaOrderViolation(upsertErr))
+        return fail("validation_failed", MEDIA_ERROR_MESSAGE, 400);
+      if (upsertErr) return fail("update_failed", upsertErr.message, 400);
+
+      const { error: trimErr } = await sb
+        .from("post_media")
+        .delete()
+        .eq("post_id", id)
+        .gte("sort_order", rows.length);
+      if (trimErr) return fail("update_failed", trimErr.message, 400);
+    }
 
     // THE COMPATIBILITY SEAM. Every existing reader — both front ends,
     // feed_page's `select p.*` — reads post.media_url and knows nothing about

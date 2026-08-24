@@ -278,6 +278,63 @@ describe("ENG-748 · post_media set + media_url mirror", () => {
     expect(upsertCall?.payload).toEqual([{ post_id: "p1", sort_order: 0, media_url: "p1/original" }]);
   });
 
+  // ENG-748 — deploy order. post_media ships in stablepass-be (ENG-740); admin
+  // deployed ahead of that migration must not 400 a post that used to work.
+  describe("post_media is not deployed yet", () => {
+    const missing = {
+      mutate: {
+        error: {
+          code: "PGRST205",
+          message: "Could not find the table 'public.post_media' in the schema cache",
+        },
+      },
+    };
+
+    it("a SINGLE photo still saves — the mirror alone is a complete single-photo post", async () => {
+      asAdmin();
+      state.tables.post_media = missing;
+      state.tables.post = { mutate: { single: { id: "p1", media_url: "p1/original" } } };
+      const r = await PATCH(patchReq({ media: ["p1/original"] }), ctx("p1"));
+      expect(r.status).toBe(200);
+      // The mirror was still written, so every existing client renders it.
+      const update = state.calls.mutations.find((m) => m.table === "post" && m.op === "update");
+      expect(update?.payload).toMatchObject({ media_url: "p1/original" });
+      // And no trailing delete was attempted against a table that is not there.
+      expect(state.calls.mutations.some((m) => m.table === "post_media" && m.op === "delete")).toBe(false);
+    });
+
+    it("a MULTI photo set fails loudly with 503 rather than silently dropping photos", async () => {
+      asAdmin();
+      state.tables.post_media = missing;
+      const r = await PATCH(patchReq({ media: ["p1/original", "p1/photo-1"] }), ctx("p1"));
+      expect(r.status).toBe(503);
+      const j = await r.json();
+      expect(j.error.code).toBe("media_unavailable");
+      expect(j.error.message).toContain("post_media");
+      // Nothing was written to post either — the save did not half-happen.
+      expect(state.calls.mutations.some((m) => m.table === "post" && m.op === "update")).toBe(false);
+    });
+
+    it("42P01 is treated the same as the PostgREST cache miss", async () => {
+      asAdmin();
+      state.tables.post_media = {
+        mutate: { error: { code: "42P01", message: 'relation "post_media" does not exist' } },
+      };
+      state.tables.post = { mutate: { single: { id: "p1" } } };
+      expect((await PATCH(patchReq({ media: ["p1/original"] }), ctx("p1"))).status).toBe(200);
+    });
+
+    it("does NOT swallow an unrelated failure as a missing table", async () => {
+      asAdmin();
+      state.tables.post_media = {
+        mutate: { error: { code: "42501", message: "new row violates row-level security policy" } },
+      };
+      const r = await PATCH(patchReq({ media: ["p1/original"] }), ctx("p1"));
+      expect(r.status).toBe(400);
+      expect((await r.json()).error.code).toBe("update_failed");
+    });
+  });
+
   it("a 23505 unique_violation from the upsert → 400 validation_failed, not a 500", async () => {
     asAdmin();
     state.tables.post_media = {

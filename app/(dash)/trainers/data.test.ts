@@ -93,6 +93,7 @@ describe("toTrainerFormSeed", () => {
     status: "active",
     marketing_visible: true,
     marketing_photo_path: "trainers/t1.jpg",
+    website_url: "https://wallerracing.com.au",
   };
 
   it("seeds the marketing flag and the published photo path", () => {

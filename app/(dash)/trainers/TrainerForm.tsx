@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { supabaseBrowser } from "@/lib/supabase/client";
 import { signPhoto } from "@/lib/storage/photos";
+import { parseWebsiteUrl } from "@/lib/trainers/website-url";
 import { publishMarketingPhoto, unpublishMarketingPhoto } from "./marketingPhoto";
 
 // Add / edit trainer form — matches mockups/web/admin/screens/08-add-trainer.html.
@@ -27,6 +28,13 @@ export type TrainerData = {
   status: "active" | "onboarding";
   marketingVisible: boolean;
   marketingPhotoPath: string | null;
+  /**
+   * ENG-746. REQUIRED, not optional, on purpose: every caller that builds a
+   * seed must decide what to pass. An optional field here would let the edit
+   * page drop `website_url` from its `select(...)` and still typecheck, and the
+   * form would then silently blank a saved website on the next save.
+   */
+  websiteUrl: string | null;
 };
 
 type Props =
@@ -64,6 +72,9 @@ export default function TrainerForm(props: Props) {
   const [stableName, setStableName] = useState(seed?.stableName ?? "");
   const [location, setLocation] = useState(seed?.location ?? "");
   const [bio, setBio] = useState(seed?.bio ?? "");
+  // ENG-746. Held as a STRING (never null) so the input stays controlled; the
+  // empty string is converted back to NULL at save time by parseWebsiteUrl.
+  const [websiteUrl, setWebsiteUrl] = useState(seed?.websiteUrl ?? "");
   const [photoUrl, setPhotoUrl] = useState<string | null>(seed?.photoUrl ?? null);
   // `photoUrl` holds the private-bucket object PATH; sign it for the <img>.
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
@@ -218,6 +229,14 @@ export default function TrainerForm(props: Props) {
       setError("Full name is required.");
       return;
     }
+    // ENG-746. Validated with the SAME function both routes use, so the form can
+    // never send a value the server will reject — and never rejects one it would
+    // have accepted. Checked before `setSaving(true)` so a bad URL costs nothing.
+    const website = parseWebsiteUrl(websiteUrl);
+    if (!website.ok) {
+      setError(website.message);
+      return;
+    }
     setSaving(true);
     try {
       const profile = {
@@ -228,6 +247,10 @@ export default function TrainerForm(props: Props) {
         bio: bio.trim() || null,
         photoUrl,
         marketingVisible,
+        // Always sent, including as null: on PATCH the route writes only the
+        // keys present in the body, so omitting it when empty would make
+        // CLEARING a website impossible.
+        websiteUrl: website.value,
       };
 
       // `savedId` — not the `mode` prop — decides create vs update. After a
@@ -260,12 +283,20 @@ export default function TrainerForm(props: Props) {
         if (!res.ok) {
           setError(
             res.status === 409
-              ? // Deliberately does NOT advise renaming. This is the last line of
-                // defence against duplicates, and it is reachable in a state where
-                // the trainer was already created (a lost response after the
-                // server committed) — telling the admin to change the name is
-                // exactly what turns that into a second live trainer.
-                "A trainer with this name already exists. Open it from the Trainers list rather than adding another."
+              ? // ENG-746 — Mel's block. WHY this 409 means what it says: `slug`
+                // is the ONLY unique constraint on `trainer` (schema.sql; pinned
+                // by the drift guard in route.test.ts), so a 23505 on this insert
+                // is always a slug collision, never anything else. The slug is
+                // derived from Full name, which is why a name that looks free can
+                // still be refused — that is the part the old copy never said.
+                //
+                // The ORDER of the two fixes is deliberate and preserves ENG-766's
+                // reasoning: this 409 is also reachable when the trainer was
+                // already created and the response was lost, so "open the existing
+                // one" must come first. Leading with "rename" is exactly what turns
+                // one lost response into two live trainers. Renaming is still
+                // offered, second, for the genuinely-different-trainer case.
+                `A trainer with this name already exists — the name sets the profile web address (/${slugify(name)}), and each trainer needs its own. Open that trainer from the Trainers list; it may be the one you are adding. If it is genuinely a different trainer, change the full name slightly.`
               : await readError(res),
           );
           return;
@@ -346,6 +377,34 @@ export default function TrainerForm(props: Props) {
               <label className="adm-label">Location</label>
               <input className="adm-input" value={location}
                 onChange={(e) => setLocation(e.target.value)} placeholder="e.g. Rosehill, NSW" />
+            </div>
+          </div>
+
+          {/* ENG-746 — Website. PUBLIC-facing by design: stablepass-web renders it
+              as the "Website" action on the member trainer profile. It belongs in
+              Trainer (identifying information) and explicitly NOT in Contacts:
+              trainer_contact is internal, admin-only data (guardrail #3), and the
+              two must not read to an admin as the same kind of field.
+
+              `type="text"`, not `type="url"`, on purpose. Native URL validation
+              would fire first and replace the message below with the browser's
+              own — and it would not help anyway, since `javascript:alert(1)` is a
+              perfectly valid absolute URL to the platform check. One rule, stated
+              once, shared with the server. */}
+          <div>
+            <label className="adm-label" htmlFor="trainer-website">Website</label>
+            <input
+              id="trainer-website"
+              className="adm-input"
+              type="text"
+              inputMode="url"
+              value={websiteUrl}
+              onChange={(e) => setWebsiteUrl(e.target.value)}
+              placeholder="https://..."
+              data-testid="trainer-website"
+            />
+            <div className="adm-help">
+              Optional. Shown as a link on the trainer&apos;s profile in the app.
             </div>
           </div>
         </div>

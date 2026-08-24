@@ -90,6 +90,7 @@ function editTrainer(over: Partial<TrainerData> = {}): TrainerData {
     status: "active",
     marketingVisible: false,
     marketingPhotoPath: null,
+    websiteUrl: null,
     ...over,
   };
 }

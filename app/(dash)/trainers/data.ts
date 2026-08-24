@@ -58,7 +58,43 @@ export type TrainerDetailRow = {
   status: string | null;
   marketing_visible: boolean | null;
   marketing_photo_path: string | null;
+  /** ENG-746: the per-trainer public website link the member app renders. */
+  website_url: string | null;
 };
+
+// The edit page reads its row with `select(TRAINER_DETAIL_COLUMNS)` and then
+// CASTS the result to TrainerDetailRow. That cast is what makes this constant
+// necessary (ENG-746): a cast cannot check a runtime projection, so dropping a
+// column from a hand-written select string typechecks perfectly, and the field
+// arrives `undefined`, coalesces to null, and the form silently blanks a saved
+// value on the next save. A too-wide projection is just as quiet — PostgREST
+// returns an error the caller swallows and the screen renders empty (see
+// .rx/gotchas.md, ENG-766).
+//
+// Keying the map on `keyof TrainerDetailRow` makes the compiler the guard:
+// adding a field to the type without adding it here fails `tsc`, and the select
+// string is then derived rather than retyped.
+export const TRAINER_DETAIL_COLUMN_MAP: Record<keyof TrainerDetailRow, true> = {
+  id: true,
+  name: true,
+  display_name: true,
+  stable_name: true,
+  location: true,
+  bio: true,
+  photo_url: true,
+  status: true,
+  marketing_visible: true,
+  marketing_photo_path: true,
+  website_url: true,
+};
+
+// Spelled out as a literal rather than `Object.keys(...).join(",")` because
+// supabase-js parses the select string as a TYPE: handing it a plain `string`
+// collapses the result to `GenericStringError` and the row cast stops meaning
+// anything. The literal and the map are kept in step by a test in data.test.ts,
+// so the pair still fails loudly rather than drifting.
+export const TRAINER_DETAIL_COLUMNS =
+  "id,name,display_name,stable_name,location,bio,photo_url,status,marketing_visible,marketing_photo_path,website_url";
 
 export type TrainerFormSeed = {
   id: string;
@@ -71,6 +107,7 @@ export type TrainerFormSeed = {
   status: TrainerStatus;
   marketingVisible: boolean;
   marketingPhotoPath: string | null;
+  websiteUrl: string | null;
 };
 
 export function toTrainerFormSeed(t: TrainerDetailRow): TrainerFormSeed {
@@ -85,6 +122,10 @@ export function toTrainerFormSeed(t: TrainerDetailRow): TrainerFormSeed {
     status: t.status === "onboarding" ? "onboarding" : "active",
     marketingVisible: t.marketing_visible === true,
     marketingPhotoPath: t.marketing_photo_path ?? null,
+    // ENG-746. Seeds the Website field on edit. If this mapping is dropped the
+    // form loads blank and the next save NULLs a website the admin never
+    // touched, so it is asserted directly in data.test.ts.
+    websiteUrl: t.website_url ?? null,
   };
 }
 

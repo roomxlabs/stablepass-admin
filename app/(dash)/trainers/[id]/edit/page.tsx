@@ -2,7 +2,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { supabaseServer } from "@/lib/supabase/server";
 import TrainerForm, { type ContactInput, type TrainerData } from "../../TrainerForm";
-import { toTrainerFormSeed, type TrainerDetailRow } from "../../data";
+import { toTrainerFormSeed, TRAINER_DETAIL_COLUMNS, type TrainerDetailRow } from "../../data";
 import "../../trainers.css";
 
 // Edit trainer — reuses the add-trainer form (mockup 08), pre-filled. Loads the
@@ -20,7 +20,7 @@ export default async function EditTrainerPage({
 
   const { data: t } = await sb
     .from("trainer")
-    .select("id,name,display_name,stable_name,location,bio,photo_url,status,marketing_visible,marketing_photo_path")
+    .select(TRAINER_DETAIL_COLUMNS)
     .eq("id", id)
     .maybeSingle();
   if (!t) notFound();

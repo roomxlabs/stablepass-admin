@@ -384,6 +384,54 @@ const DASH_HORSES = [
   { id: "h5", display_name: "Anamoe", racing_name: "ANAMOE (AUS)", training_status: "spelling", photo_url: null, status: "active" },
 ];
 
+// ---- Storage objects (ENG-749) --------------------------------------------
+// An in-memory object store, so a screenshot of an uploaded photo shows the
+// bytes that were actually PUT rather than a broken <img>. Without this the
+// catch-all answered the sign request with `200 {}`, signPhoto() got no URL,
+// and every photo preview in the evidence would have been empty — which would
+// have made a crop screenshot prove nothing at all.
+const STORAGE = new Map();
+
+async function drainBinary(req) {
+  return new Promise((resolve) => {
+    const chunks = [];
+    req.on("data", (c) => chunks.push(c));
+    req.on("end", () => resolve(Buffer.concat(chunks)));
+    req.on("error", () => resolve(Buffer.alloc(0)));
+  });
+}
+
+// supabase-js uploads from a browser as multipart/form-data, and appends
+// `cacheControl` alongside the file. Take the LARGEST part (always the image)
+// and read that part's own Content-Type, so the stored type reflects what the
+// client actually sent rather than being guessed from the file extension —
+// which is exactly the mislabelling ENG-749 has to avoid.
+function extractUpload(buf, contentTypeHeader) {
+  const fallback = { body: buf, contentType: "application/octet-stream" };
+  const m = /boundary=(?:"([^"]+)"|([^;]+))/i.exec(contentTypeHeader || "");
+  if (!m) return fallback;
+  const boundary = Buffer.from(`--${(m[1] || m[2]).trim()}`);
+  const parts = [];
+  let i = buf.indexOf(boundary);
+  while (i !== -1) {
+    const next = buf.indexOf(boundary, i + boundary.length);
+    if (next === -1) break;
+    const seg = buf.subarray(i + boundary.length, next);
+    const headEnd = seg.indexOf("\r\n\r\n");
+    if (headEnd !== -1) {
+      const head = seg.subarray(0, headEnd).toString("utf8");
+      const ct = /content-type:\s*([^\r\n;]+)/i.exec(head);
+      parts.push({
+        body: seg.subarray(headEnd + 4, Math.max(headEnd + 4, seg.length - 2)),
+        contentType: ct ? ct[1].trim() : "application/octet-stream",
+      });
+    }
+    i = next;
+  }
+  parts.sort((a, b) => b.body.length - a.body.length);
+  return parts[0] ?? fallback;
+}
+
 async function drainBody(req) {
   return new Promise((resolve) => {
     const chunks = [];
@@ -401,6 +449,49 @@ export function startMockSupabase() {
       res.writeHead(204, corsHeaders());
       res.end();
       return;
+    }
+
+    // ENG-749 — Storage. Deliberately BEFORE the shared `drainBody` below:
+    // that helper stringifies the body as utf8, which corrupts image bytes.
+    // These branches cannot shadow anything (the generic table dispatcher only
+    // matches `/rest/v1/`), and DELETE is left to fall through to the existing
+    // catch-all so the marketing-photo removal path is untouched.
+    if (url.pathname.startsWith("/storage/v1/object/")) {
+      const rest = url.pathname.slice("/storage/v1/object/".length);
+      const signed = rest.startsWith("sign/");
+
+      // Mint a signed URL. supabase-js builds the final href as
+      // `${storageUrl}${signedURL}`, so this must be root-relative to /storage/v1.
+      if (req.method === "POST" && signed) {
+        await drainBinary(req);
+        sendJson(res, 200, { signedURL: `/object/sign/${rest.slice(5)}?token=mock` });
+        return;
+      }
+
+      // Serve the stored bytes back to the <img>.
+      if (req.method === "GET" && signed) {
+        const object = STORAGE.get(decodeURIComponent(rest.slice(5)));
+        if (!object) {
+          res.writeHead(404, corsHeaders());
+          res.end();
+          return;
+        }
+        res.writeHead(200, {
+          "Content-Type": object.contentType,
+          "Content-Length": object.body.length,
+          "Cache-Control": "no-store",
+          ...corsHeaders(),
+        });
+        res.end(object.body);
+        return;
+      }
+
+      if (!signed && (req.method === "POST" || req.method === "PUT")) {
+        const stored = extractUpload(await drainBinary(req), req.headers["content-type"]);
+        STORAGE.set(decodeURIComponent(rest), stored);
+        sendJson(res, 200, { Key: rest });
+        return;
+      }
     }
 
     // Always drain the body so the client's request stream completes cleanly.

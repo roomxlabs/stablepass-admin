@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { requireAdmin } from "@/lib/auth/admin";
 import { ok, fail } from "@/lib/api/envelope";
 import { createMuxDirectUpload, MuxError } from "@/lib/mux";
-import { CHECK_VIOLATION, normalisePostLabel } from "@/lib/posts/labels";
+import { isLabelCheckViolation, normalisePostLabel } from "@/lib/posts/labels";
 
 const POST_MEDIA_BUCKET = "post-media"; // T15 private bucket (photo/voice)
 // ENG-611: widened from video|photo. `post.type`'s CHECK has permitted all of
@@ -139,7 +139,9 @@ export async function POST(req: Request) {
   // A `post_label_preset` violation is the operator sending a category this
   // build does not know about (a preset dropped by a later migration, say), not
   // a server fault — surface it as the same 400 the up-front check produces.
-  if (error?.code === CHECK_VIOLATION)
+  // Matched by constraint NAME: a bare 23514 would also swallow `post`'s type /
+  // status / aspect-ratio CHECKs and mislabel them as a category problem.
+  if (isLabelCheckViolation(error))
     return fail("validation_failed", "label must be one of the 13 presets, or null.", 400);
   if (error || !draft) return fail("insert_failed", error?.message ?? "Could not create draft.", 400);
 

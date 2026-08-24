@@ -116,10 +116,37 @@ describe("PATCH /api/admin/posts/:id — edit fields", () => {
 
   it("update violating the label CHECK (23514) → 400 validation_failed, not update_failed", async () => {
     asAdmin();
-    state.tables.post = { mutate: { error: { code: "23514", message: "check violation" } } };
+    // Postgres names the constraint in the message; PostgREST passes it through.
+    state.tables.post = {
+      mutate: { error: { code: "23514", message: `new row for relation \"post\" violates check constraint \"post_label_preset\"` } },
+    };
     const r = await PATCH(patchReq({ label: "Trackwork" }), ctx("p1"));
     expect(r.status).toBe(400);
     const j = await r.json();
     expect(j.error.code).toBe("validation_failed");
+    expect(j.error.message).toContain("13 presets");
+  });
+
+  // `post` carries several CHECKs (type, status, aspect_ratio, label) and they
+  // all raise 23514. Matching the bare CODE made every one of them report
+  // "label must be one of the 13 presets" — including a bad `type`, which is
+  // editable through FIELD_MAP with no validation, so it is reachable today.
+  it("a 23514 from a DIFFERENT constraint keeps its own message", async () => {
+    asAdmin();
+    state.tables.post = {
+      mutate: {
+        error: {
+          code: "23514",
+          message: 'new row for relation "post" violates check constraint "post_type_check"',
+        },
+      },
+    };
+    const r = await PATCH(patchReq({ type: "garbage" }), ctx("p1"));
+    expect(r.status).toBe(400);
+    const j = await r.json();
+    expect(j.error.code).toBe("update_failed");
+    expect(j.error.message).toContain("post_type_check");
+    // The operator must not be sent hunting for a label they never touched.
+    expect(j.error.message).not.toContain("13 presets");
   });
 });

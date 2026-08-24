@@ -329,13 +329,45 @@ describe("POST /api/admin/posts — create draft", () => {
   it("insert violating the label CHECK (23514) → 400 validation_failed, not insert_failed", async () => {
     asAdmin();
     state.tables.horse = { select: { single: { id: "h1" } } };
-    state.tables.post = { mutate: { error: { code: "23514", message: "check violation" } } };
+    // Postgres names the constraint in the message; PostgREST passes it through.
+    state.tables.post = {
+      mutate: {
+        error: {
+          code: "23514",
+          message: 'new row for relation "post" violates check constraint "post_label_preset"',
+        },
+      },
+    };
     const r = await POST(
       postReq({ horseId: "h1", type: "photo", sourceTrainerId: "t1", label: "Trackwork" }),
     );
     expect(r.status).toBe(400);
     const j = await r.json();
     expect(j.error.code).toBe("validation_failed");
+    expect(j.error.message).toContain("13 presets");
+  });
+
+  // Scoped by constraint NAME: `post` also CHECKs type/status/aspect_ratio and
+  // they all raise 23514, so matching the bare code turned an unrelated
+  // constraint failure into a misleading message about a field nobody sent.
+  it("a 23514 from a DIFFERENT constraint keeps its own message", async () => {
+    asAdmin();
+    state.tables.horse = { select: { single: { id: "h1" } } };
+    state.tables.post = {
+      mutate: {
+        error: {
+          code: "23514",
+          message:
+            'new row for relation "post" violates check constraint "post_aspect_ratio_positive"',
+        },
+      },
+    };
+    const r = await POST(postReq({ horseId: "h1", type: "photo", sourceTrainerId: "t1" }));
+    expect(r.status).toBe(400);
+    const j = await r.json();
+    expect(j.error.code).toBe("insert_failed");
+    expect(j.error.message).toContain("post_aspect_ratio_positive");
+    expect(j.error.message).not.toContain("13 presets");
   });
 
   it("403s for a non-admin sending a label — never reaches the DB", async () => {

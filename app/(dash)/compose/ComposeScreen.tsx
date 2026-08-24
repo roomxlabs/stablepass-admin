@@ -28,7 +28,7 @@ import type {
   TrainerOption,
 } from "./types";
 import styles from "./compose.module.css";
-import { POST_LABEL_PRESETS } from "@/lib/posts/labels";
+import { isPostLabel, POST_LABEL_PRESETS } from "@/lib/posts/labels";
 
 /**
  * ENG-745 removed the 240-character caption cap entirely — there is deliberately
@@ -131,13 +131,34 @@ export default function ComposeScreen({
   // Seeded from the post being edited, so an old unlabelled post opens on
   // "No label" and stays unlabelled unless the operator picks one.
   const [label, setLabel] = useState<string>(initial?.label ?? "");
+  const initialLabel = initial?.label ?? "";
   /**
-   * What the BFF is sent: `null` CLEARS the category, and the route treats that
-   * as meaningfully different from the key being absent. Declared here beside
-   * the state rather than further down the component, because every save path
-   * below closes over it.
+   * A stored label this build has no preset for still gets an <option>, so the
+   * control can actually display it.
+   *
+   * Without one the <select> silently falls back to index 0 and reads "No
+   * label" while state holds the real value — the control lying about the post
+   * in front of you, and unfixable by choosing "No label" because that is
+   * already what it shows, so re-picking it fires no change event.
    */
-  const labelForApi = label === "" ? null : label;
+  const unknownLabel = initialLabel !== "" && !isPostLabel(initialLabel) ? initialLabel : null;
+  /**
+   * The category fragment every save spreads in — and it is ABSENT unless the
+   * operator actually moved the picker.
+   *
+   * Absent, null and a preset are three different instructions to the route:
+   * absent leaves the column alone, null clears it, a preset sets it. Sending
+   * the current value unconditionally collapsed the first two, and that broke a
+   * post whose stored label this build does not recognise — which happens the
+   * moment stablepass-be adds or removes a preset and admin has not been
+   * redeployed, the same skew the route's 23514 backstop exists for. The picker
+   * could not display that value, so it fell back to "No label" while state
+   * still held the real one; editing only the caption then either 400'd the
+   * whole save or silently relabelled the post. Not writing what nobody touched
+   * makes all of that go away, and is what the operator meant anyway.
+   */
+  const labelPatch: { label?: string | null } =
+    label === initialLabel ? {} : { label: label === "" ? null : label };
 
   const [file, setFile] = useState<File | null>(null);
   /**
@@ -436,7 +457,7 @@ export default function ComposeScreen({
           sourceTrainerId: bylineId,
           title: title.trim() || undefined,
           body: caption,
-          label: labelForApi,
+          ...labelPatch,
         });
         setDraft(current);
       }
@@ -446,7 +467,7 @@ export default function ComposeScreen({
         title: title.trim() || null,
         body: caption,
         sourceTrainerId: bylineId,
-        label: labelForApi,
+        ...labelPatch,
       });
 
       if (next === "publish") {
@@ -504,7 +525,7 @@ export default function ComposeScreen({
         title: title.trim() || null,
         body: caption,
         sourceTrainerId: bylineId,
-        label: labelForApi,
+        ...labelPatch,
       });
       setAction({ kind: "ok", message: "Changes saved." });
       router.push("/posts");
@@ -524,7 +545,7 @@ export default function ComposeScreen({
         title: title.trim() || null,
         body: caption,
         sourceTrainerId: bylineId,
-        label: labelForApi,
+        ...labelPatch,
       });
       await publishPost(initial.id);
       setAction({ kind: "ok", message: "Post published." });
@@ -557,7 +578,7 @@ export default function ComposeScreen({
         title: title.trim() || null,
         body: caption,
         sourceTrainerId: bylineId,
-        label: labelForApi,
+        ...labelPatch,
       });
       await schedulePost(initial.id, when.toISOString());
       setAction({
@@ -705,8 +726,15 @@ export default function ComposeScreen({
                           >
                             <span className={styles.resultThumb}>
                               {h.photoUrl ? (
+                                /* Lazy since ENG-745 dropped the slice(0, 8):
+                                   the list is the whole roster now, but only
+                                   ~4 rows are visible in the 260px scroll box,
+                                   so eager loading would fire one signed-URL
+                                   request per horse the moment the picker
+                                   opens. The directive below must stay on the
+                                   line directly above the <img>. */
                                 // eslint-disable-next-line @next/next/no-img-element -- remote horse thumb, fixed box
-                                <img src={h.photoUrl} alt="" />
+                                <img src={h.photoUrl} alt="" loading="lazy" />
                               ) : null}
                             </span>
                             <span>
@@ -1024,6 +1052,12 @@ export default function ComposeScreen({
                 style={{ marginBottom: 14 }}
               >
                 <option value="">No label</option>
+                {unknownLabel ? (
+                  // Not one of this build's presets — shown so the operator can
+                  // see what the post actually carries and decide, instead of
+                  // the control quietly claiming it has none.
+                  <option value={unknownLabel}>{unknownLabel} (not in this version)</option>
+                ) : null}
                 {POST_LABEL_PRESETS.map((preset) => (
                   <option key={preset} value={preset}>
                     {preset}

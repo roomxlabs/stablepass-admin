@@ -14,7 +14,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { isPostLabel, normalisePostLabel, POST_LABEL_PRESETS } from "./labels";
+import { isLabelCheckViolation, isPostLabel, normalisePostLabel, POST_LABEL_PRESETS } from "./labels";
 
 /**
  * Locate the sibling stablepass-be checkout.
@@ -161,5 +161,30 @@ describe("isPostLabel / normalisePostLabel", () => {
     expect(normalisePostLabel("")).toBeNull();
     expect(normalisePostLabel("Betting Tips")).toBeUndefined();
     expect(normalisePostLabel(42)).toBeUndefined();
+  });
+});
+
+describe("isLabelCheckViolation", () => {
+  const msg = (c: string) => `new row for relation "post" violates check constraint "${c}"`;
+
+  it("claims a violation of post_label_preset", () => {
+    expect(isLabelCheckViolation({ code: "23514", message: msg("post_label_preset") })).toBe(true);
+    // Some drivers put the constraint in `details` instead.
+    expect(isLabelCheckViolation({ code: "23514", message: "", details: msg("post_label_preset") })).toBe(true);
+  });
+
+  it("does NOT claim another CHECK on the same table", () => {
+    // `post` also CHECKs type, status and aspect_ratio; all raise 23514. The
+    // bare code is not evidence that the label is what went wrong.
+    for (const c of ["post_type_check", "post_status_check", "post_aspect_ratio_positive"]) {
+      expect(isLabelCheckViolation({ code: "23514", message: msg(c) })).toBe(false);
+    }
+  });
+
+  it("does not claim a non-CHECK error, or no error at all", () => {
+    expect(isLabelCheckViolation({ code: "23505", message: msg("post_label_preset") })).toBe(false);
+    expect(isLabelCheckViolation({ code: "PGRST116", message: "no rows" })).toBe(false);
+    expect(isLabelCheckViolation(null)).toBe(false);
+    expect(isLabelCheckViolation({})).toBe(false);
   });
 });

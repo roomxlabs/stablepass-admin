@@ -43,6 +43,28 @@ export type PostLabel = (typeof POST_LABEL_PRESETS)[number];
 /** Postgres check_violation — what an off-list `post.label` write raises. */
 export const CHECK_VIOLATION = "23514";
 
+/** The CHECK constraint that enforces the preset list, by name. */
+export const LABEL_CONSTRAINT = "post_label_preset";
+
+/**
+ * True only for a check_violation raised by `post_label_preset`.
+ *
+ * `23514` alone is NOT enough to blame the label: `post` carries several CHECKs
+ * (`type`, `status`, `post_aspect_ratio_positive`, and this one), and `type` is
+ * editable through `PATCH`'s FIELD_MAP with no validation of its own. Matching
+ * on the bare code turned every one of those into "label must be one of the 13
+ * presets", which is a worse error than the raw constraint message it replaced.
+ * Postgres names the constraint in the message, and PostgREST passes it through.
+ */
+export function isLabelCheckViolation(error: {
+  code?: string;
+  message?: string;
+  details?: string;
+} | null): boolean {
+  if (error?.code !== CHECK_VIOLATION) return false;
+  return `${error.message ?? ""} ${error.details ?? ""}`.includes(LABEL_CONSTRAINT);
+}
+
 /** True for a string that is exactly one of the 13 presets. */
 export function isPostLabel(value: unknown): value is PostLabel {
   return typeof value === "string" && (POST_LABEL_PRESETS as readonly string[]).includes(value);

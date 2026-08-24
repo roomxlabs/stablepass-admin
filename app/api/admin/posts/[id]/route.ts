@@ -1,6 +1,6 @@
 import { requireAdmin } from "@/lib/auth/admin";
 import { ok, noContent, fail } from "@/lib/api/envelope";
-import { CHECK_VIOLATION, normalisePostLabel } from "@/lib/posts/labels";
+import { isLabelCheckViolation, normalisePostLabel } from "@/lib/posts/labels";
 
 // camelCase request field → post column.
 const FIELD_MAP: Record<string, string> = {
@@ -40,7 +40,12 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
   const { data, error } = await sb.from("post").update(patch).eq("id", id).select("*").maybeSingle();
   // Backstop for a preset this build does not know about — same 400 as above,
   // never a 500 (guardrail: an editorial mistake is not a server fault).
-  if (error?.code === CHECK_VIOLATION)
+  //
+  // Scoped to the LABEL constraint by name, not to the bare 23514: `post` also
+  // CHECKs `type`, `status` and `aspect_ratio`, and `type` is editable through
+  // FIELD_MAP above with no validation of its own — so matching the code alone
+  // reported every one of those as a label problem.
+  if (isLabelCheckViolation(error))
     return fail("validation_failed", "label must be one of the 13 presets, or null.", 400);
   if (error) return fail("update_failed", error.message, 400);
   if (!data) return fail("not_found", "Post not found.", 404);

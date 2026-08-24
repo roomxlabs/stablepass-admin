@@ -663,22 +663,32 @@ export function startMockSupabase() {
       return;
     }
     // Compose EDIT mode (ENG-745): `/compose?id=<postId>` reads ONE post with
-    // the horse + trainer embed. Discriminated on `mux_playback_id`, which only
-    // this read selects.
+    // the horse + trainer embed.
     //
-    // It MUST sit ahead of the posts-library branch below. That branch matches
-    // on `status`, and compose's edit select carries `status` too, so otherwise
-    // the library's fixture ARRAY would satisfy this `.maybeSingle()` and edit
-    // mode would hydrate from whichever post happened to be first — the exact
-    // "two handlers can both claim one read" trap in .rx/gotchas.md.
+    // Discriminated on `mux_playback_id` in the select AND an `id=eq.` filter.
+    // BOTH are required, and the filter is the load-bearing half: the posts
+    // LIBRARY server read (app/(dash)/posts/page.tsx:19) also selects
+    // `mux_playback_id`, so keying on the column alone swallowed the library's
+    // list read and handed it this branch's single-row lookup — which, with no
+    // id to match, returned `[]` and rendered an empty table. Only compose's
+    // `.eq("id", id).maybeSingle()` carries `id=eq.`.
+    //
+    // It must also sit AHEAD of the posts-library branch below: that branch
+    // matches on `status`, which compose's edit select carries too, so behind
+    // it the library's fixture ARRAY would satisfy a `.maybeSingle()`.
+    //
+    // Two handlers claiming one read, in both directions — the trap in
+    // .rx/gotchas.md, hit twice while writing this one branch.
+    const editIdParam = url.searchParams.get("id");
     if (
       req.method === "GET" &&
       url.pathname === "/rest/v1/post" &&
-      decodeURIComponent(url.search).includes("mux_playback_id")
+      decodeURIComponent(url.search).includes("mux_playback_id") &&
+      editIdParam &&
+      editIdParam.startsWith("eq.")
     ) {
       const accept = req.headers["accept"] ?? "";
-      const idParam = url.searchParams.get("id");
-      const wanted = idParam && idParam.startsWith("eq.") ? idParam.slice(3) : null;
+      const wanted = editIdParam.slice(3);
       const found = COMPOSE_EDIT_POSTS.find((p) => p.id === wanted) ?? null;
       // Honour column projection for `label` specifically.
       //

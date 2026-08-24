@@ -122,7 +122,6 @@ describe("ComposeScreen", () => {
         title: "New title",
         body: "New caption",
         sourceTrainerId: "t2",
-        label: null,
       }),
     );
     // Editing a published post never touches the create/publish endpoints —
@@ -161,7 +160,6 @@ describe("ComposeScreen", () => {
       title: null,
       body: "Almost ready",
       sourceTrainerId: "t1",
-      label: null,
     });
     expect(api.createDraft).not.toHaveBeenCalled();
   });
@@ -223,7 +221,6 @@ describe("ComposeScreen", () => {
       title: null,
       body: "Spot-on before Saturday.",
       sourceTrainerId: "t1",
-      label: null,
     });
   });
 
@@ -501,7 +498,6 @@ describe("ComposeScreen", () => {
       title: null,
       body: "",
       sourceTrainerId: "t1",
-      label: null,
     });
     expect(api.patchPost.mock.invocationCallOrder[0]).toBeLessThan(
       api.schedulePost.mock.invocationCallOrder[0],
@@ -574,7 +570,6 @@ describe("ComposeScreen", () => {
       title: "Race day",
       body: "Big race Saturday",
       sourceTrainerId: "t1",
-      label: null,
     });
     expect(api.patchPost.mock.invocationCallOrder[0]).toBeLessThan(
       api.schedulePost.mock.invocationCallOrder[0],
@@ -895,17 +890,17 @@ describe("ENG-745 · label picker", () => {
     expect((screen.getByTestId("label-select") as HTMLSelectElement).value).toBe("Trackwork");
   });
 
-  it("opens an OLD unlabelled post on No label and saves it back as null", async () => {
+  it("opens an OLD unlabelled post on No label and does not write a label at all", async () => {
     api.patchPost.mockResolvedValue(undefined);
     render(<ComposeScreen horses={HORSES} trainers={TRAINERS} initial={editInitial(null)} />);
     expect((screen.getByTestId("label-select") as HTMLSelectElement).value).toBe("");
 
-    // Save without touching the picker — the post must stay unlabelled rather
-    // than picking up whichever preset happened to be first in the list.
+    // Save without touching the picker. The key must be ABSENT, not null:
+    // absent tells the route to leave the column alone, which is the only
+    // reading that cannot damage a value this build did not put there.
     fireEvent.click(screen.getByTestId("primary-action"));
-    await waitFor(() =>
-      expect(api.patchPost).toHaveBeenCalledWith("post-745", expect.objectContaining({ label: null })),
-    );
+    await waitFor(() => expect(api.patchPost).toHaveBeenCalled());
+    expect(api.patchPost.mock.calls[0][1]).not.toHaveProperty("label");
   });
 
   it("sends the chosen preset on save", async () => {
@@ -1019,5 +1014,78 @@ describe("ENG-745 · the horse picker is not truncated at 8", () => {
     openPicker();
     fireEvent.click(screen.getByTestId("horse-opt-hz11"));
     expect(screen.getByTestId("horse-pick").textContent).toContain("Horse 11");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// A stored label this build has no preset for. Reachable whenever stablepass-be
+// adds or drops a preset and admin has not been redeployed — the same version
+// skew the routes' 23514 backstop exists for. Found in review; before the fix
+// the <select> fell back to "No label" while state held the real value, so
+// editing only the caption either 400'd the entire save or silently relabelled
+// the post, and the operator could not even correct it (re-picking the option
+// already displayed fires no change event).
+// ---------------------------------------------------------------------------
+describe("ENG-745 · a label this build does not know", () => {
+  const UNKNOWN = "Barrier Trial Report"; // plausible 14th preset, not in ours
+
+  it("shows the stored value instead of pretending there is none", () => {
+    render(<ComposeScreen horses={HORSES} trainers={TRAINERS} initial={editInitial(UNKNOWN)} />);
+    const select = screen.getByTestId("label-select") as HTMLSelectElement;
+
+    // The control must not lie about the post in front of you.
+    expect(select.value).toBe(UNKNOWN);
+    expect(select.selectedIndex).not.toBe(0);
+    expect(select.options[select.selectedIndex].textContent).toContain(UNKNOWN);
+  });
+
+  it("leaves it untouched when the operator edits something else", async () => {
+    api.patchPost.mockResolvedValue(undefined);
+    render(<ComposeScreen horses={HORSES} trainers={TRAINERS} initial={editInitial(UNKNOWN)} />);
+
+    fireEvent.change(screen.getByTestId("caption"), { target: { value: "Just a caption fix" } });
+    fireEvent.click(screen.getByTestId("primary-action"));
+
+    await waitFor(() => expect(api.patchPost).toHaveBeenCalled());
+    const payload = api.patchPost.mock.calls[0][1];
+    // Not sent at all — so the route cannot reject it, and the caption edit
+    // lands instead of being lost to a 400 about a field nobody touched.
+    expect(payload).not.toHaveProperty("label");
+    expect(payload.body).toBe("Just a caption fix");
+  });
+
+  it("still lets the operator replace it with a real preset, or clear it", async () => {
+    api.patchPost.mockResolvedValue(undefined);
+    render(<ComposeScreen horses={HORSES} trainers={TRAINERS} initial={editInitial(UNKNOWN)} />);
+
+    fireEvent.change(screen.getByTestId("label-select"), { target: { value: "Trackwork" } });
+    fireEvent.click(screen.getByTestId("primary-action"));
+    await waitFor(() =>
+      expect(api.patchPost).toHaveBeenCalledWith(
+        "post-745",
+        expect.objectContaining({ label: "Trackwork" }),
+      ),
+    );
+
+    cleanup();
+    vi.clearAllMocks();
+    api.patchPost.mockResolvedValue(undefined);
+    render(<ComposeScreen horses={HORSES} trainers={TRAINERS} initial={editInitial(UNKNOWN)} />);
+    fireEvent.change(screen.getByTestId("label-select"), { target: { value: "" } });
+    fireEvent.click(screen.getByTestId("primary-action"));
+    await waitFor(() =>
+      expect(api.patchPost).toHaveBeenCalledWith(
+        "post-745",
+        expect.objectContaining({ label: null }),
+      ),
+    );
+  });
+
+  it("offers no pass-through option when the stored label IS a preset", () => {
+    render(<ComposeScreen horses={HORSES} trainers={TRAINERS} initial={editInitial("Trial")} />);
+    const select = screen.getByTestId("label-select") as HTMLSelectElement;
+    // Exactly "No label" + the 13 presets; nothing extra bolted on.
+    expect([...select.options].map((o) => o.value)).toEqual(["", ...POST_LABEL_PRESETS]);
+    expect(select.value).toBe("Trial");
   });
 });

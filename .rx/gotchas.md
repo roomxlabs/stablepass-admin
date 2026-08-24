@@ -920,3 +920,45 @@ component prop type, derive the select string from a `Record<keyof RowType, true
 column fails `tsc`, and then actually break each hop in turn and confirm a test goes red before
 trusting the suite. All five hops here were confirmed to fail closed. Note a too-wide projection does
 NOT 500 - PostgREST returns an error the caller swallows and the screen renders empty.
+
+## A worktree needs its OWN `npm install` — the shared checkout has no `.bin` (ENG-749, 25 Aug 2026)
+**Symptom:** `npm test` in a fresh worktree dies with `sh: vitest: command not found`.
+**Cause:** the shared `stablepass-admin/node_modules` is not fully installed, so symlinking
+`node_modules -> ../../../node_modules` resolves but yields no `node_modules/.bin`. The sibling
+worktrees each carry a real install (~366 packages).
+**Do this:** run `npm install` inside the worktree before anything else. Budget ~1 min; it is the
+first thing to do after `git worktree add`, not something to discover at the gate.
+
+## `e2e/mock-supabase.mjs` answered Storage with `200 {}`, so NO photo preview ever rendered (ENG-749)
+**Symptom:** a screenshot of an uploaded photo shows an empty preview box. Easy to read as a CSS bug.
+**Cause:** the file had no Storage routes at all, so `POST /storage/v1/object/sign/...` fell to the
+catch-all `200 {}`; `signPhoto()` then found no `signedURL` and returned null, and the `<img>` got
+`src={undefined}`. Any "the upload worked" screenshot was therefore proving nothing about the bytes.
+**Fixed here:** an in-memory object store now serves uploads back. Two things to know if you touch it:
+1. **Handle binary routes BEFORE the shared `drainBody`** — that helper does
+   `Buffer.concat(chunks).toString("utf8")`, which corrupts image bytes. The Storage branch runs
+   above it and does its own `drainBinary`.
+2. supabase-js uploads from a browser as **multipart/form-data** (it appends `cacheControl`
+   alongside the file), so the body must be split on the boundary and the LARGEST part taken.
+   `signedUrl` is built client-side as `${storageUrl}${signedURL}`, so the mint must return a
+   ROOT-RELATIVE `/object/sign/...` path, not an absolute URL.
+DELETE is deliberately left to the old catch-all so the marketing-photo sweep path is unchanged.
+
+## `expect(getByText("Photo added"))` after a file pick is trivially true on an EDIT page (ENG-749)
+**Symptom:** ENG-766's `failed photo copy warning` spec passed its photo-attached assertion and then
+failed on the NEXT click with "retrying click action".
+**Cause:** the seeded trainer `t1` already has a `photo_url`, so the zone renders "Photo added" from
+first paint. The assertion could never fail, and it masked the fact that ENG-749's crop overlay had
+opened and was intercepting the submit click.
+**Do this:** after a pick, assert on something that was NOT already true — the crop dialog appearing,
+or the preview's `naturalWidth`/dimensions changing. `e2e/photo-crop.spec.ts` asserts the DECODED
+size of the stored object (1600x800 for use-as-is vs 800x800 for a crop), which a rename-only
+"crop" could not fake.
+
+## A shared component inherits `text-align` from whichever screen mounts it (ENG-749)
+**Symptom:** the same crop dialog rendered centred on HorseForm and left-aligned on TrainerForm.
+**Cause:** HorseForm's `.upload-zone` sets `text-align: center`. `position: fixed` takes the dialog
+out of the LAYOUT but not out of the inherited cascade, so the ambient value still applied.
+**Do this:** a component mounted on more than one screen must state its own `text-align` and `color`
+rather than inheriting them. Caught by the screenshots, not by any test — worth a glance at both
+screens' evidence whenever a component is shared.

@@ -7,6 +7,7 @@ import { supabaseBrowser } from "@/lib/supabase/client";
 import { signPhoto } from "@/lib/storage/photos";
 import { parseWebsiteUrl } from "@/lib/trainers/website-url";
 import { slugCollisionMessage } from "@/lib/trainers/slug-collision";
+import PhotoCropField, { type PickedPhoto } from "../components/PhotoCropField";
 import { publishMarketingPhoto, unpublishMarketingPhoto } from "./marketingPhoto";
 
 // Add / edit trainer form — matches mockups/web/admin/screens/08-add-trainer.html.
@@ -97,6 +98,9 @@ export default function TrainerForm(props: Props) {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
+  // ENG-749. The picked file awaiting its crop. Non-null mounts the crop step;
+  // nothing is uploaded until it resolves one way or the other.
+  const [pendingPhoto, setPendingPhoto] = useState<File | null>(null);
 
   // Marketing-site publication (ENG-766). `marketingPhotoPath` is the object
   // currently living in the PUBLIC bucket; `publishWarning` carries a failed
@@ -146,16 +150,34 @@ export default function TrainerForm(props: Props) {
     });
   }
 
-  async function onPhoto(e: React.ChangeEvent<HTMLInputElement>) {
+  // ENG-749. Picking a file no longer uploads it: it opens the crop step, which
+  // hands back the bytes to store. The input is reset so re-picking the SAME
+  // file still fires a change event (an admin who cancels the crop and changes
+  // their mind would otherwise be stuck).
+  function onPhoto(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
+    e.target.value = "";
     if (!file) return;
+    setError(null);
+    setPendingPhoto(file);
+  }
+
+  // ENG-749. `picked.ext` describes the BYTES, not the file the admin chose: a
+  // PNG cropped to JPEG must land on a .jpg key, because ENG-766's marketing
+  // copy derives the public object's key and content type from this extension.
+  // A .png key holding JPEG bytes would publish a mislabelled object to the
+  // public origin. Use-as-is passes the original file and its original
+  // extension straight through, so that path is byte-for-byte what it was.
+  async function uploadPhoto(picked: PickedPhoto) {
+    setPendingPhoto(null);
     setError(null);
     setUploading(true);
     try {
-      const ext = file.name.split(".").pop() || "jpg";
-      const path = `${slugify(name || "trainer")}-${Date.now()}.${ext}`;
+      const path = `${slugify(name || "trainer")}-${Date.now()}.${picked.ext}`;
       const sb = supabaseBrowser();
-      const { error: upErr } = await sb.storage.from(PHOTO_BUCKET).upload(path, file, { upsert: true });
+      const { error: upErr } = await sb.storage
+        .from(PHOTO_BUCKET)
+        .upload(path, picked.blob, { upsert: true, contentType: picked.blob.type || undefined });
       if (upErr) {
         setError(`Photo upload failed: ${upErr.message}`);
       } else {
@@ -503,6 +525,14 @@ export default function TrainerForm(props: Props) {
         </div>
         <div className="adm-card-body">
           <input ref={fileRef} type="file" accept="image/png,image/jpeg" hidden onChange={onPhoto} />
+          {pendingPhoto ? (
+            <PhotoCropField
+              file={pendingPhoto}
+              subject="trainer"
+              onCancel={() => setPendingPhoto(null)}
+              onApply={uploadPhoto}
+            />
+          ) : null}
           <div className={photoUrl ? "upload-zone filled" : "upload-zone"}>
             {photoUrl ? (
               <>

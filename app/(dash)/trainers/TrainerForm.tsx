@@ -290,7 +290,7 @@ export default function TrainerForm(props: Props) {
       // Without this, a rejection mid-save unwound silently: no message, the
       // button simply re-enabled, and the admin had no way to tell whether
       // anything had been written.
-      setError("Something went wrong while saving. Some changes may already be saved — reload before retrying.");
+      setError("Something went wrong while saving. Some changes may already be saved — press Save again to finish, rather than reloading.");
     } finally {
       setSaving(false);
     }

@@ -23,6 +23,8 @@ function makeFakeSb(script: {
   removeError?: { message: string } | null;
   /** Model an RLS-filtered delete: 200, no error, but nothing actually removed. */
   removeFilteredByRls?: boolean;
+  /** The keys that actually exist in the bucket; only these come back from remove(). */
+  existingKeys?: string[];
 }) {
   const calls: Call[] = [];
   const sb = {
@@ -40,9 +42,12 @@ function makeFakeSb(script: {
         },
         remove: async (paths: string[]) => {
           calls.push({ bucket, op: "remove", paths });
-          // storage-api answers with the rows it actually deleted.
+          // storage-api answers with the rows it ACTUALLY deleted — not an echo
+          // of the request. Modelling the echo would let the implementation and
+          // the fake agree with each other and disagree with reality.
+          const present = script.existingKeys ? paths.filter((k) => script.existingKeys!.includes(k)) : paths;
           return {
-            data: script.removeFilteredByRls ? [] : paths.map((name) => ({ name })),
+            data: script.removeFilteredByRls ? [] : present.map((name) => ({ name })),
             error: script.removeError ?? null,
           };
         },
@@ -220,7 +225,8 @@ describe("publishMarketingPhoto — refusing what the public bucket must not hol
 
     expect(r.ok).toBe(false);
     if (r.ok) throw new Error("unreachable");
-    expect(r.message).toMatch(/not a supported format/i);
+    expect(r.message).toMatch(/not supported on the marketing site/i);
+    expect(r.message).toContain("image/svg+xml");
     expect(calls.some((c) => c.op === "upload")).toBe(false);
   });
 
@@ -232,7 +238,7 @@ describe("publishMarketingPhoto — refusing what the public bucket must not hol
     const r = await publishMarketingPhoto(sb, TRAINER_ID, "mystery.jpg");
     expect(r.ok).toBe(false);
     if (r.ok) throw new Error("unreachable");
-    expect(r.message).toMatch(/unrecognised format/i);
+    expect(r.message).toMatch(/that file type is not supported/i);
     expect(calls.some((c) => c.op === "upload")).toBe(false);
   });
 
@@ -331,6 +337,29 @@ describe("unpublishMarketingPhoto — toggle OFF", () => {
     const r = await unpublishMarketingPhoto(sb, TRAINER_ID, JPG);
     expect(r.ok).toBe(false);
     expect(r.path).toBe(JPG);
+  });
+
+  it("succeeds when the sweep removed SOMETHING, even if not the recorded key", async () => {
+    // The recorded path goes stale whenever an earlier publish failed to record
+    // a new extension. The sweep still deletes the object that is really there,
+    // so this must succeed — matching on the recorded key instead of counting
+    // rows would dead-end the Retry button permanently.
+    const { sb } = makeFakeSb({ existingKeys: [PNG] });
+    const r = await unpublishMarketingPhoto(sb, TRAINER_ID, JPG);
+    expect(r).toEqual({ ok: true, path: null });
+  });
+
+  it("does not depend on the shape of the removed-row name", async () => {
+    // FileObject.name is documented as relative to the prefix, and these keys
+    // are nested. Keying the check on it would make every un-publish falsely
+    // fail if that shape is not the full key.
+    const { sb } = makeFakeSb({});
+    const bare = { storage: { from: () => ({
+      remove: async () => ({ data: [{ name: `${TRAINER_ID}.jpg` }], error: null }),
+    }) } } as unknown as SupabaseClient;
+    void sb;
+    const r = await unpublishMarketingPhoto(bare, TRAINER_ID, JPG);
+    expect(r).toEqual({ ok: true, path: null });
   });
 
   it("does not warn when there was no recorded object to remove", async () => {

@@ -52,7 +52,7 @@ const REMOVE_FAILED =
 const copyFailedMessage = (reason?: string) =>
   reason ? `Saved, but the photo could not be published to the marketing site: ${reason}` : COPY_FAILED;
 const unsupportedMessage = (type: string) =>
-  `Saved, but the photo could not be published: ${type} is not a supported format for the marketing site. Use a JPEG, PNG or WebP.`;
+  `Saved, but the photo could not be published: ${type} is not supported on the marketing site. Use a JPEG, PNG or WebP.`;
 
 // The stored private value is a bare object path (e.g. `chris-waller-1723.jpg`).
 export function marketingExt(privatePath: string): string {
@@ -95,29 +95,40 @@ export function marketingPhotoCandidates(trainerId: string): string[] {
 }
 
 /**
- * `expected`, when given, is a key we KNOW should have been deleted.
+ * `mustRemoveSomething` says we KNOW an object existed, so a delete that removed
+ * NOTHING is a failure rather than a no-op.
  *
  * storage-api answers a delete with the rows it actually removed, and a delete
- * that removed nothing because RLS filtered it is byte-identical to one that
- * removed nothing because the keys did not exist: `{ data: [], error: null }`.
- * Without this check an admin whose session had lost its AAL2 claim would see a
- * clean "removed from the site" while the object stayed anonymously fetchable —
- * the one failure mode where this guardrail fails SILENTLY. Un-publish is also
- * the only path with no preceding upload to prove the session can still write.
+ * filtered by RLS is byte-identical to one that matched nothing:
+ * `{ data: [], error: null }`. Without this an admin whose session had lost its
+ * AAL2 claim would see a clean "removed from the site" while the object stayed
+ * anonymously fetchable — the one place this guardrail could fail SILENTLY.
+ *
+ * Deliberately counts rows rather than looking for a specific key. Matching on
+ * `FileObject.name` would tie this to a wire shape we have not measured (the
+ * type documents `name` as relative to the prefix, and these keys are nested),
+ * and if that shape differs EVERY un-publish would falsely report failure. It
+ * would also dead-end the retry whenever the recorded path is stale — the sweep
+ * removes the object that is really there, the recorded key is absent from the
+ * response, and the warning could never clear. Counting rows catches the case
+ * this exists for without either risk.
+ *
+ * Residual, accepted and small: if the object is already gone while a path is
+ * still recorded, this warns once more than strictly necessary. It errs toward
+ * telling the admin to check, which is the right direction for a public asset.
  */
 async function removeKeys(
   sb: SupabaseClient,
   keys: string[],
-  expected: string | null = null,
+  mustRemoveSomething = false,
 ): Promise<boolean> {
   if (keys.length === 0) return true;
   const { data, error } = await sb.storage.from(MARKETING_PHOTO_BUCKET).remove(keys);
   if (error) return false;
-  if (!expected) return true;
-  // Older/faked clients may not return the removed rows; only treat an ARRAY
-  // response as authoritative, so a missing `data` is not read as a failure.
+  if (!mustRemoveSomething) return true;
+  // A client that reports no rows at all opts out rather than failing closed.
   if (!Array.isArray(data)) return true;
-  return data.some((o) => (o as { name?: string })?.name === expected);
+  return data.length > 0;
 }
 
 // Delete every public object for this trainer except `keep` (the one just
@@ -126,12 +137,12 @@ async function sweep(
   sb: SupabaseClient,
   trainerId: string,
   keep: string | null,
-  expected: string | null = null,
+  mustRemoveSomething = false,
 ): Promise<boolean> {
   return removeKeys(
     sb,
     marketingPhotoCandidates(trainerId).filter((p) => p !== keep),
-    expected,
+    mustRemoveSomething,
   );
 }
 
@@ -145,15 +156,14 @@ export async function publishMarketingPhoto(
   // Toggle ON with no photo yet is explicitly allowed: the row carries a null
   // path and the site renders the initials disc (W7 contract). Any previously
   // published object is still swept so it cannot outlive its source.
-  if (!privatePath) {
-    if (!(await sweep(sb, trainerId, null)))
-      return { ok: false, path: previousPath, message: REMOVE_FAILED };
-    return { ok: true, path: null };
-  }
-
-  const target = marketingPhotoPathFor(trainerId, privatePath);
+  const target = privatePath ? marketingPhotoPathFor(trainerId, privatePath) : null;
 
   try {
+    if (!privatePath) {
+      if (!(await sweep(sb, trainerId, null)))
+        return { ok: false, path: previousPath, message: REMOVE_FAILED };
+      return { ok: true, path: null };
+    }
     const signed = await signPhoto(sb, TRAINER_PHOTO_BUCKET, privatePath);
     if (!signed) return { ok: false, path: previousPath, message: COPY_FAILED };
 
@@ -175,10 +185,10 @@ export async function publishMarketingPhoto(
       return {
         ok: false,
         path: previousPath,
-        message: unsupportedMessage(blob.type || "an unrecognised format"),
+        message: unsupportedMessage(blob.type || "that file type"),
       };
 
-    const { error } = await sb.storage.from(MARKETING_PHOTO_BUCKET).upload(target, blob, {
+    const { error } = await sb.storage.from(MARKETING_PHOTO_BUCKET).upload(target!, blob, {
       upsert: true,
       contentType: blob.type || EXT_CONTENT_TYPE[marketingExt(privatePath)],
     });
@@ -220,9 +230,9 @@ export async function unpublishMarketingPhoto(
   // an upload succeeded but recording the path did not, and treating it as
   // "nothing to do" is what let an object outlive its trainer's consent.
   try {
-    // When a path IS recorded we know that object exists, so require the delete
-    // to actually report removing it — see removeKeys.
-    if (!(await sweep(sb, trainerId, null, publishedPath)))
+    // When a path IS recorded we know an object existed, so require the delete
+    // to actually report removing something — see removeKeys.
+    if (!(await sweep(sb, trainerId, null, publishedPath !== null)))
       return { ok: false, path: publishedPath, message: REMOVE_FAILED };
     return { ok: true, path: null };
   } catch {

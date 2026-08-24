@@ -1394,6 +1394,62 @@ describe("ENG-748 · multi-photo compose", () => {
     });
   });
 
+  describe("reordering while an upload is still in flight", () => {
+    it("settles the RIGHT photo — completion matches by PATH, not by index", async () => {
+      // The trap: the upload loop resolves slot by slot while the operator is
+      // free to reorder underneath it. Matching a finished upload back to a tile
+      // by ARRAY INDEX would settle whichever photo has since moved into that
+      // slot — so a photo whose bytes never landed gets marked uploaded and
+      // persisted, and its post_media row points at an object that is not there.
+      //
+      // The reorder therefore has to happen while slot 1 is genuinely IN
+      // FLIGHT. An earlier version of this test reordered after every upload
+      // had settled and passed even with index-based matching, because the
+      // state rides on the photo object and a reorder just moves the objects —
+      // it proved nothing. Verified by mutation: index-based matching turns
+      // this version red.
+      api.createDraft.mockResolvedValue(draftWithSlots(3));
+      api.patchPost.mockResolvedValue(undefined);
+      api.publishPost.mockResolvedValue(undefined);
+
+      let failSlot1!: (e: Error) => void;
+      const slot1 = new Promise<void>((_, reject) => {
+        failSlot1 = reject;
+      });
+      api.uploadPhotoToStorage
+        .mockResolvedValueOnce(undefined) // slot 0 lands
+        .mockReturnValueOnce(slot1) // slot 1 hangs
+        .mockResolvedValueOnce(undefined); // slot 2 lands
+
+      renderScreen();
+      pickHorse("horse-opt-h1");
+      selectType("photo");
+      fireEvent.change(screen.getByTestId("media-input"), { target: { files: photoFiles(3) } });
+
+      // Wait until slot 1 is the one in flight, then reorder underneath it:
+      // move p3 (index 2) to the front, so the order is [p3, p1, p2] and the
+      // in-flight photo p2 has moved from index 1 to index 2.
+      await waitFor(() => expect(api.uploadPhotoToStorage).toHaveBeenCalledTimes(2));
+      fireEvent.click(screen.getByTestId("photo-up-2"));
+      fireEvent.click(screen.getByTestId("photo-up-1"));
+
+      failSlot1(new Error("network died"));
+      await waitFor(() => expect(api.uploadPhotoToStorage).toHaveBeenCalledTimes(3));
+
+      // The failure must land on p2 — now at index 2 — NOT on index 1, which
+      // is what an index-based matcher would have marked.
+      await waitFor(() => expect(screen.getByTestId("photo-retry-2")).toBeTruthy());
+      expect(screen.queryByTestId("photo-retry-1")).toBeNull();
+      expect(screen.queryByTestId("photo-retry-0")).toBeNull();
+
+      // The saved set is the two that really uploaded, in display order, with
+      // the failed one absent — and the mirror is the new position 0.
+      fireEvent.click(screen.getByTestId("primary-action"));
+      await waitFor(() => expect(api.patchPost).toHaveBeenCalled());
+      expect(api.patchPost.mock.calls[0][1].media).toEqual(["p1/photo-2", "p1/original"]);
+    });
+  });
+
   describe("a mid-way upload failure", () => {
     it("keeps the uploaded set, marks the failure, and offers a retry", async () => {
       api.createDraft.mockResolvedValue(draftWithSlots(3));

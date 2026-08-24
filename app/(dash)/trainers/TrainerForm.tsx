@@ -296,7 +296,7 @@ export default function TrainerForm(props: Props) {
                 // one" must come first. Leading with "rename" is exactly what turns
                 // one lost response into two live trainers. Renaming is still
                 // offered, second, for the genuinely-different-trainer case.
-                `A trainer with this name already exists — the name sets the profile web address (/${slugify(name)}), and each trainer needs its own. Open that trainer from the Trainers list; it may be the one you are adding. If it is genuinely a different trainer, change the full name slightly.`
+                `A trainer with this name already exists. The name sets the profile web address (/${slugify(name)}), and each trainer needs its own. Open that trainer from the Trainers list; it may be the one you are adding. If it is genuinely a different trainer, change the full name slightly.`
               : await readError(res),
           );
           return;

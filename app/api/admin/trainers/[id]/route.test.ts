@@ -103,4 +103,78 @@ describe("PATCH /api/admin/trainers/:id — update trainer", () => {
     const j = await r.json();
     expect(j.error.code).toBe("validation_failed");
   });
+
+  it("patches website_url", async () => {
+    asAdmin();
+    state.tables.trainer = { mutate: { single: { id: "t1" } } };
+    const r = await PATCH(patchReq({ websiteUrl: "https://wallerracing.com.au" }), ctx);
+    expect(r.status).toBe(200);
+    const upd = state.calls.mutations.find((m) => m.table === "trainer" && m.op === "update");
+    expect(upd?.payload.website_url).toBe("https://wallerracing.com.au");
+  });
+
+  it("trims the website before writing", async () => {
+    asAdmin();
+    state.tables.trainer = { mutate: { single: { id: "t1" } } };
+    const r = await PATCH(patchReq({ websiteUrl: "  https://wallerracing.com.au  " }), ctx);
+    expect(r.status).toBe(200);
+    const upd = state.calls.mutations.find((m) => m.table === "trainer" && m.op === "update");
+    expect(upd?.payload.website_url).toBe("https://wallerracing.com.au");
+  });
+
+  it("clears the website when the field is emptied", async () => {
+    asAdmin();
+    state.tables.trainer = { mutate: { single: { id: "t1" } } };
+    const r = await PATCH(patchReq({ websiteUrl: "" }), ctx);
+    expect(r.status).toBe(200);
+    const upd = state.calls.mutations.find((m) => m.table === "trainer" && m.op === "update");
+    // A null website MUST survive the validation - this is the un-set path.
+    expect(upd?.payload.website_url).toBe(null);
+  });
+
+  it("clears the website when explicitly null", async () => {
+    asAdmin();
+    state.tables.trainer = { mutate: { single: { id: "t1" } } };
+    const r = await PATCH(patchReq({ websiteUrl: null }), ctx);
+    expect(r.status).toBe(200);
+    const upd = state.calls.mutations.find((m) => m.table === "trainer" && m.op === "update");
+    expect(upd?.payload.website_url).toBe(null);
+  });
+
+  it("400s on a javascript: url", async () => {
+    asAdmin();
+    const r = await PATCH(patchReq({ websiteUrl: "javascript:alert(1)" }), ctx);
+    expect(r.status).toBe(400);
+    const j = await r.json();
+    expect(j.error.code).toBe("validation_failed");
+    const upd = state.calls.mutations.find((m) => m.table === "trainer" && m.op === "update");
+    expect(upd).toBeUndefined();
+  });
+
+  it("400s on a bare domain", async () => {
+    asAdmin();
+    const r = await PATCH(patchReq({ websiteUrl: "wallerracing.com.au" }), ctx);
+    expect(r.status).toBe(400);
+    const j = await r.json();
+    expect(j.error.code).toBe("validation_failed");
+  });
+
+  it("leaves website_url untouched when the key is absent", async () => {
+    asAdmin();
+    state.tables.trainer = { mutate: { single: { id: "t1" } } };
+    const r = await PATCH(patchReq({ location: "X" }), ctx);
+    expect(r.status).toBe(200);
+    const upd = state.calls.mutations.find((m) => m.table === "trainer" && m.op === "update");
+    expect("website_url" in upd!.payload).toBe(false);
+  });
+
+  it("echoes website_url back", async () => {
+    // Same reasoning as app/api/admin/trainers/route.test.ts: the fake's
+    // builder never records the `.select()` argument, so the only way to
+    // prove the echo list carries the column is to read the route source.
+    const { readFileSync } = await import("node:fs");
+    const src = readFileSync(new URL("./route.ts", import.meta.url), "utf8");
+    const selectCall = src.match(/\.select\("([^"]+)"\)/);
+    expect(selectCall?.[1]).toContain("website_url");
+  });
 });

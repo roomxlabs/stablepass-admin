@@ -84,4 +84,70 @@ describe("POST /api/admin/trainers — create trainer", () => {
     const j = await r.json();
     expect(j.error.code).toBe("validation_failed");
   });
+
+  it("persists website_url on create", async () => {
+    asAdmin();
+    state.tables.trainer = { mutate: { single: { id: "t1", name: "X", slug: "x", status: "active" } } };
+    const r = await POST(postReq({ name: "X", slug: "x", websiteUrl: "https://wallerracing.com.au" }));
+    expect(r.status).toBe(201);
+    const ins = state.calls.mutations.find((m) => m.table === "trainer" && m.op === "insert");
+    expect(ins?.payload.website_url).toBe("https://wallerracing.com.au");
+  });
+
+  it("trims a website before storing it", async () => {
+    asAdmin();
+    state.tables.trainer = { mutate: { single: { id: "t1", name: "X", slug: "x", status: "active" } } };
+    const r = await POST(postReq({ name: "X", slug: "x", websiteUrl: "  https://wallerracing.com.au  " }));
+    expect(r.status).toBe(201);
+    const ins = state.calls.mutations.find((m) => m.table === "trainer" && m.op === "insert");
+    expect(ins?.payload.website_url).toBe("https://wallerracing.com.au");
+  });
+
+  it("stores an empty website as null", async () => {
+    asAdmin();
+    state.tables.trainer = { mutate: { single: { id: "t1", name: "X", slug: "x", status: "active" } } };
+    const r = await POST(postReq({ name: "X", slug: "x", websiteUrl: "" }));
+    expect(r.status).toBe(201);
+    const ins = state.calls.mutations.find((m) => m.table === "trainer" && m.op === "insert");
+    expect(ins?.payload.website_url).toBe(null);
+  });
+
+  it("stores an omitted website as null", async () => {
+    asAdmin();
+    state.tables.trainer = { mutate: { single: { id: "t1", name: "X", slug: "x", status: "active" } } };
+    const r = await POST(postReq({ name: "X", slug: "x" }));
+    expect(r.status).toBe(201);
+    const ins = state.calls.mutations.find((m) => m.table === "trainer" && m.op === "insert");
+    expect(ins?.payload.website_url).toBe(null);
+  });
+
+  it("400s on a javascript: url (never reaches the database)", async () => {
+    asAdmin();
+    const r = await POST(postReq({ name: "X", slug: "x", websiteUrl: "javascript:alert(1)" }));
+    expect(r.status).toBe(400);
+    const j = await r.json();
+    expect(j.error.code).toBe("validation_failed");
+    // The refusal happens before the insert is ever attempted.
+    const ins = state.calls.mutations.find((m) => m.table === "trainer");
+    expect(ins).toBeUndefined();
+  });
+
+  it("400s on a bare domain (web would render no link for it)", async () => {
+    asAdmin();
+    const r = await POST(postReq({ name: "X", slug: "x", websiteUrl: "wallerracing.com.au" }));
+    expect(r.status).toBe(400);
+    const j = await r.json();
+    expect(j.error.code).toBe("validation_failed");
+  });
+
+  it("echoes website_url back to the form", async () => {
+    // lib/testing/supabase-fake.ts's builder does not record the `.select()`
+    // argument (its `select` method is a no-op passthrough), so there is
+    // nothing on `state.calls` to assert through. Reading the route source
+    // directly is the only way to prove the echo list carries the column.
+    const { readFileSync } = await import("node:fs");
+    const src = readFileSync(new URL("./route.ts", import.meta.url), "utf8");
+    const selectCall = src.match(/\.select\("([^"]+)"\)/);
+    expect(selectCall?.[1]).toContain("website_url");
+  });
 });

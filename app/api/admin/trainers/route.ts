@@ -1,5 +1,6 @@
 import { requireAdmin } from "@/lib/auth/admin";
 import { created, fail } from "@/lib/api/envelope";
+import { parseWebsiteUrl } from "@/lib/trainers/website-url";
 
 // POST /api/admin/trainers — create a trainer (content source, not a user).
 // Admin-only (requireAdmin → 403). `slug` is unique; a collision returns 409
@@ -16,6 +17,11 @@ export async function POST(req: Request) {
     return fail("validation_failed", "status must be 'active' or 'onboarding'.", 400);
   if (b.marketingVisible !== undefined && typeof b.marketingVisible !== "boolean")
     return fail("validation_failed", "marketingVisible must be a boolean.", 400);
+  // website_url is PUBLIC-facing: stablepass-web renders it on the member trainer
+  // profile, so it is validated with the exact same rule the admin form uses
+  // (see lib/trainers/website-url.ts) rather than trusting the client's own check.
+  const website = parseWebsiteUrl(b.websiteUrl);
+  if (!website.ok) return fail("validation_failed", website.message, 400);
 
   // marketing_visible defaults to false so a trainer is never published to
   // the public marketing site by accident.
@@ -31,8 +37,9 @@ export async function POST(req: Request) {
       photo_url: b.photoUrl ?? null,
       status: b.status ?? "active",
       marketing_visible: b.marketingVisible === true,
+      website_url: website.value,
     })
-    .select("id,name,display_name,slug,status,marketing_visible")
+    .select("id,name,display_name,slug,status,marketing_visible,website_url")
     .single();
 
   if (error) {

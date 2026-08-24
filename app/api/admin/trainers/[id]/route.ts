@@ -1,5 +1,6 @@
 import { requireAdmin } from "@/lib/auth/admin";
 import { ok, fail } from "@/lib/api/envelope";
+import { parseWebsiteUrl } from "@/lib/trainers/website-url";
 
 // PATCH /api/admin/trainers/:id — update trainer profile / roster status.
 // Admin-only. Only the fields present in the body are written (partial update);
@@ -14,6 +15,7 @@ const FIELD_MAP: Record<string, string> = {
   status: "status",
   marketingVisible: "marketing_visible",
   marketingPhotoPath: "marketing_photo_path",
+  websiteUrl: "website_url",
 };
 
 export async function PATCH(req: Request, { params }: { params: Promise<{ id: string }> }) {
@@ -37,6 +39,18 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
       return fail("validation_failed", "marketingPhotoPath must be a relative object path.", 400);
   }
 
+  // Only validate when the key is present, so a partial update that omits
+  // websiteUrl entirely leaves the column untouched (see the FIELD_MAP loop
+  // below). Write the normalised value straight back onto `b` here, because
+  // that loop copies `b[key]` verbatim - if we didn't overwrite it, a value
+  // like "  https://x.com  " would be trimmed for validation but land in the
+  // patch with its surrounding whitespace still attached.
+  if ("websiteUrl" in (b ?? {})) {
+    const website = parseWebsiteUrl(b.websiteUrl);
+    if (!website.ok) return fail("validation_failed", website.message, 400);
+    b.websiteUrl = website.value;
+  }
+
   const patch: Record<string, unknown> = {};
   for (const key in FIELD_MAP) if (key in (b ?? {})) patch[FIELD_MAP[key]] = b[key];
   if (Object.keys(patch).length === 0)
@@ -46,7 +60,7 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
     .from("trainer")
     .update(patch)
     .eq("id", id)
-    .select("id,name,display_name,slug,stable_name,location,bio,photo_url,status,marketing_visible,marketing_photo_path")
+    .select("id,name,display_name,slug,stable_name,location,bio,photo_url,status,marketing_visible,marketing_photo_path,website_url")
     .single();
 
   if (error) {

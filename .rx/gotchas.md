@@ -776,3 +776,21 @@ jsdom, so every local-file preview renders with no image element at all.
 testids, never on an `<img>`'s `src`; and note `getByRole("presentation")` does not match
 `<img alt="">` either. The picture itself is only provable in the Playwright evidence — which is a
 good reason not to let the e2e shots be the thing you skip.
+
+## An rsync copy of a WORKTREE is not isolated — it keeps pointing at your gitdir (ENG-748)
+**Context:** the ENG-747 entry above says to give a reviewer "an `rsync` copy of the worktree with
+`node_modules` symlinked" so its Playwright run cannot rewrite your screenshots. That advice is
+right about the screenshots and **incomplete about git**.
+**Symptom:** `git -C /tmp/copy log --oneline -1` in the copy reports the commit you made in the
+ORIGINAL worktree seconds ago — even though the copy's files are a stale snapshot.
+**Cause:** a linked worktree's `.git` is a one-line FILE (`gitdir: <repo>/.git/worktrees/<name>`),
+not a directory. rsync copies that line verbatim, so every git command in the copy resolves to the
+SAME gitdir, HEAD and index as the original. Two consequences:
+  * `git status` / `git diff` in the copy describe your tree, not the copy's files.
+  * **`git checkout -- <file>` or `git stash` in the copy writes into the ORIGINAL worktree**, which
+    is exactly what a reviewer does to restore a file after a mutation test.
+**Do this:** three-dot commit-to-commit diffs (`git diff <base>...HEAD`) are safe — they read commits
+only. But if the reviewer will MUTATE files, either (a) delete the copy's `.git` entirely and hand it
+the diff as a patch file, or (b) tell it to restore with `cp` from a backup it makes itself, never
+with `git checkout`. Then verify before you commit:
+`git rev-parse HEAD` + `git status --porcelain` must match what you recorded before dispatching.

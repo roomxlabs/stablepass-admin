@@ -22,5 +22,12 @@ npm run typecheck && npm run lint && npm run build && npm test
 ```
 
 ## Conventions
-- **Never commit or offer to commit.** Stop at `git add` + `git status`.
+- **Never commit or offer to commit** in an interactive session. Stop at `git add` + `git status`.
+  **Exception, added 18 Aug 2026:** an `rx:implement` loop worker MAY commit and open a PR, but only
+  on its own `naufalrafiar/eng-NNN-*` ticket branch inside its own worktree, and only targeting the
+  epic's integration branch. Never commit on `main`, never push straight to an integration branch,
+  never merge. The original rule exists so an agent cannot quietly rewrite history in the shared
+  checkout; an isolated worktree opening a reviewable PR does not carry that risk. Without this
+  carve-out a loop worker finishes its ticket, cannot ship it, and leaves the work staged and
+  uncommitted, which is more fragile than a commit (ENG-616).
 - Node 22. Every route needs a test (403-for-non-admin + happy path). Design source in `.rx/mockups.md`.

@@ -26,9 +26,7 @@ import { TRAINER_PHOTO_BUCKET, signPhoto } from "@/lib/storage/photos";
 
 export const MARKETING_PHOTO_BUCKET = "marketing-photos";
 
-// The public bucket's `allowed_mime_types` is exactly these three (W7). An
-// extension outside the set can never be stored, so we normalise to jpg rather
-// than attempting an upload the bucket will reject.
+// The public bucket's `allowed_mime_types` is exactly these three (W7).
 const EXT_CONTENT_TYPE: Record<string, string> = {
   jpg: "image/jpeg",
   jpeg: "image/jpeg",
@@ -36,6 +34,7 @@ const EXT_CONTENT_TYPE: Record<string, string> = {
   webp: "image/webp",
 };
 const ALLOWED_CONTENT_TYPES = new Set(Object.values(EXT_CONTENT_TYPE));
+const MARKETING_EXTS = Object.keys(EXT_CONTENT_TYPE);
 
 export type MarketingPhotoResult =
   // `path` is the value that should now be stored in trainer.marketing_photo_path.
@@ -47,6 +46,13 @@ const COPY_FAILED =
   "Saved, but the photo has not been published to the marketing site yet. Retry publishing the photo.";
 const REMOVE_FAILED =
   "Saved and hidden from the marketing site, but the published photo could not be removed. Retry removing it.";
+
+// A storage rejection is usually PERMANENT (too large, wrong format), so the
+// reason is shown rather than an unqualified "retry" the admin could loop on.
+const copyFailedMessage = (reason?: string) =>
+  reason ? `Saved, but the photo could not be published to the marketing site: ${reason}` : COPY_FAILED;
+const unsupportedMessage = (type: string) =>
+  `Saved, but the photo could not be published: ${type} is not a supported format for the marketing site. Use a JPEG, PNG or WebP.`;
 
 // The stored private value is a bare object path (e.g. `chris-waller-1723.jpg`).
 export function marketingExt(privatePath: string): string {
@@ -64,19 +70,46 @@ export function marketingPhotoPathFor(trainerId: string, privatePath: string): s
   return `trainers/${trainerId}.${marketingExt(privatePath)}`;
 }
 
-async function removeObject(sb: SupabaseClient, path: string): Promise<boolean> {
-  const { error } = await sb.storage.from(MARKETING_PHOTO_BUCKET).remove([path]);
+/**
+ * Every public key this trainer could possibly occupy.
+ *
+ * Removal must NOT be driven by `trainer.marketing_photo_path`, because the two
+ * ways that pointer can be lost are exactly the two ways an object gets orphaned:
+ *
+ *   1. The upload lands but the PATCH that records the path fails. The DB then
+ *      holds NULL while the object is live, so a later un-publish has nothing to
+ *      delete and silently no-ops.
+ *   2. A replacement photo changes the extension and the delete of the old key
+ *      fails. The path advances to the new key, so the old one is forgotten and
+ *      a retry — seeing previous === target — skips it.
+ *
+ * The key is fully determined by the trainer id plus one of four allowed
+ * extensions, so the whole set is knowable without the database. Sweeping it is
+ * idempotent (Supabase `remove()` ignores keys that do not exist) and costs one
+ * round-trip, which closes both holes at once. W7's migration added the admin
+ * delete policy specifically so consent withdrawal has a path; losing that path
+ * is the failure this guards against.
+ */
+export function marketingPhotoCandidates(trainerId: string): string[] {
+  return MARKETING_EXTS.map((ext) => `trainers/${trainerId}.${ext}`);
+}
+
+async function removeKeys(sb: SupabaseClient, keys: string[]): Promise<boolean> {
+  if (keys.length === 0) return true;
+  const { error } = await sb.storage.from(MARKETING_PHOTO_BUCKET).remove(keys);
   return !error;
 }
 
-/**
- * Copy the trainer's private photo into the public bucket.
- *
- * `previousPath` is the currently-published object (if any). When the new copy
- * lands at a DIFFERENT path — which happens whenever the replacement photo has a
- * different extension — the old object is deleted, otherwise a jpg→png swap
- * would leave the previous image anonymously fetchable at its old URL forever.
- */
+// Delete every public object for this trainer except `keep` (the one just
+// uploaded, if any).
+async function sweep(sb: SupabaseClient, trainerId: string, keep: string | null): Promise<boolean> {
+  return removeKeys(
+    sb,
+    marketingPhotoCandidates(trainerId).filter((p) => p !== keep),
+  );
+}
+
+/** Copy the trainer's private photo into the public bucket. */
 export async function publishMarketingPhoto(
   sb: SupabaseClient,
   trainerId: string,
@@ -85,14 +118,13 @@ export async function publishMarketingPhoto(
 ): Promise<MarketingPhotoResult> {
   // Toggle ON with no photo yet is explicitly allowed: the row carries a null
   // path and the site renders the initials disc (W7 contract). Any previously
-  // published object is still cleaned up so it cannot outlive its source.
+  // published object is still swept so it cannot outlive its source.
   if (!privatePath) {
-    if (previousPath && !(await removeObject(sb, previousPath)))
+    if (!(await sweep(sb, trainerId, null)))
       return { ok: false, path: previousPath, message: REMOVE_FAILED };
     return { ok: true, path: null };
   }
 
-  const ext = marketingExt(privatePath);
   const target = marketingPhotoPathFor(trainerId, privatePath);
 
   try {
@@ -103,13 +135,28 @@ export async function publishMarketingPhoto(
     if (!res.ok) return { ok: false, path: previousPath, message: COPY_FAILED };
     const blob = await res.blob();
 
+    // REFUSE an unexpected format rather than relabelling it. The public bucket
+    // declares allowed_mime_types for a stated reason (W7: an image/svg+xml or
+    // text/html object would be a live document on that public origin), and the
+    // private bucket it is copied FROM sets no such restriction. Passing a
+    // known-good contentType for unknown bytes would launder exactly the case
+    // the allow-list exists to stop, so the allow-list is honoured here too.
+    if (blob.type && !ALLOWED_CONTENT_TYPES.has(blob.type))
+      return { ok: false, path: previousPath, message: unsupportedMessage(blob.type) };
+
     const { error } = await sb.storage.from(MARKETING_PHOTO_BUCKET).upload(target, blob, {
       upsert: true,
-      contentType: ALLOWED_CONTENT_TYPES.has(blob.type) ? blob.type : EXT_CONTENT_TYPE[ext],
+      contentType: blob.type || EXT_CONTENT_TYPE[marketingExt(privatePath)],
     });
-    if (error) return { ok: false, path: previousPath, message: COPY_FAILED };
+    // Surface the storage error itself: "Payload too large" (the public bucket
+    // caps at 10 MB while the private one has no limit) and "mime type not
+    // allowed" are both permanent, and a bare retry prompt would send the admin
+    // round a loop that can never succeed.
+    if (error) return { ok: false, path: previousPath, message: copyFailedMessage(error.message) };
 
-    if (previousPath && previousPath !== target && !(await removeObject(sb, previousPath)))
+    // Sweep every OTHER key for this trainer, not just the recorded previous
+    // one — see marketingPhotoCandidates.
+    if (!(await sweep(sb, trainerId, target)))
       return { ok: false, path: target, message: REMOVE_FAILED };
 
     return { ok: true, path: target };
@@ -131,11 +178,15 @@ export async function publishMarketingPhoto(
  */
 export async function unpublishMarketingPhoto(
   sb: SupabaseClient,
-  publishedPath: string | null,
+  trainerId: string,
+  publishedPath: string | null = null,
 ): Promise<MarketingPhotoResult> {
-  if (!publishedPath) return { ok: true, path: null };
+  // Deliberately sweeps even when the stored path is null. A null path does NOT
+  // prove there is no public object — it is exactly the state left behind when
+  // an upload succeeded but recording the path did not, and treating it as
+  // "nothing to do" is what let an object outlive its trainer's consent.
   try {
-    if (!(await removeObject(sb, publishedPath)))
+    if (!(await sweep(sb, trainerId, null)))
       return { ok: false, path: publishedPath, message: REMOVE_FAILED };
     return { ok: true, path: null };
   } catch {

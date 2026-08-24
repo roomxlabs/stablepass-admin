@@ -42,6 +42,52 @@ type TrainerDbRow = {
   marketing_visible: boolean | null;
 };
 
+// The single trainer row the EDIT page reads, and its mapping into the form's
+// seed shape. Extracted from the page for the same reason listTrainers is: a
+// Server Component cannot be unit-tested, and this mapping is load-bearing —
+// if `marketing_photo_path` fails to seed, the form believes nothing is
+// published, so un-publishing silently leaves a live object in a PUBLIC bucket.
+export type TrainerDetailRow = {
+  id: string;
+  name: string;
+  display_name: string | null;
+  stable_name: string | null;
+  location: string | null;
+  bio: string | null;
+  photo_url: string | null;
+  status: string | null;
+  marketing_visible: boolean | null;
+  marketing_photo_path: string | null;
+};
+
+export type TrainerFormSeed = {
+  id: string;
+  name: string;
+  displayName: string;
+  stableName: string;
+  location: string;
+  bio: string;
+  photoUrl: string | null;
+  status: TrainerStatus;
+  marketingVisible: boolean;
+  marketingPhotoPath: string | null;
+};
+
+export function toTrainerFormSeed(t: TrainerDetailRow): TrainerFormSeed {
+  return {
+    id: t.id,
+    name: t.name,
+    displayName: t.display_name ?? "",
+    stableName: t.stable_name ?? "",
+    location: t.location ?? "",
+    bio: t.bio ?? "",
+    photoUrl: t.photo_url ?? null,
+    status: t.status === "onboarding" ? "onboarding" : "active",
+    marketingVisible: t.marketing_visible === true,
+    marketingPhotoPath: t.marketing_photo_path ?? null,
+  };
+}
+
 export type TrainerListParams = { status?: string | null; q?: string | null };
 
 export type TrainerList = {

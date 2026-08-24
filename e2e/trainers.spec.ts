@@ -62,7 +62,9 @@ test("marketing toggle ON", async ({ page }) => {
   await page.goto("/trainers/t1/edit");
   await expect(page.getByTestId("trainer-form")).toBeVisible({ timeout: 30000 });
   const cb = page.getByTestId("marketing-visible");
-  if (!(await cb.isChecked())) await cb.check();
+  // t1 is seeded marketing_visible in the mock, so this asserts the EDIT PAGE
+  // actually seeds the checkbox rather than tolerating either state.
+  await expect(cb).toBeChecked();
   await expect(cb).toBeChecked();
   // getByText() is a case-insensitive substring match, so the bare string also
   // matches the checkbox's own "Show on marketing site" label — scope to the
@@ -77,7 +79,8 @@ test("marketing toggle OFF", async ({ page }) => {
   await page.goto("/trainers/t1/edit");
   await expect(page.getByTestId("trainer-form")).toBeVisible({ timeout: 30000 });
   const cb = page.getByTestId("marketing-visible");
-  if (await cb.isChecked()) await cb.uncheck();
+  await expect(cb).toBeChecked(); // seeded on from the mock…
+  await cb.uncheck();               // …then turned off for this capture.
   await expect(cb).not.toBeChecked();
   await page.getByRole("heading", { name: "Marketing site" }).scrollIntoViewIfNeeded();
   await page.screenshot({ path: "e2e/__screenshots__/19-trainer-marketing-off.png", fullPage: true });
@@ -91,7 +94,7 @@ test("trainers list On site badge", async ({ page }) => {
   await expect(page.getByTestId("trainers-table")).toBeVisible({ timeout: 30000 });
   await expect(page.getByTestId("on-site-badge").first()).toBeVisible();
   const badgeCount = await page.getByTestId("on-site-badge").count();
-  expect(badgeCount).toBeGreaterThanOrEqual(2);
+  expect(badgeCount).toBe(2);
   await page.screenshot({ path: "e2e/__screenshots__/20-trainers-on-site-badge.png", fullPage: true });
 });
 
@@ -143,7 +146,9 @@ test("failed photo copy warning", async ({ page }) => {
   await expect(page.getByText("Photo added")).toBeVisible({ timeout: 15000 });
 
   const cb = page.getByTestId("marketing-visible");
-  if (!(await cb.isChecked())) await cb.check();
+  // t1 is seeded marketing_visible in the mock, so this asserts the EDIT PAGE
+  // actually seeds the checkbox rather than tolerating either state.
+  await expect(cb).toBeChecked();
 
   await page.getByTestId("submit-trainer").click();
   await expect(page.getByTestId("marketing-photo-warning")).toBeVisible({ timeout: 30000 });

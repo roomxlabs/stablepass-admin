@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { makeFakeClient, blankState, type FakeState } from "@/lib/testing/supabase-fake";
-import { listTrainers, initials, timeAgo } from "./data";
+import { listTrainers, initials, timeAgo, toTrainerFormSeed, type TrainerDetailRow } from "./data";
 
 // listTrainers takes the sb client by injection, so no module mock is needed —
 // we drive results per table through the shared Supabase fake.
@@ -73,6 +73,58 @@ describe("listTrainers", () => {
     const orExpr = state.calls.or.join(" | ");
     expect(orExpr).not.toContain("(");
     expect(orExpr).not.toContain(")");
+  });
+});
+
+// ENG-766. This mapping seeds the edit form, and one field of it is a safety
+// control: if `marketing_photo_path` does not reach the form, the form believes
+// nothing is published, and taking the trainer off the site then leaves a live
+// object in a PUBLIC bucket. It had no coverage at all until this was extracted
+// out of the Server Component.
+describe("toTrainerFormSeed", () => {
+  const row: TrainerDetailRow = {
+    id: "t1",
+    name: "Chris Waller",
+    display_name: "Chris Waller",
+    stable_name: "Chris Waller Racing",
+    location: "Rosehill, NSW",
+    bio: "Leading Sydney trainer.",
+    photo_url: "chris-waller-172.jpg",
+    status: "active",
+    marketing_visible: true,
+    marketing_photo_path: "trainers/t1.jpg",
+  };
+
+  it("seeds the marketing flag and the published photo path", () => {
+    const seed = toTrainerFormSeed(row);
+    expect(seed.marketingVisible).toBe(true);
+    expect(seed.marketingPhotoPath).toBe("trainers/t1.jpg");
+  });
+
+  it("fails closed on a row that carries neither marketing column", () => {
+    const seed = toTrainerFormSeed({ ...row, marketing_visible: null, marketing_photo_path: null });
+    expect(seed.marketingVisible).toBe(false);
+    expect(seed.marketingPhotoPath).toBeNull();
+  });
+
+  it("maps the rest of the profile, coercing nulls to empty strings", () => {
+    const seed = toTrainerFormSeed({
+      ...row,
+      display_name: null,
+      stable_name: null,
+      location: null,
+      bio: null,
+      photo_url: null,
+      status: "onboarding",
+    });
+    expect(seed).toMatchObject({
+      displayName: "",
+      stableName: "",
+      location: "",
+      bio: "",
+      photoUrl: null,
+      status: "onboarding",
+    });
   });
 });
 

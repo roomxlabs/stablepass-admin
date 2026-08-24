@@ -717,8 +717,10 @@ export function startMockSupabase() {
         // EDIT page reads `.eq("trainer_id", id)` — and an unfiltered response
         // there renders every stable's contacts on one trainer's form, which is
         // both wrong evidence and a confusing screenshot.
+        // Scoped to trainer_contact deliberately: this sits in the SHARED
+        // generic dispatcher, and other tables (horse) also carry trainer_id.
         const trainerId = url.searchParams.get("trainer_id");
-        if (trainerId && trainerId.startsWith("eq.")) {
+        if (table === "trainer_contact" && trainerId && trainerId.startsWith("eq.")) {
           const want = trainerId.slice(3);
           rows = rows.filter((r) => r.trainer_id === want);
         }

@@ -32,7 +32,10 @@ vi.mock("@/lib/supabase/client", () => ({
         },
         upload: async (path: string) => {
           h.storage.push({ bucket, op: "upload", path });
-          return { data: null, error: h.script.uploadError };
+          // Only the PUBLIC bucket honours the scripted failure; the form's own
+          // upload into the private bucket must still succeed, otherwise a test
+          // that needs a photo to copy could never get one.
+          return { data: null, error: bucket === "marketing-photos" ? h.script.uploadError : null };
         },
         remove: async (paths: string[]) => {
           h.storage.push({ bucket, op: "remove", paths });
@@ -168,13 +171,16 @@ describe("TrainerForm — saving with the toggle ON copies the photo", () => {
     expect(h.storage.some((c) => c.op === "upload")).toBe(false);
   });
 
-  it("makes no storage call at all when the toggle stays off", async () => {
+  it("never uploads anything while the toggle stays off", async () => {
     render(<TrainerForm mode="edit" trainer={editTrainer()} contacts={[]} />);
     fireEvent.click(screen.getByTestId("submit-trainer"));
 
     await waitFor(() => expect(push).toHaveBeenCalledWith("/trainers"));
     expect(patches()[0].body!.marketingVisible).toBe(false);
-    expect(h.storage.filter((c) => c.bucket === "marketing-photos")).toHaveLength(0);
+    // A save with the toggle off still sweeps the public bucket (cheap,
+    // idempotent, and the only way to be sure nothing was left behind by an
+    // earlier half-completed publish) — but it must never PUT anything there.
+    expect(h.storage.filter((c) => c.op === "upload")).toHaveLength(0);
   });
 });
 
@@ -195,7 +201,10 @@ describe("TrainerForm — toggling OFF removes the published photo", () => {
 
     expect(patches()[0].body!.marketingVisible).toBe(false);
     const removed = h.storage.find((c) => c.op === "remove");
-    expect(removed).toMatchObject({ bucket: "marketing-photos", paths: [published] });
+    expect(removed!.bucket).toBe("marketing-photos");
+    // The sweep is keyed off the trainer id, so it covers the published object
+    // AND any stale one a half-completed earlier publish left behind.
+    expect(removed!.paths).toContain(published);
     expect(patches().at(-1)!.body!.marketingPhotoPath).toBeNull();
   });
 });
@@ -208,7 +217,10 @@ describe("TrainerForm — a failed copy never blocks the save", () => {
     fireEvent.click(screen.getByTestId("submit-trainer"));
 
     const warning = await screen.findByTestId("marketing-photo-warning");
-    expect(warning.textContent).toMatch(/not been published/i);
+    // The storage reason is surfaced: a permanent rejection (too large, wrong
+    // format) must not read as an endlessly retryable transient failure.
+    expect(warning.textContent).toMatch(/could not be published/i);
+    expect(warning.textContent).toContain("storage unavailable");
 
     // The profile save itself went through with the flag set…
     expect(patches()[0].body!.marketingVisible).toBe(true);
@@ -219,34 +231,45 @@ describe("TrainerForm — a failed copy never blocks the save", () => {
     expect(screen.getByTestId("retry-publish")).toBeTruthy();
   });
 
-  it("retry re-runs ONLY the copy — it never creates a second trainer", async () => {
+  it("retry re-runs ONLY the copy, never the profile save", async () => {
     h.script.uploadError = { message: "storage unavailable" };
-    render(<TrainerForm mode="create" />);
-    fireEvent.change(screen.getByTestId("trainer-name"), { target: { value: "New Trainer" } });
-    fireEvent.click(toggle());
-    // Give the create a photo to copy so the copy is actually attempted.
-    fireEvent.click(screen.getByTestId("submit-trainer"));
-    await waitFor(() => expect(bff.some((c) => c.url === "/api/admin/trainers")).toBe(true));
-
-    const createsBefore = bff.filter((c) => c.url === "/api/admin/trainers").length;
-    expect(createsBefore).toBe(1);
-
-    // A create with no photo succeeds outright, so drive the retry path from the
-    // edit case instead where a copy is genuinely attempted.
-    cleanup();
-    bff = [];
-    h.storage.length = 0;
     render(<TrainerForm mode="edit" trainer={editTrainer()} contacts={[]} />);
     fireEvent.click(toggle());
     fireEvent.click(screen.getByTestId("submit-trainer"));
     await screen.findByTestId("marketing-photo-warning");
 
+    const profilePatches = patches().filter((c) => "marketingVisible" in (c.body ?? {})).length;
     h.script.uploadError = null; // the retry succeeds
     fireEvent.click(screen.getByTestId("retry-publish"));
 
     await waitFor(() => expect(push).toHaveBeenCalledWith("/trainers"));
-    // Exactly one profile PATCH carrying the flag; the retry only sent the path.
-    expect(bff.filter((c) => c.url === "/api/admin/trainers")).toHaveLength(0);
+    expect(patches().filter((c) => "marketingVisible" in (c.body ?? {}))).toHaveLength(profilePatches);
     expect(patches().at(-1)!.body!.marketingPhotoPath).toBe(`trainers/${EDIT_ID}.jpg`);
+  });
+
+  // Regression: `isEdit` came from the props and never updated, so after a
+  // create whose copy failed, saving again POSTed a SECOND trainer — and the
+  // 409 handler told the admin to change the name, which made that second
+  // trainer succeed. Two live trainers from one failed photo copy.
+  it("re-submitting after a failed copy on CREATE updates, it does not create again", async () => {
+    h.script.uploadError = { message: "storage unavailable" };
+    const { container } = render(<TrainerForm mode="create" />);
+    fireEvent.change(screen.getByTestId("trainer-name"), { target: { value: "New Trainer" } });
+
+    // A photo must exist for the copy to be attempted at all.
+    const file = new File(["x"], "waller.jpg", { type: "image/jpeg" });
+    fireEvent.change(container.querySelector('input[type="file"]')!, { target: { files: [file] } });
+    await screen.findByText("Photo added");
+
+    fireEvent.click(toggle());
+    fireEvent.click(screen.getByTestId("submit-trainer"));
+    await waitFor(() => expect(bff.filter((c) => c.url === "/api/admin/trainers")).toHaveLength(1));
+
+    // Second submit, exactly as an admin who did not notice the warning would.
+    fireEvent.click(screen.getByTestId("submit-trainer"));
+    await waitFor(() =>
+      expect(bff.some((c) => c.url === `/api/admin/trainers/${NEW_ID}` && c.method === "PATCH")).toBe(true),
+    );
+    expect(bff.filter((c) => c.url === "/api/admin/trainers")).toHaveLength(1);
   });
 });

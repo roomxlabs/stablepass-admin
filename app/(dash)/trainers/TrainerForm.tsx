@@ -172,7 +172,7 @@ export default function TrainerForm(props: Props) {
       const sb = supabaseBrowser();
       const result = marketingVisible
         ? await publishMarketingPhoto(sb, trainerId, photoUrl, marketingPhotoPath)
-        : await unpublishMarketingPhoto(sb, marketingPhotoPath);
+        : await unpublishMarketingPhoto(sb, trainerId, marketingPhotoPath);
 
       if (result.path !== marketingPhotoPath) {
         const res = await fetch(`/api/admin/trainers/${trainerId}`, {
@@ -181,7 +181,9 @@ export default function TrainerForm(props: Props) {
           body: JSON.stringify({ marketingPhotoPath: result.path }),
         });
         if (!res.ok) {
-          setMarketingPhotoPath(marketingPhotoPath);
+          // The object is live but the DB never learned its path. Keep the
+          // warning so the admin retries; the retry re-uploads and re-sweeps,
+          // and an un-publish sweeps by trainer id regardless of what is stored.
           setPublishWarning(await readError(res));
           return false;
         }
@@ -228,9 +230,17 @@ export default function TrainerForm(props: Props) {
         marketingVisible,
       };
 
+      // `savedId` — not the `mode` prop — decides create vs update. After a
+      // create whose photo copy failed we stay on the form to show the retry,
+      // and the trainer now EXISTS; re-submitting must update it. Keying off
+      // `isEdit` instead POSTed again, hit the slug unique constraint, and the
+      // 409 copy below told the admin to change the name — which turned one
+      // failed copy into two live trainers on the public site.
+      const existingId = isEdit ? seed!.id : savedId;
+
       let trainerId: string;
-      if (isEdit) {
-        const res = await fetch(`/api/admin/trainers/${seed!.id}`, {
+      if (existingId) {
+        const res = await fetch(`/api/admin/trainers/${existingId}`, {
           method: "PATCH",
           headers: { "content-type": "application/json" },
           body: JSON.stringify(profile),
@@ -239,7 +249,7 @@ export default function TrainerForm(props: Props) {
           setError(await readError(res));
           return;
         }
-        trainerId = seed!.id;
+        trainerId = existingId;
         await saveContacts(trainerId);
       } else {
         const res = await fetch("/api/admin/trainers", {

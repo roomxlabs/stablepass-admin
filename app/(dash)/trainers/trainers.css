@@ -247,7 +247,7 @@ textarea.adm-input { min-height: 110px; resize: vertical; line-height: 1.55; }
   margin-bottom: 16px;
 }
 
-/* Marketing-site publication (ENG-766) ---------------------------------- */
+/* Marketing-site publication (ENG-766) ----------------------------------- */ */
 /* Appended at the end of the file on purpose: ENG-746 also edits this screen,
    so keeping these rules in one contiguous block at the tail keeps its rebase
    to a trivial fast-forward. Values use the shared style.css tokens. */
@@ -269,7 +269,9 @@ textarea.adm-input { min-height: 110px; resize: vertical; line-height: 1.55; }
 }
 
 /* Retryable "photo not yet published" notice. Amber, not red: the profile save
-   itself succeeded — only the public photo copy is outstanding. */
+   itself succeeded — only the public photo copy is outstanding.
+   The amber pair is the same one `.pill.amber` uses above; style.css has no
+   token for it, so it is repeated here rather than silently diverging. */
 .form-warn {
   display: flex;
   align-items: center;

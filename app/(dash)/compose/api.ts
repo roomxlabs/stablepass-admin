@@ -33,6 +33,8 @@ export async function createDraft(input: {
   sourceTrainerId: string;
   title?: string;
   body?: string;
+  /** ENG-745 — one of the 13 presets, or null for no category. */
+  label?: string | null;
 }): Promise<CreateDraftResponse> {
   const res = await fetch("/api/admin/posts", {
     method: "POST",
@@ -45,7 +47,17 @@ export async function createDraft(input: {
 /** Persist editable fields (title, caption `body`, `source_trainer_id` byline). PATCH. */
 export async function patchPost(
   id: string,
-  patch: { body?: string; sourceTrainerId?: string; title?: string | null },
+  patch: {
+    body?: string;
+    sourceTrainerId?: string;
+    title?: string | null;
+    /**
+     * ENG-745. `null` CLEARS the category; omitting the key leaves the row's
+     * label untouched. The route distinguishes the two, so this must not be
+     * collapsed to `string | undefined`.
+     */
+    label?: string | null;
+  },
 ): Promise<void> {
   const res = await fetch(`/api/admin/posts/${id}`, {
     method: "PATCH",

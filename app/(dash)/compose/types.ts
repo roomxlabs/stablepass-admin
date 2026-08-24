@@ -128,6 +128,13 @@ export type EditInitial = {
   caption: string;
   bylineId: string;
   scheduledFor: string | null;
+  /**
+   * ENG-745 — the editorial category, or null for none. Every post created
+   * before 2026-08-19 is null (there is no backfill), so the picker must open
+   * on "No label" rather than defaulting to a preset and silently labelling an
+   * old post the first time someone edits it.
+   */
+  label: string | null;
   horse: HorseOption;
 };
 

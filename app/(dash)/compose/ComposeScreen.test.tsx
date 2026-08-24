@@ -95,6 +95,7 @@ describe("ComposeScreen", () => {
       title: "Old title",
       caption: "Old caption",
       bylineId: "t1",
+      label: null,
       scheduledFor: null,
       horse: HORSES[0],
     };
@@ -120,6 +121,7 @@ describe("ComposeScreen", () => {
         title: "New title",
         body: "New caption",
         sourceTrainerId: "t2",
+        label: null,
       }),
     );
     // Editing a published post never touches the create/publish endpoints —
@@ -140,6 +142,7 @@ describe("ComposeScreen", () => {
       title: "",
       caption: "Almost ready",
       bylineId: "t1",
+      label: null,
       scheduledFor: null,
       horse: HORSES[0],
     };
@@ -157,6 +160,7 @@ describe("ComposeScreen", () => {
       title: null,
       body: "Almost ready",
       sourceTrainerId: "t1",
+      label: null,
     });
     expect(api.createDraft).not.toHaveBeenCalled();
   });
@@ -218,6 +222,7 @@ describe("ComposeScreen", () => {
       title: null,
       body: "Spot-on before Saturday.",
       sourceTrainerId: "t1",
+      label: null,
     });
   });
 
@@ -495,6 +500,7 @@ describe("ComposeScreen", () => {
       title: null,
       body: "",
       sourceTrainerId: "t1",
+      label: null,
     });
     expect(api.patchPost.mock.invocationCallOrder[0]).toBeLessThan(
       api.schedulePost.mock.invocationCallOrder[0],
@@ -509,6 +515,7 @@ describe("ComposeScreen", () => {
       title: "T",
       caption: "C",
       bylineId: "t1",
+      label: null,
       horse: HORSES[0],
     };
 
@@ -546,6 +553,7 @@ describe("ComposeScreen", () => {
       title: "Race day",
       caption: "Big race Saturday",
       bylineId: "t1",
+      label: null,
       scheduledFor: "2099-06-20T09:30:00.000Z",
       horse: HORSES[0],
     };
@@ -565,6 +573,7 @@ describe("ComposeScreen", () => {
       title: "Race day",
       body: "Big race Saturday",
       sourceTrainerId: "t1",
+      label: null,
     });
     expect(api.patchPost.mock.invocationCallOrder[0]).toBeLessThan(
       api.schedulePost.mock.invocationCallOrder[0],
@@ -580,6 +589,7 @@ describe("ComposeScreen", () => {
       title: "T",
       caption: "C",
       bylineId: "t1",
+      label: null,
       scheduledFor: null,
       horse: HORSES[0],
     };
@@ -611,6 +621,7 @@ describe("ComposeScreen", () => {
       title: "T",
       caption: "C",
       bylineId: "t1",
+      label: null,
       scheduledFor: "2099-06-20T09:30:00.000Z",
       horse: HORSES[0],
     };
@@ -643,6 +654,7 @@ describe("ComposeScreen", () => {
       title: "T",
       caption: "C",
       bylineId: "t1",
+      label: null,
       scheduledFor: null,
       horse: HORSES[0],
     };
@@ -796,6 +808,7 @@ describe("ComposeScreen — preview measurement", () => {
       title: "T",
       caption: "C",
       bylineId: "t1",
+      label: null,
       scheduledFor: null,
       horse: HORSES[0],
     };

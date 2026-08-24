@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { supabaseBrowser } from "@/lib/supabase/client";
 import { signPhoto } from "@/lib/storage/photos";
+import { publishMarketingPhoto, unpublishMarketingPhoto } from "./marketingPhoto";
 
 // Add / edit trainer form — matches mockups/web/admin/screens/08-add-trainer.html.
 // Shared by /trainers/new (create) and /trainers/:id/edit (edit). Contacts are
@@ -24,6 +25,8 @@ export type TrainerData = {
   bio: string;
   photoUrl: string | null;
   status: "active" | "onboarding";
+  marketingVisible: boolean;
+  marketingPhotoPath: string | null;
 };
 
 type Props =
@@ -72,6 +75,19 @@ export default function TrainerForm(props: Props) {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
+
+  // Marketing-site publication (ENG-766). `marketingPhotoPath` is the object
+  // currently living in the PUBLIC bucket; `publishWarning` carries a failed
+  // photo copy, which never blocks the profile save. `savedId` is the trainer
+  // the copy applies to, so a retry after a failed create re-copies rather than
+  // creating a second trainer.
+  const [marketingVisible, setMarketingVisible] = useState(seed?.marketingVisible ?? false);
+  const [marketingPhotoPath, setMarketingPhotoPath] = useState<string | null>(
+    seed?.marketingPhotoPath ?? null,
+  );
+  const [publishWarning, setPublishWarning] = useState<string | null>(null);
+  const [publishing, setPublishing] = useState(false);
+  const [savedId, setSavedId] = useState<string | null>(seed?.id ?? null);
 
   useEffect(() => {
     const stored = seed?.photoUrl;
@@ -145,9 +161,57 @@ export default function TrainerForm(props: Props) {
     }
   }
 
+  // Copy the photo into (or delete it from) the PUBLIC marketing bucket, then
+  // record the resulting path. Deliberately runs AFTER the profile save and can
+  // never fail it: a broken copy leaves marketing_visible written, the path null
+  // and a retryable warning on screen, and the site falls back to the initials
+  // disc (W7 contract). Returns whether the caller may navigate away.
+  async function syncMarketingPhoto(trainerId: string): Promise<boolean> {
+    setPublishing(true);
+    try {
+      const sb = supabaseBrowser();
+      const result = marketingVisible
+        ? await publishMarketingPhoto(sb, trainerId, photoUrl, marketingPhotoPath)
+        : await unpublishMarketingPhoto(sb, marketingPhotoPath);
+
+      if (result.path !== marketingPhotoPath) {
+        const res = await fetch(`/api/admin/trainers/${trainerId}`, {
+          method: "PATCH",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ marketingPhotoPath: result.path }),
+        });
+        if (!res.ok) {
+          setMarketingPhotoPath(marketingPhotoPath);
+          setPublishWarning(await readError(res));
+          return false;
+        }
+      }
+      setMarketingPhotoPath(result.path);
+      if (!result.ok) {
+        setPublishWarning(result.message);
+        return false;
+      }
+      setPublishWarning(null);
+      return true;
+    } finally {
+      setPublishing(false);
+    }
+  }
+
+  // The retry only re-runs the copy against the already-saved trainer — it never
+  // re-submits the profile, so retrying after a create cannot duplicate a trainer.
+  async function retryPublish() {
+    if (!savedId) return;
+    if (await syncMarketingPhoto(savedId)) {
+      router.push("/trainers");
+      router.refresh();
+    }
+  }
+
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
+    setPublishWarning(null);
     if (!name.trim()) {
       setError("Full name is required.");
       return;
@@ -161,8 +225,10 @@ export default function TrainerForm(props: Props) {
         location: location.trim() || null,
         bio: bio.trim() || null,
         photoUrl,
+        marketingVisible,
       };
 
+      let trainerId: string;
       if (isEdit) {
         const res = await fetch(`/api/admin/trainers/${seed!.id}`, {
           method: "PATCH",
@@ -173,7 +239,8 @@ export default function TrainerForm(props: Props) {
           setError(await readError(res));
           return;
         }
-        await saveContacts(seed!.id);
+        trainerId = seed!.id;
+        await saveContacts(trainerId);
       } else {
         const res = await fetch("/api/admin/trainers", {
           method: "POST",
@@ -189,8 +256,15 @@ export default function TrainerForm(props: Props) {
           return;
         }
         const { data } = await res.json();
-        await saveContacts(data.id);
+        trainerId = data.id;
+        await saveContacts(trainerId);
       }
+
+      // The profile is saved at this point. A failed photo copy keeps us on the
+      // form with a retryable warning instead of discarding a successful save.
+      setSavedId(trainerId);
+      if (!(await syncMarketingPhoto(trainerId))) return;
+
       router.push("/trainers");
       router.refresh();
     } finally {
@@ -201,6 +275,21 @@ export default function TrainerForm(props: Props) {
   return (
     <form className="adm-form-wrap" onSubmit={onSubmit} data-testid="trainer-form">
       {error ? <div className="form-err" role="alert">{error}</div> : null}
+
+      {publishWarning ? (
+        <div className="form-warn" role="alert" data-testid="marketing-photo-warning">
+          <span>{publishWarning}</span>
+          <button
+            type="button"
+            className="btn btn-light"
+            onClick={retryPublish}
+            disabled={publishing}
+            data-testid="retry-publish"
+          >
+            {publishing ? "Retrying…" : "Retry"}
+          </button>
+        </div>
+      ) : null}
 
       <div className="adm-card">
         <div className="adm-card-head">
@@ -350,6 +439,40 @@ export default function TrainerForm(props: Props) {
         <div className="adm-card-body">
           <textarea className="adm-input" value={bio} onChange={(e) => setBio(e.target.value)}
             placeholder="Background, stable history, notable horses…" />
+        </div>
+      </div>
+
+      {/* Marketing publication. Deliberately its OWN card, not part of Contacts:
+          contacts are internal admin-only records (guardrail #3), whereas
+          everything this toggle controls is public-facing by design. */}
+      <div className="adm-card">
+        <div className="adm-card-head">
+          <div>
+            <h2>Marketing site</h2>
+            <div className="sub">Whether this trainer appears on the public site.</div>
+          </div>
+        </div>
+        <div className="adm-card-body">
+          <label className="adm-check" htmlFor="marketing-visible">
+            <input
+              id="marketing-visible"
+              type="checkbox"
+              checked={marketingVisible}
+              onChange={(e) => setMarketingVisible(e.target.checked)}
+              data-testid="marketing-visible"
+            />
+            <span>
+              <span className="adm-check-title">Show on marketing site</span>
+              <span className="adm-help">
+                Publishes this trainer&apos;s name, location, bio, horses and photo on stablepass.co.
+              </span>
+            </span>
+          </label>
+          {marketingVisible && !photoUrl ? (
+            <div className="adm-help adm-check-note" data-testid="marketing-no-photo">
+              No photo added yet — the site will show this trainer&apos;s initials until one is.
+            </div>
+          ) : null}
         </div>
       </div>
 

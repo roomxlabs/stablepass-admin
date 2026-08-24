@@ -50,4 +50,57 @@ describe("PATCH /api/admin/trainers/:id — update trainer", () => {
     const j = await r.json();
     expect(j.error.code).toBe("not_found");
   });
+
+  it("patches marketing_visible when the toggle flips on", async () => {
+    asAdmin();
+    state.tables.trainer = { mutate: { single: { id: "t1" } } };
+    const r = await PATCH(patchReq({ marketingVisible: true }), ctx);
+    expect(r.status).toBe(200);
+    const upd = state.calls.mutations.find((m) => m.table === "trainer" && m.op === "update");
+    expect(upd?.payload.marketing_visible).toBe(true);
+  });
+
+  it("patches marketing_photo_path when the public copy lands", async () => {
+    asAdmin();
+    state.tables.trainer = { mutate: { single: { id: "t1" } } };
+    const r = await PATCH(patchReq({ marketingPhotoPath: "trainers/t1.jpg" }), ctx);
+    expect(r.status).toBe(200);
+    const upd = state.calls.mutations.find((m) => m.table === "trainer" && m.op === "update");
+    expect(upd?.payload.marketing_photo_path).toBe("trainers/t1.jpg");
+  });
+
+  it("nulls marketing_photo_path when the trainer is taken off the site", async () => {
+    asAdmin();
+    state.tables.trainer = { mutate: { single: { id: "t1" } } };
+    const r = await PATCH(patchReq({ marketingVisible: false, marketingPhotoPath: null }), ctx);
+    expect(r.status).toBe(200);
+    const upd = state.calls.mutations.find((m) => m.table === "trainer" && m.op === "update");
+    // A null path MUST survive the validation — this is the un-publish path.
+    expect(upd?.payload.marketing_photo_path).toBe(null);
+    expect(upd?.payload.marketing_visible).toBe(false);
+  });
+
+  it("400s on an absolute marketing photo path", async () => {
+    asAdmin();
+    const r = await PATCH(patchReq({ marketingPhotoPath: "/etc/passwd" }), ctx);
+    expect(r.status).toBe(400);
+    const j = await r.json();
+    expect(j.error.code).toBe("validation_failed");
+  });
+
+  it("400s on a traversal marketing photo path", async () => {
+    asAdmin();
+    const r = await PATCH(patchReq({ marketingPhotoPath: "../trainer-photos/x.jpg" }), ctx);
+    expect(r.status).toBe(400);
+    const j = await r.json();
+    expect(j.error.code).toBe("validation_failed");
+  });
+
+  it("400s when marketingVisible is not a boolean", async () => {
+    asAdmin();
+    const r = await PATCH(patchReq({ marketingVisible: "yes" }), ctx);
+    expect(r.status).toBe(400);
+    const j = await r.json();
+    expect(j.error.code).toBe("validation_failed");
+  });
 });

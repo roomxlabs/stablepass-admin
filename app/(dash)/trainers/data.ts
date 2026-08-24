@@ -19,10 +19,27 @@ export type TrainerRow = {
   location: string | null;
   status: TrainerStatus;
   photoUrl: string | null;
+  /** ENG-766: admin opt-in to the public stablepass.co trainer strip. */
+  marketingVisible: boolean;
   initials: string;
   contactEmail: string | null;
   horseCount: number;
   lastPostAt: string | null;
+};
+
+// The raw `trainer` columns this module selects. Typed explicitly (rather than
+// the previous `Record<string, string>` cast) because `marketing_visible` is a
+// boolean, and a string-shaped cast would silently mistype it.
+type TrainerDbRow = {
+  id: string;
+  name: string;
+  display_name: string | null;
+  slug: string;
+  stable_name: string | null;
+  location: string | null;
+  status: string | null;
+  photo_url: string | null;
+  marketing_visible: boolean | null;
 };
 
 export type TrainerListParams = { status?: string | null; q?: string | null };
@@ -71,7 +88,7 @@ export async function listTrainers(
 
   let query = sb
     .from("trainer")
-    .select("id,name,display_name,slug,stable_name,location,status,photo_url")
+    .select("id,name,display_name,slug,stable_name,location,status,photo_url,marketing_visible")
     .order("name", { ascending: true });
   if (status) query = query.eq("status", status);
   if (text) {
@@ -110,7 +127,7 @@ export async function listTrainers(
     if (isTrainerRole || !emails.has(c.trainer_id)) emails.set(c.trainer_id, c.email);
   }
 
-  const rows: TrainerRow[] = ((trainers ?? []) as Record<string, string>[]).map((t) => ({
+  const rows: TrainerRow[] = ((trainers ?? []) as TrainerDbRow[]).map((t) => ({
     id: t.id,
     name: t.name,
     displayName: t.display_name ?? t.name,
@@ -119,6 +136,9 @@ export async function listTrainers(
     location: t.location ?? null,
     status: (t.status as TrainerStatus) ?? "active",
     photoUrl: t.photo_url ?? null,
+    // Coerced, not passed through: the list badge must reflect the flag exactly,
+    // and a missing column would otherwise render as a falsy-but-undefined badge.
+    marketingVisible: t.marketing_visible === true,
     initials: initials(t.name),
     contactEmail: emails.get(t.id) ?? null,
     horseCount: horseCounts.get(t.id) ?? 0,

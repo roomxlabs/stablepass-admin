@@ -19,7 +19,7 @@ export default async function EditTrainerPage({
 
   const { data: t } = await sb
     .from("trainer")
-    .select("id,name,display_name,stable_name,location,bio,photo_url,status")
+    .select("id,name,display_name,stable_name,location,bio,photo_url,status,marketing_visible,marketing_photo_path")
     .eq("id", id)
     .maybeSingle();
   if (!t) notFound();
@@ -39,6 +39,10 @@ export default async function EditTrainerPage({
     bio: t.bio ?? "",
     photoUrl: t.photo_url ?? null,
     status: t.status === "onboarding" ? "onboarding" : "active",
+    // ENG-766: seeds the "Show on marketing site" checkbox and tells the form
+    // which public object (if any) it is already responsible for.
+    marketingVisible: t.marketing_visible === true,
+    marketingPhotoPath: t.marketing_photo_path ?? null,
   };
   const contacts: ContactInput[] = ((cRows ?? []) as Record<string, string>[]).map((c) => ({
     id: c.id,

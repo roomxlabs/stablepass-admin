@@ -58,4 +58,30 @@ describe("POST /api/admin/trainers — create trainer", () => {
     const j = await r.json();
     expect(j.error.code).toBe("slug_taken");
   });
+
+  it("records marketing_visible=true on the insert when the toggle is on", async () => {
+    asAdmin();
+    state.tables.trainer = { mutate: { single: { id: "t1", name: "X", slug: "x", status: "active", marketing_visible: true } } };
+    const r = await POST(postReq({ name: "X", slug: "x", marketingVisible: true }));
+    expect(r.status).toBe(201);
+    const ins = state.calls.mutations.find((m) => m.table === "trainer" && m.op === "insert");
+    expect(ins?.payload.marketing_visible).toBe(true);
+  });
+
+  it("defaults marketing_visible to false when the toggle is absent (nothing publishes by accident)", async () => {
+    asAdmin();
+    state.tables.trainer = { mutate: { single: { id: "t1", name: "X", slug: "x", status: "active", marketing_visible: false } } };
+    const r = await POST(postReq({ name: "X", slug: "x" }));
+    expect(r.status).toBe(201);
+    const ins = state.calls.mutations.find((m) => m.table === "trainer" && m.op === "insert");
+    expect(ins?.payload.marketing_visible).toBe(false);
+  });
+
+  it("400s when marketingVisible is not a boolean", async () => {
+    asAdmin();
+    const r = await POST(postReq({ name: "X", slug: "x", marketingVisible: "yes" }));
+    expect(r.status).toBe(400);
+    const j = await r.json();
+    expect(j.error.code).toBe("validation_failed");
+  });
 });

@@ -113,7 +113,7 @@ const D = 24 * H;
 const ago = (ms) => new Date(Date.now() - ms).toISOString();
 
 const TRAINER_SEED = [
-  { id: "t1", name: "Chris Waller", stable_name: "Chris Waller Racing", location: "Rosehill, NSW", status: "active", horses: 12, email: "chris@wallerstable.com.au", lastPost: 2 * H, marketing_visible: true },
+  { id: "t1", name: "Chris Waller", stable_name: "Chris Waller Racing", location: "Rosehill, NSW", status: "active", horses: 12, email: "chris@wallerstable.com.au", lastPost: 2 * H, marketing_visible: true, website_url: "https://wallerracing.com.au" },
   { id: "t2", name: "Peter Moody", stable_name: "Moody Racing", location: "Caulfield, VIC", status: "active", horses: 4, email: "peter@moody.com.au", lastPost: 6 * H },
   { id: "t3", name: "James Cummings", stable_name: "Godolphin Australia", location: "Agnes Banks, NSW", status: "active", horses: 3, email: "james@godolphin.com.au", lastPost: D, marketing_visible: true },
   { id: "t4", name: "Anthony & Sam Cummings", stable_name: "Leilani Lodge", location: "Randwick, NSW", status: "active", horses: 2, email: "team@leilanilodge.com.au", lastPost: 2 * D },
@@ -129,6 +129,10 @@ function buildDb(seed) {
     // ENG-766: marketing-visibility flag + the public-bucket object path it
     // publishes to. Fresh fixtures always start with no copied photo.
     marketing_visible: t.marketing_visible === true, marketing_photo_path: null,
+    // ENG-746: the public per-trainer website link. Only t1 carries one, so the
+    // edit-page capture proves the field SEEDS from the row rather than merely
+    // rendering, and every other trainer still proves the empty case.
+    website_url: t.website_url ?? null,
   }));
   const horses = [];
   const posts = [];

@@ -2,6 +2,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import TrainerForm, { type TrainerData } from "./TrainerForm";
+import { WEBSITE_URL_MESSAGE } from "@/lib/trainers/website-url";
 
 // ENG-766 — the "Show on marketing site" toggle and the public photo copy.
 //
@@ -16,6 +17,11 @@ const h = vi.hoisted(() => ({
     uploadError: null as { message: string } | null,
     removeError: null as { message: string } | null,
     contactsThrow: false,
+    // ENG-746: script the CREATE response so the 409 branch can be exercised.
+    // Carries the status AND the server's own envelope, so a test can prove the
+    // form substitutes its own honest copy for a 409 while still passing the
+    // server's message straight through for any other 4xx.
+    createFailure: null as { status: number; code: string; message: string } | null,
   },
 }));
 
@@ -71,8 +77,16 @@ function stubFetch() {
         method: init?.method,
         body: init?.body ? JSON.parse(String(init.body)) : null,
       });
-      if (u === "/api/admin/trainers")
+      if (u === "/api/admin/trainers") {
+        const f = h.script.createFailure;
+        if (f)
+          return {
+            ok: false,
+            status: f.status,
+            json: async () => ({ error: { code: f.code, message: f.message } }),
+          };
         return { ok: true, status: 201, json: async () => ({ data: { id: NEW_ID } }) };
+      }
       return { ok: true, status: 200, json: async () => ({ data: {} }) };
     }),
   );
@@ -90,18 +104,21 @@ function editTrainer(over: Partial<TrainerData> = {}): TrainerData {
     status: "active",
     marketingVisible: false,
     marketingPhotoPath: null,
+    websiteUrl: null,
     ...over,
   };
 }
 
 const patches = () => bff.filter((c) => c.method === "PATCH" && c.url.startsWith("/api/admin/trainers/"));
 const toggle = () => screen.getByTestId("marketing-visible") as HTMLInputElement;
+const website = () => screen.getByTestId("trainer-website") as HTMLInputElement;
 
 beforeEach(() => {
   h.storage.length = 0;
   h.script.uploadError = null;
   h.script.removeError = null;
   h.script.contactsThrow = false;
+  h.script.createFailure = null;
   bff = [];
   push.mockClear();
   stubFetch();
@@ -308,5 +325,274 @@ describe("TrainerForm — a failed copy never blocks the save", () => {
       expect(bff.some((c) => c.url === `/api/admin/trainers/${NEW_ID}` && c.method === "PATCH")).toBe(true),
     );
     expect(bff.filter((c) => c.url === "/api/admin/trainers")).toHaveLength(1);
+  });
+});
+
+describe("TrainerForm — the Website field (ENG-746)", () => {
+  it("renders empty on a new trainer", () => {
+    render(<TrainerForm mode="create" />);
+    expect(website().value).toBe("");
+    expect(screen.getByText("Website")).toBeTruthy();
+  });
+
+  it("seeds from the saved trainer", () => {
+    render(
+      <TrainerForm mode="edit" trainer={editTrainer({ websiteUrl: "https://wallerracing.com.au" })} contacts={[]} />,
+    );
+    expect(website().value).toBe("https://wallerracing.com.au");
+  });
+
+  it("keeps the field OUT of the Contacts block (contacts are internal, this is public)", () => {
+    // Guardrail #3. website_url is rendered to MEMBERS by stablepass-web, while
+    // trainer_contact never leaves the admin. They must not read as one group.
+    render(<TrainerForm mode="edit" trainer={editTrainer()} contacts={[]} />);
+    const contactsCard = screen.getByText("Contacts").closest(".adm-card");
+    expect(contactsCard).toBeTruthy();
+    expect(contactsCard!.contains(website())).toBe(false);
+  });
+
+  it("sends the website on create", async () => {
+    render(<TrainerForm mode="create" />);
+    fireEvent.change(screen.getByTestId("trainer-name"), { target: { value: "New Trainer" } });
+    fireEvent.change(website(), { target: { value: "https://wallerracing.com.au" } });
+    fireEvent.click(screen.getByTestId("submit-trainer"));
+
+    await waitFor(() => expect(push).toHaveBeenCalledWith("/trainers"));
+    const created = bff.find((c) => c.url === "/api/admin/trainers");
+    expect(created!.body!.websiteUrl).toBe("https://wallerracing.com.au");
+  });
+
+  it("trims the website before sending it", async () => {
+    render(<TrainerForm mode="create" />);
+    fireEvent.change(screen.getByTestId("trainer-name"), { target: { value: "New Trainer" } });
+    fireEvent.change(website(), { target: { value: "   https://wallerracing.com.au   " } });
+    fireEvent.click(screen.getByTestId("submit-trainer"));
+
+    await waitFor(() => expect(push).toHaveBeenCalledWith("/trainers"));
+    const created = bff.find((c) => c.url === "/api/admin/trainers");
+    expect(created!.body!.websiteUrl).toBe("https://wallerracing.com.au");
+  });
+
+  it("sends null, not an empty string, when the field is left blank", async () => {
+    render(<TrainerForm mode="create" />);
+    fireEvent.change(screen.getByTestId("trainer-name"), { target: { value: "New Trainer" } });
+    fireEvent.click(screen.getByTestId("submit-trainer"));
+
+    await waitFor(() => expect(push).toHaveBeenCalledWith("/trainers"));
+    const created = bff.find((c) => c.url === "/api/admin/trainers");
+    expect(created!.body!.websiteUrl).toBeNull();
+  });
+
+  it("CLEARS a saved website when the admin empties the field", async () => {
+    // The key must still be PRESENT in the PATCH body: the route writes only the
+    // keys it receives, so omitting it when empty would make clearing impossible.
+    render(
+      <TrainerForm mode="edit" trainer={editTrainer({ websiteUrl: "https://wallerracing.com.au" })} contacts={[]} />,
+    );
+    fireEvent.change(website(), { target: { value: "" } });
+    fireEvent.click(screen.getByTestId("submit-trainer"));
+
+    await waitFor(() => expect(push).toHaveBeenCalledWith("/trainers"));
+    const body = patches()[0].body!;
+    expect("websiteUrl" in body).toBe(true);
+    expect(body.websiteUrl).toBeNull();
+  });
+
+  it("carries a saved website through an unrelated edit untouched", async () => {
+    // Regression shape: if the field failed to seed, this save would silently
+    // NULL a website the admin never went near.
+    render(
+      <TrainerForm mode="edit" trainer={editTrainer({ websiteUrl: "https://wallerracing.com.au" })} contacts={[]} />,
+    );
+    fireEvent.change(screen.getByTestId("trainer-name"), { target: { value: "Chris Waller Jr" } });
+    fireEvent.click(screen.getByTestId("submit-trainer"));
+
+    await waitFor(() => expect(push).toHaveBeenCalledWith("/trainers"));
+    expect(patches()[0].body!.websiteUrl).toBe("https://wallerracing.com.au");
+  });
+
+  it("refuses a javascript: url and never sends the request", async () => {
+    render(<TrainerForm mode="create" />);
+    fireEvent.change(screen.getByTestId("trainer-name"), { target: { value: "New Trainer" } });
+    fireEvent.change(website(), { target: { value: "javascript:alert(1)" } });
+    fireEvent.click(screen.getByTestId("submit-trainer"));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toBe(WEBSITE_URL_MESSAGE);
+    // Rejected in the form, so the trainer is never written at all.
+    expect(bff.some((c) => c.url === "/api/admin/trainers")).toBe(false);
+    expect(push).not.toHaveBeenCalled();
+  });
+
+  it("refuses a bare domain, which the member app would render as no link", async () => {
+    render(<TrainerForm mode="create" />);
+    fireEvent.change(screen.getByTestId("trainer-name"), { target: { value: "New Trainer" } });
+    fireEvent.change(website(), { target: { value: "wallerracing.com.au" } });
+    fireEvent.click(screen.getByTestId("submit-trainer"));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toBe(WEBSITE_URL_MESSAGE);
+    expect(bff.some((c) => c.url === "/api/admin/trainers")).toBe(false);
+  });
+});
+
+// `trainer.website_url` is an unconstrained text column that NO admin surface has
+// ever written, so any value already in it was put there by hand and may be
+// something this form rejects (stablepass-web's own code anticipates a bare
+// domain). Validating it on every save would hold an admin's bio fix hostage to
+// a Website field they never touched, with no way out.
+describe("TrainerForm — a stored website this form cannot parse (ENG-746)", () => {
+  const legacy = () => editTrainer({ websiteUrl: "wallerracing.com.au" });
+
+  it("does not block an unrelated edit, and does not rewrite the value", async () => {
+    render(<TrainerForm mode="edit" trainer={legacy()} contacts={[]} />);
+    fireEvent.change(screen.getByTestId("trainer-name"), { target: { value: "Chris Waller Jr" } });
+    fireEvent.click(screen.getByTestId("submit-trainer"));
+
+    await waitFor(() => expect(push).toHaveBeenCalledWith("/trainers"));
+    // Omitted entirely: the route writes only the keys it receives, so the
+    // column keeps exactly what it had.
+    expect("websiteUrl" in patches()[0].body!).toBe(false);
+  });
+
+  it("says so inline rather than tolerating it silently", () => {
+    render(<TrainerForm mode="edit" trainer={legacy()} contacts={[]} />);
+    expect(screen.getByTestId("website-legacy-invalid")).toBeTruthy();
+  });
+
+  it("shows no such note for a valid stored website", () => {
+    render(
+      <TrainerForm mode="edit" trainer={editTrainer({ websiteUrl: "https://wallerracing.com.au" })} contacts={[]} />,
+    );
+    expect(screen.queryByTestId("website-legacy-invalid")).toBeNull();
+  });
+
+  it("validates again as soon as the admin edits the field", async () => {
+    render(<TrainerForm mode="edit" trainer={legacy()} contacts={[]} />);
+    fireEvent.change(website(), { target: { value: "javascript:alert(1)" } });
+    fireEvent.click(screen.getByTestId("submit-trainer"));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toBe(WEBSITE_URL_MESSAGE);
+    expect(push).not.toHaveBeenCalled();
+  });
+
+  it("lets the admin clear it", async () => {
+    render(<TrainerForm mode="edit" trainer={legacy()} contacts={[]} />);
+    fireEvent.change(website(), { target: { value: "" } });
+    fireEvent.click(screen.getByTestId("submit-trainer"));
+
+    await waitFor(() => expect(push).toHaveBeenCalledWith("/trainers"));
+    expect(patches()[0].body!.websiteUrl).toBeNull();
+  });
+
+  it("lets the admin fix it", async () => {
+    render(<TrainerForm mode="edit" trainer={legacy()} contacts={[]} />);
+    fireEvent.change(website(), { target: { value: "https://wallerracing.com.au" } });
+    fireEvent.click(screen.getByTestId("submit-trainer"));
+
+    await waitFor(() => expect(push).toHaveBeenCalledWith("/trainers"));
+    expect(patches()[0].body!.websiteUrl).toBe("https://wallerracing.com.au");
+  });
+});
+
+// ENG-746 — Mel's block. The old copy ("a matching name already exists — adjust
+// the name") named neither the cause nor the safe fix.
+describe("TrainerForm — the honest slug-collision message (ENG-746)", () => {
+  it("names the real cause: the name becomes the trainer's unique ID", async () => {
+    h.script.createFailure = { status: 409, code: "slug_taken", message: "A trainer with that slug already exists." };
+    render(<TrainerForm mode="create" />);
+    fireEvent.change(screen.getByTestId("trainer-name"), { target: { value: "Chris Waller" } });
+    fireEvent.click(screen.getByTestId("submit-trainer"));
+
+    const alert = await screen.findByRole("alert");
+    // The concrete derived value, so the admin can see WHY a name that looked
+    // free was refused.
+    expect(alert.textContent).toContain("chris-waller");
+    expect(alert.textContent).toMatch(/unique ID/i);
+  });
+
+  it("does NOT claim the slug is a web address", async () => {
+    // Regression on this ticket's own honesty. An earlier draft called the slug
+    // the "profile web address" and rendered it as /chris-waller. Nothing in
+    // web, admin or mobile reads trainer.slug, and the member profile resolves
+    // by id, so that URL does not exist - a claim an admin could disprove from
+    // the URL bar in five seconds.
+    h.script.createFailure = { status: 409, code: "slug_taken", message: "A trainer with that slug already exists." };
+    render(<TrainerForm mode="create" />);
+    fireEvent.change(screen.getByTestId("trainer-name"), { target: { value: "Chris Waller" } });
+    fireEvent.click(screen.getByTestId("submit-trainer"));
+
+    const text = (await screen.findByRole("alert")).textContent!;
+    expect(text).not.toMatch(/web address/i);
+    expect(text).not.toMatch(/\/chris-waller/);
+    expect(text).not.toMatch(/\bURL\b/);
+  });
+
+  it("does not claim the two NAMES match, because they need not", async () => {
+    // The collision is on the derived value, so "Chris Waller", "chris waller"
+    // and "Chris  Waller!" all collide while looking different. That is the most
+    // likely shape of the block Mel actually hit.
+    h.script.createFailure = { status: 409, code: "slug_taken", message: "A trainer with that slug already exists." };
+    render(<TrainerForm mode="create" />);
+    fireEvent.change(screen.getByTestId("trainer-name"), { target: { value: "chris  waller" } });
+    fireEvent.click(screen.getByTestId("submit-trainer"));
+
+    const text = (await screen.findByRole("alert")).textContent!;
+    expect(text).toMatch(/even when the names look slightly different/i);
+    // …and it still shows the value that actually collided.
+    expect(text).toContain("chris-waller");
+  });
+
+  it("falls through to the generic message for a 409 with a different code", async () => {
+    // Only the slug collision gets the specific explanation. Any other 409 the
+    // route grows later must not be explained as something it is not.
+    h.script.createFailure = { status: 409, code: "some_other_conflict", message: "Conflicting change." };
+    render(<TrainerForm mode="create" />);
+    fireEvent.change(screen.getByTestId("trainer-name"), { target: { value: "Chris Waller" } });
+    fireEvent.click(screen.getByTestId("submit-trainer"));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toBe("Conflicting change.");
+  });
+
+  it("offers both fixes, with the duplicate-safe one FIRST", async () => {
+    h.script.createFailure = { status: 409, code: "slug_taken", message: "A trainer with that slug already exists." };
+    render(<TrainerForm mode="create" />);
+    fireEvent.change(screen.getByTestId("trainer-name"), { target: { value: "Chris Waller" } });
+    fireEvent.click(screen.getByTestId("submit-trainer"));
+
+    const text = (await screen.findByRole("alert")).textContent!;
+    const openExisting = text.indexOf("Trainers list");
+    const rename = text.indexOf("change the full name slightly");
+    expect(openExisting).toBeGreaterThan(-1);
+    expect(rename).toBeGreaterThan(-1);
+    // Order is load-bearing, not cosmetic (ENG-766): this 409 is also reachable
+    // when the trainer WAS created and the response was lost, and leading with
+    // "rename" is what turns that into a second live trainer.
+    expect(openExisting).toBeLessThan(rename);
+  });
+
+  it("keeps the generic message for a non-409 failure", async () => {
+    h.script.createFailure = { status: 400, code: "insert_failed", message: "Location is not valid." };
+    render(<TrainerForm mode="create" />);
+    fireEvent.change(screen.getByTestId("trainer-name"), { target: { value: "Chris Waller" } });
+    fireEvent.click(screen.getByTestId("submit-trainer"));
+
+    const alert = await screen.findByRole("alert");
+    // The server's own message, verbatim, and none of the slug copy.
+    expect(alert.textContent).toBe("Location is not valid.");
+    expect(alert.textContent).not.toMatch(/web address/i);
+  });
+
+  it("does not parrot the server's slug wording back to the admin", async () => {
+    h.script.createFailure = { status: 409, code: "slug_taken", message: "A trainer with that slug already exists." };
+    render(<TrainerForm mode="create" />);
+    fireEvent.change(screen.getByTestId("trainer-name"), { target: { value: "Chris Waller" } });
+    fireEvent.click(screen.getByTestId("submit-trainer"));
+
+    const text = (await screen.findByRole("alert")).textContent!;
+    // "slug" is engineering vocabulary; the admin gets the cause in their terms.
+    expect(text).not.toContain("slug");
   });
 });

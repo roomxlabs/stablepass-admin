@@ -35,6 +35,12 @@ export async function createDraft(input: {
   body?: string;
   /** ENG-745 — one of the 13 presets, or null for no category. */
   label?: string | null;
+  /**
+   * ENG-748 — how many photo upload targets to mint (1..10). Photo posts only;
+   * the route 400s anything above 1 for another type. Omitted means 1, which is
+   * what keeps every pre-existing caller byte-identical.
+   */
+  photoCount?: number;
 }): Promise<CreateDraftResponse> {
   const res = await fetch("/api/admin/posts", {
     method: "POST",
@@ -57,6 +63,17 @@ export async function patchPost(
      * collapsed to `string | undefined`.
      */
     label?: string | null;
+    /**
+     * ENG-748 — the WHOLE ordered photo set, in display order, as bare Storage
+     * object paths. The route replaces the post's `post_media` rows with these
+     * (contiguous `sort_order` from 0) and moves `post.media_url` to match
+     * position 0.
+     *
+     * It is a full replacement, not a delta: sending a partial list deletes the
+     * photos you left out. Omit the key entirely to leave the set alone, which
+     * is what every non-photo save does.
+     */
+    media?: string[];
   },
 ): Promise<void> {
   const res = await fetch(`/api/admin/posts/${id}`, {

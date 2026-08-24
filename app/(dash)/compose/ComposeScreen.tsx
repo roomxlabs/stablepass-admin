@@ -18,6 +18,15 @@ import {
   uploadVideoToMux,
 } from "./api";
 import { ACCEPT_BY_TYPE, isUploadType, TYPE_LABEL, uploadTypeForFile } from "./types";
+import {
+  MAX_PHOTOS,
+  mediaSetPayload,
+  mirrorPath,
+  movePhoto,
+  removePhotoAt,
+  uploadedPhotos,
+  type ComposePhoto,
+} from "./photos";
 import type {
   CreateDraftResponse,
   EditInitial,
@@ -59,6 +68,12 @@ function objectUrl(file: File): string | null {
     return URL.createObjectURL(file);
   }
   return null;
+}
+
+/** Release every strip thumbnail's object URL (ENG-748). */
+function revokePhotoUrls(list: readonly ComposePhoto[]): void {
+  if (typeof URL === "undefined" || !URL.revokeObjectURL) return;
+  for (const p of list) if (p.previewUrl?.startsWith("blob:")) URL.revokeObjectURL(p.previewUrl);
 }
 
 function humanSize(bytes: number): string {
@@ -162,6 +177,20 @@ export default function ComposeScreen({
 
   const [file, setFile] = useState<File | null>(null);
   /**
+   * ENG-748 — the ordered photo set, in DISPLAY order. Photo posts only; video
+   * and voice never populate it and every path below that reads it is gated on
+   * the type.
+   *
+   * `file` / `mediaUrl` are deliberately kept alongside it rather than replaced:
+   * they still describe photo 0, so the existing measurement, preview and
+   * upload-status paths (and their tests) keep working untouched, and a
+   * single-photo post behaves exactly as it did before this ticket. This list is
+   * the source of truth for ORDER and for what gets persisted.
+   */
+  const [photos, setPhotos] = useState<ComposePhoto[]>([]);
+  /** Cap breach and per-set upload problems — shown above the strip. */
+  const [photoError, setPhotoError] = useState<string | null>(null);
+  /**
    * The post type is CHOSEN up front (step 2), never inferred from the picked
    * file. Inference is what left `text` unauthorable — it has no file to sniff.
    * Video is the default: it is the common post, and it is what the mockup
@@ -248,7 +277,48 @@ export default function ComposeScreen({
   }, [horses, search]);
 
   const isText = postType === "text";
-  const draftReady = !!draft && upload.state === "done";
+  /** The photos that actually landed in Storage, in display order. */
+  const readyPhotos = uploadedPhotos(photos);
+  /**
+   * The path `post.media_url` will actually be set to — the first UPLOADED
+   * photo, not simply display position 0.
+   *
+   * The distinction is not pedantic: if the photo at position 0 failed to
+   * upload, the mirror lands on the next one that did, so badging position 0 as
+   * "Cover" would tell the operator the feed will show an image that was never
+   * stored. Same function the save path uses, so the badge cannot disagree with
+   * what gets written.
+   */
+  const coverPath = mirrorPath(photos);
+  /**
+   * ENG-748 — the ordered photo set to persist, spread into every save.
+   *
+   * ABSENT unless this is a photo post with something uploaded, exactly like
+   * `labelPatch`: `media` is a full replacement, so sending `[]` would delete
+   * the post's photos, and sending it on a video/voice/text save would delete
+   * them for a type that never had any. Absent means "leave the set alone",
+   * which is what every path that is not a photo pick means.
+   *
+   * The paths come from `mediaSetPayload`, so display position — not upload
+   * slot — decides `sort_order`, and the route mirrors position 0 into
+   * `post.media_url`.
+   */
+  const mediaPatch: { media?: string[] } =
+    postType === "photo" && readyPhotos.length > 0
+      ? { media: mediaSetPayload(photos).map((r) => r.mediaUrl) }
+      : {};
+  /**
+   * A multi-photo post is ready when at least one photo has landed and none is
+   * still in flight. A failed tile does NOT block the post — the ticket's rule
+   * is that the post keeps the successfully uploaded set and the strip offers a
+   * retry, so the operator can drop the failure and publish the rest.
+   */
+  const photosSettled = photos.length > 0 && !photos.some((p) => p.state === "uploading");
+  const draftReady =
+    !!draft &&
+    (postType === "photo" && photos.length > 0
+      ? photosSettled && readyPhotos.length > 0
+      : upload.state === "done");
   /**
    * A text post has no upload, so it can never satisfy `draftReady` — and its
    * draft does not even exist yet, because minting one is what picking a file
@@ -288,6 +358,12 @@ export default function ComposeScreen({
     // this clear and re-populate what we are about to empty.
     pickGeneration.current += 1;
     if (mediaUrl && typeof URL !== "undefined" && URL.revokeObjectURL) URL.revokeObjectURL(mediaUrl);
+    // Every strip thumbnail is its own object URL; dropping the list without
+    // revoking them leaks one blob per photo for the life of the page, and the
+    // operator can re-pick a ten-photo set as often as they like.
+    revokePhotoUrls(photos);
+    setPhotos([]);
+    setPhotoError(null);
     setFile(null);
     setMediaUrl(null);
     setDims(null);
@@ -412,6 +488,203 @@ export default function ComposeScreen({
     }
   }
 
+  /**
+   * ENG-748 — pick one OR MORE photos.
+   *
+   * Photo posts only; every other type still goes through `onPickFile`
+   * unchanged. A one-file pick here produces exactly the same draft, the same
+   * `<postId>/original` object and the same `post.media_url` as before this
+   * ticket — the multi path is not a separate mode, it is the same path with a
+   * count.
+   */
+  async function onPickPhotos(picked: File[]) {
+    if (!horse || !bylineId) {
+      setUpload({ state: "error", pct: 0, error: "Pick a horse first." });
+      return;
+    }
+    if (picked.length === 0) return;
+
+    // THE CAP, enforced before anything is created or uploaded — "11 files
+    // picked: blocked with a message, nothing uploads". Checked here rather than
+    // left to the route so the operator is told immediately, and checked against
+    // the whole pick because this replaces the set rather than appending to it.
+    if (picked.length > MAX_PHOTOS) {
+      setPhotoError(
+        `You can add up to ${MAX_PHOTOS} photos to a post — you picked ${picked.length}. Nothing was uploaded.`,
+      );
+      if (fileInputRef.current) fileInputRef.current.value = "";
+      return;
+    }
+
+    // MIME validation over the WHOLE set before any upload, same rule as the
+    // single pick: one video dragged in with nine photos is an error the
+    // operator resolves, never a silent reclassification of the post.
+    const wrong = picked.find((f) => uploadTypeForFile(f) !== "photo");
+    if (wrong) {
+      const kind = uploadTypeForFile(wrong);
+      setTypeError(
+        `You chose Photo, but “${wrong.name}” is ${kind ? `a ${TYPE_LABEL[kind]}` : wrong.type || "an unrecognised file"}. ` +
+          `Pick photo files only, or change the post type above.`,
+      );
+      if (fileInputRef.current) fileInputRef.current.value = "";
+      return;
+    }
+    setTypeError(null);
+    setPhotoError(null);
+
+    if (draft) void discardDraft(draft.id).catch(() => {});
+    if (mediaUrl && typeof URL !== "undefined" && URL.revokeObjectURL) URL.revokeObjectURL(mediaUrl);
+    revokePhotoUrls(photos);
+
+    setDraft(null);
+    // photo 0 also drives the existing single-file UI + measurement, so the
+    // readout and the card ratio keep describing the cover image.
+    setFile(picked[0]);
+    setMediaUrl(objectUrl(picked[0]));
+    setDims(null);
+    setMeasure("measuring");
+    setUpload({ state: "creating", pct: 0 });
+    setPhotos([]);
+
+    const generation = ++pickGeneration.current;
+    const stale = () => pickGeneration.current !== generation;
+
+    try {
+      const created = await createDraft({
+        horseId: horse.id,
+        type: "photo",
+        sourceTrainerId: bylineId,
+        // ONLY for a genuine multi-pick. `photoCount: 1` and an absent
+        // `photoCount` are identical server-side, so omitting it means a
+        // single-photo post sends the byte-identical request this endpoint has
+        // always received — nothing downstream can tell this ticket shipped.
+        ...(picked.length > 1 ? { photoCount: picked.length } : {}),
+      });
+      if (stale()) {
+        void discardDraft(created.id).catch(() => {});
+        return;
+      }
+      // `uploads` is the multi-photo shape; the four top-level fields are the
+      // shape this endpoint has always returned. Falling back to them means a
+      // ONE-photo pick still works against a route that predates this ticket
+      // (and against every caller that mocks the old shape) — the single-photo
+      // path degrades instead of breaking. A multi-photo pick genuinely cannot
+      // proceed without the extra targets, so it still fails loudly.
+      const targets =
+        created.uploads?.length
+          ? created.uploads
+          : created.uploadUrl && created.path && created.token && created.bucket
+            ? [
+                {
+                  sortOrder: 0,
+                  path: created.path,
+                  token: created.token,
+                  uploadUrl: created.uploadUrl,
+                  bucket: created.bucket,
+                },
+              ]
+            : [];
+      if (targets.length < picked.length) throw new Error("No upload target was returned.");
+
+      setDraft(created);
+      setUpload({ state: "uploading", pct: 0 });
+
+      // Seed the strip up front so the operator watches all N tiles resolve,
+      // rather than seeing them appear one at a time as each upload finishes.
+      const seeded: ComposePhoto[] = picked.map((f, slot) => ({
+        id: `${created.id}-${slot}`,
+        path: targets[slot].path,
+        previewUrl: objectUrl(f),
+        name: f.name,
+        size: f.size,
+        state: "uploading",
+        file: f,
+        bucket: targets[slot].bucket,
+        token: targets[slot].token,
+      }));
+      setPhotos(seeded);
+
+      // Sequential, not Promise.all: ten parallel Storage PUTs from one browser
+      // is what makes the slowest of them time out, and the strip is more
+      // legible resolving in order. Each settles its own tile, so one failure
+      // leaves the rest of the set intact — the ticket's mid-way-failure rule.
+      for (let slot = 0; slot < picked.length; slot++) {
+        const target = targets[slot];
+        try {
+          await uploadPhotoToStorage({
+            bucket: target.bucket,
+            path: target.path,
+            token: target.token,
+            file: picked[slot],
+          });
+          if (stale()) return;
+          setPhotos((prev) =>
+            prev.map((p) => (p.path === target.path ? { ...p, state: "done" } : p)),
+          );
+        } catch (e) {
+          if (stale()) return;
+          setPhotos((prev) =>
+            prev.map((p) =>
+              p.path === target.path ? { ...p, state: "error", error: (e as Error).message } : p,
+            ),
+          );
+        }
+      }
+      if (stale()) return;
+      setUpload({ state: "done", pct: 100 });
+    } catch (e) {
+      if (stale()) return;
+      setUpload({ state: "error", pct: 0, error: (e as Error).message });
+    }
+  }
+
+  /**
+   * Reorder the strip. The move itself is `movePhoto`; what matters HERE is
+   * that nothing else has to happen — the Storage paths do not move, so there
+   * is nothing to re-upload, and `post.media_url` is recomputed from the new
+   * position 0 at save time by `mirrorPath`.
+   */
+  function reorderPhoto(index: number, direction: -1 | 1) {
+    setPhotos((prev) => movePhoto(prev, index, direction));
+  }
+
+  /** Re-PUT one failed photo's bytes to its existing slot target. */
+  async function retryPhoto(index: number) {
+    const target = photos[index];
+    if (!target?.file || !target.bucket || !target.token) return;
+    setPhotos((prev) =>
+      prev.map((p) => (p.path === target.path ? { ...p, state: "uploading", error: undefined } : p)),
+    );
+    try {
+      await uploadPhotoToStorage({
+        bucket: target.bucket,
+        path: target.path,
+        token: target.token,
+        file: target.file,
+      });
+      setPhotos((prev) =>
+        prev.map((p) => (p.path === target.path ? { ...p, state: "done" } : p)),
+      );
+    } catch (e) {
+      setPhotos((prev) =>
+        prev.map((p) =>
+          p.path === target.path ? { ...p, state: "error", error: (e as Error).message } : p,
+        ),
+      );
+    }
+  }
+
+  function dropPhoto(index: number) {
+    setPhotos((prev) => {
+      const gone = prev[index];
+      const next = removePhotoAt(prev, index);
+      // Only after the list no longer references it, and only for a local blob.
+      if (gone) revokePhotoUrls([gone]);
+      return next;
+    });
+    setPhotoError(null);
+  }
+
   async function runAction(next: PublishMode) {
     if (isText) {
       // The body IS the post for a text type, so an empty one is blocked here
@@ -468,6 +741,7 @@ export default function ComposeScreen({
         body: caption,
         sourceTrainerId: bylineId,
         ...labelPatch,
+        ...mediaPatch,
       });
 
       if (next === "publish") {
@@ -602,7 +876,16 @@ export default function ComposeScreen({
     // guarded on `mediaUrl && mediaType === …` — so no guard is re-added here,
     // and A1's files are not touched.
     mediaType: isText ? null : postType,
-    mediaUrl,
+    // For a multi-photo post the single-image slot shows DISPLAY POSITION 0 —
+    // the same photo `mirrorPath` will write into `post.media_url` — so the
+    // card the operator is looking at is the card a subscriber gets. Falls back
+    // to the plain `mediaUrl` for every other type and for a single photo.
+    mediaUrl:
+      (postType === "photo" && photos.find((p) => p.path === coverPath)?.previewUrl) || mediaUrl,
+    photos:
+      postType === "photo" && photos.length > 1
+        ? photos.map((p) => p.previewUrl ?? "").filter(Boolean)
+        : undefined,
     // Real race-day data off the picked horse — the badge used to be hardcoded
     // on every post, which made the preview claim a race that wasn't running.
     racesToday: horse?.racesToday ?? false,
@@ -612,7 +895,13 @@ export default function ComposeScreen({
 
   const primaryLabel =
     mode === "publish" ? "Publish now" : mode === "schedule" ? "Schedule" : "Save as draft";
-  const mediaLabel = isText ? "None — text post" : file || mediaUrl ? `1 ${postType}` : "None yet";
+  const mediaLabel = isText
+    ? "None — text post"
+    : photos.length > 1
+      ? `${photos.length} photos`
+      : file || mediaUrl
+        ? `1 ${postType}`
+        : "None yet";
 
   return (
     <>
@@ -856,10 +1145,19 @@ export default function ComposeScreen({
                 className={styles.hiddenFile}
                 type="file"
                 accept={isUploadType(postType) ? ACCEPT_BY_TYPE[postType] : undefined}
+                // ENG-748 — multi-select for PHOTO only, and not in edit mode
+                // (media is read-only there). Video is a single Mux asset and
+                // voice a single Storage object, so neither may offer it.
+                multiple={postType === "photo" && !isEdit}
                 data-testid="media-input"
                 onChange={(e) => {
-                  const f = e.target.files?.[0];
-                  if (f) void onPickFile(f);
+                  const picked = Array.from(e.target.files ?? []);
+                  if (picked.length === 0) return;
+                  // A photo post always goes through the set path, even for one
+                  // file — one code path, so the single-photo case cannot drift
+                  // away from the multi one.
+                  if (postType === "photo" && !isEdit) void onPickPhotos(picked);
+                  else void onPickFile(picked[0]);
                 }}
               />
 
@@ -966,6 +1264,115 @@ export default function ComposeScreen({
                   ) : null}
                 </div>
               )}
+              {/* ENG-748 — the ordering strip. Present only for a photo post
+                  that actually has photos, and only outside edit mode (media is
+                  read-only there). Deliberately rendered for a ONE-photo set
+                  too: the tile is where "Add more" and the upload state live,
+                  and hiding it until a second photo appears would mean the
+                  single-photo operator never sees either.
+
+                  Up/down buttons, not drag — resolved open question, v1. */}
+              {!isEdit && postType === "photo" && photos.length > 0 ? (
+                <>
+                  <div className={styles.photoStrip} data-testid="photo-strip">
+                    {photos.map((p, i) => (
+                      <div
+                        key={p.id}
+                        className={`${styles.photoTile} ${p.state === "error" ? styles.photoTileBad : ""}`}
+                        data-testid={`photo-tile-${i}`}
+                      >
+                        <div className={styles.photoThumbWrap}>
+                          {p.previewUrl ? (
+                            // eslint-disable-next-line @next/next/no-img-element -- local object URL
+                            <img className={styles.photoThumb} src={p.previewUrl} alt="" />
+                          ) : null}
+                          {/* 1-based: the operator counts photos from one, and
+                              this is the number they reorder by. sort_order is
+                              0-based on the wire and is never shown. */}
+                          <span className={styles.photoPos} data-testid={`photo-pos-${i}`}>
+                            {i + 1}
+                          </span>
+                          {/* Position 0 is what post.media_url mirrors — the
+                              image the feed, the card and every existing client
+                              shows for this post. Naming it "Cover" is what
+                              makes the reorder's consequence visible. */}
+                          {p.path === coverPath ? (
+                            <span className={styles.photoCover} data-testid="photo-cover">
+                              Cover
+                            </span>
+                          ) : null}
+                        </div>
+                        <div className={styles.photoTools}>
+                          <button
+                            type="button"
+                            className={styles.photoBtn}
+                            onClick={() => reorderPhoto(i, -1)}
+                            disabled={i === 0}
+                            aria-label={`Move photo ${i + 1} earlier`}
+                            data-testid={`photo-up-${i}`}
+                          >
+                            ↑
+                          </button>
+                          <button
+                            type="button"
+                            className={styles.photoBtn}
+                            onClick={() => reorderPhoto(i, 1)}
+                            disabled={i === photos.length - 1}
+                            aria-label={`Move photo ${i + 1} later`}
+                            data-testid={`photo-down-${i}`}
+                          >
+                            ↓
+                          </button>
+                          <button
+                            type="button"
+                            className={`${styles.photoBtn} ${styles.photoBtnKill}`}
+                            onClick={() => dropPhoto(i)}
+                            aria-label={`Remove photo ${i + 1}`}
+                            data-testid={`photo-remove-${i}`}
+                          >
+                            ×
+                          </button>
+                        </div>
+                        <div
+                          className={`${styles.photoState} ${p.state === "error" ? styles.photoStateBad : ""}`}
+                          data-testid={`photo-state-${i}`}
+                          title={p.error ?? p.name}
+                        >
+                          {p.state === "uploading" ? (
+                            "uploading…"
+                          ) : p.state === "done" ? (
+                            humanSize(p.size)
+                          ) : (
+                            <button
+                              type="button"
+                              className={styles.photoBtn}
+                              onClick={() => void retryPhoto(i)}
+                              data-testid={`photo-retry-${i}`}
+                            >
+                              failed — retry
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                  <div className={styles.help} data-testid="photo-strip-help">
+                    {photos.length} of {MAX_PHOTOS} photos. The first is the cover — it is what the
+                    feed and the member card show.
+                  </div>
+                </>
+              ) : null}
+
+              {photoError ? (
+                <div
+                  className={`${styles.help} ${styles.uploadError}`}
+                  data-testid="photo-error"
+                  role="alert"
+                >
+                  {photoError}
+                </div>
+              ) : null}
+
               {/* The chosen type vs. what was actually picked. Named on both
                   sides so the operator can see which half to change. */}
               {typeError ? (

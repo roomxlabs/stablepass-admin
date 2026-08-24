@@ -221,6 +221,13 @@ describe("ComposeScreen", () => {
       title: null,
       body: "Spot-on before Saturday.",
       sourceTrainerId: "t1",
+      // ENG-748 — a single-photo post now also persists its post_media row 0.
+      // This is the ticket's "mirror only; one post_media row", and ENG-740's
+      // "row 0 is created lazily by the first admin edit": the mirror still
+      // points at <postId>/original and nothing an existing client reads
+      // changed, but the ordered table now knows about this photo too, so the
+      // post can gain a second one later without a backfill.
+      media: ["p1/original"],
     });
   });
 
@@ -498,6 +505,10 @@ describe("ComposeScreen", () => {
       title: null,
       body: "",
       sourceTrainerId: "t1",
+      // ENG-748 — the scheduled path persists the photo set too, for the same
+      // reason the publish path does (post_media row 0 is created lazily on the
+      // first admin write). Same single photo, same mirror.
+      media: ["p1/original"],
     });
     expect(api.patchPost.mock.invocationCallOrder[0]).toBeLessThan(
       api.schedulePost.mock.invocationCallOrder[0],

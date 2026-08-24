@@ -28,12 +28,12 @@
 //     function that answers "what does media_url have to be now", and every
 //     write path goes through it.
 
-/**
- * The operator-facing cap. The DATABASE is the real boundary (see above); this
- * exists so picking eleven files fails immediately with a sentence instead of
- * after ten uploads with a constraint error.
- */
-export const MAX_PHOTOS = 10;
+// The path convention and the cap are DEFINED IN `lib/posts/media.ts` and
+// re-exported here, never re-declared. Both this display layer and the BFF
+// routes have to agree on them byte for byte — a second copy is how the browser
+// uploads bytes to one path while the server records another. Same reason
+// `lib/posts/labels.ts` is shared by the routes and this screen (ENG-745).
+export { MAX_PHOTOS, uploadSlotPath } from "@/lib/posts/media";
 
 /** One photo in the compose strip, in DISPLAY order within the list. */
 export type ComposePhoto = {
@@ -69,19 +69,20 @@ export type ComposePhoto = {
    * rather than re-picked into a new one and leaving the first orphaned.
    */
   file?: File;
+  /**
+   * The signed-upload target this slot was minted with, kept so a retry can PUT
+   * the bytes again without re-creating the draft.
+   *
+   * Signed upload tokens are single-use, so a retry only succeeds for failures
+   * that never reached Storage — a dropped connection, which is the common one.
+   * A retry that fails again leaves the tile in `error`, and the operator's
+   * remaining move is to remove that photo and post the rest, or re-pick the
+   * whole set. The alternative — minting a fresh target per retry — needs a BFF
+   * endpoint that does not exist and is out of this ticket's surface.
+   */
+  bucket?: string;
+  token?: string;
 };
-
-/**
- * Where an upload SLOT's bytes go. Slot 0 keeps `<postId>/original` so a
- * single-photo post is byte-identical to what this screen has always produced
- * (and so a legacy post's existing object is already at the slot-0 path);
- * extras take `<postId>/photo-<n>` exactly as ENG-740's migration documents.
- *
- * `slot` is the UPLOAD ordinal, never the display position — see `ComposePhoto.path`.
- */
-export function uploadSlotPath(postId: string, slot: number): string {
-  return slot === 0 ? `${postId}/original` : `${postId}/photo-${slot}`;
-}
 
 /**
  * Move the photo at `index` one place toward the front (`-1`) or back (`+1`).

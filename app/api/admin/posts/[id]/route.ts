@@ -1,6 +1,7 @@
 import { requireAdmin } from "@/lib/auth/admin";
 import { ok, noContent, fail } from "@/lib/api/envelope";
 import { isLabelCheckViolation, LABEL_ERROR_MESSAGE, normalisePostLabel } from "@/lib/posts/labels";
+import { isMediaOrderViolation, MEDIA_ERROR_MESSAGE, normaliseMediaSet } from "@/lib/posts/media";
 
 // camelCase request field → post column.
 const FIELD_MAP: Record<string, string> = {
@@ -26,7 +27,10 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
 
   const patch: Record<string, unknown> = {};
   for (const [field, column] of Object.entries(FIELD_MAP)) if (field in b) patch[column] = b[field];
-  if (Object.keys(patch).length === 0) return fail("validation_failed", "No editable fields provided.", 400);
+  // `media` is editable but is not a `post` column — it is the whole `post_media`
+  // set — so it counts toward "did the caller ask for anything" on its own.
+  if (Object.keys(patch).length === 0 && !("media" in b))
+    return fail("validation_failed", "No editable fields provided.", 400);
 
   // Validate the category against the preset list before it reaches the CHECK,
   // so an off-list value gets a readable 400 instead of a raw constraint error.
@@ -35,6 +39,60 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
     if (labelValue === undefined)
       return fail("validation_failed", LABEL_ERROR_MESSAGE, 400);
     patch.label = labelValue;
+  }
+
+  // ENG-748 — the ordered photo set, and the `post.media_url` mirror that keeps
+  // every existing client working.
+  //
+  // SEQUENCING IS THE WHOLE DESIGN HERE, because PostgREST gives us no
+  // transaction across statements and ENG-740 deliberately ships no trigger.
+  // The order below is chosen so the FAILURE modes are the survivable ones:
+  //
+  //   1. UPSERT the new set first, arbitrated on (post_id, sort_order). If this
+  //      fails, nothing has been destroyed and the post's previous photo set is
+  //      still readable — which is the rule the ticket states. A
+  //      delete-then-insert would have already dropped the old rows by the time
+  //      an insert could fail, leaving a published post with no photos at all.
+  //      The targeted arbiter is legal for an admin only because
+  //      `post_media_all_admin` is FOR ALL and so confers the SELECT visibility
+  //      a targeted upsert needs (ENG-723); on a write-only table it 42501s.
+  //   2. DELETE the tail (`sort_order >= n`), which is what shrinks a set. Rows
+  //      0..n-1 are already correct at this point, so a failure here leaves
+  //      trailing extras rather than a gap — degraded, still contiguous at the
+  //      head, still renderable.
+  //   3. The MIRROR rides along in the post update below rather than as its own
+  //      statement, so `media_url` and the editable fields land together.
+  //
+  // Contiguity and row-0 existence are guaranteed by `normaliseMediaSet`, which
+  // assigns the ordinals from the array index instead of trusting the wire —
+  // ENG-740 asks the writer for both and can express neither as a CHECK.
+  if ("media" in b) {
+    const rows = normaliseMediaSet(b.media);
+    if (!rows) return fail("validation_failed", MEDIA_ERROR_MESSAGE, 400);
+
+    const { error: upsertErr } = await sb.from("post_media").upsert(
+      rows.map((r) => ({ post_id: id, sort_order: r.sortOrder, media_url: r.mediaUrl })),
+      { onConflict: "post_id,sort_order" },
+    );
+    // A duplicate ordinal or one outside 0..9 is an editorial/client mistake,
+    // not a server fault — the same 400 the up-front normalise produces.
+    if (isMediaOrderViolation(upsertErr))
+      return fail("validation_failed", MEDIA_ERROR_MESSAGE, 400);
+    if (upsertErr) return fail("update_failed", upsertErr.message, 400);
+
+    const { error: trimErr } = await sb
+      .from("post_media")
+      .delete()
+      .eq("post_id", id)
+      .gte("sort_order", rows.length);
+    if (trimErr) return fail("update_failed", trimErr.message, 400);
+
+    // THE COMPATIBILITY SEAM. Every existing reader — both front ends,
+    // feed_page's `select p.*` — reads post.media_url and knows nothing about
+    // post_media, so if this does not follow a reorder that changed position 0,
+    // the feed and the member card show a different image than the admin
+    // preview just promised, with no error anywhere to notice it by.
+    patch.media_url = rows[0].mediaUrl;
   }
 
   const { data, error } = await sb.from("post").update(patch).eq("id", id).select("*").maybeSingle();

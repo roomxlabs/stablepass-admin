@@ -426,3 +426,154 @@ describe("GET /api/admin/posts — list + search", () => {
     expect(j.data[1].label).toBeNull();
   });
 });
+
+describe("ENG-748 · multi-photo upload targets", () => {
+  it("403s for a non-admin sending photoCount: 3 (guardrail)", async () => {
+    asNonAdmin();
+    const r = await POST(
+      postReq({ horseId: "h1", type: "photo", sourceTrainerId: "t1", photoCount: 3 }),
+    );
+    expect(r.status).toBe(403);
+    expect(state.calls.mutations).toHaveLength(0);
+    expect(state.calls.storage).toHaveLength(0);
+  });
+
+  it("photoCount: 3 on a photo post → 202 with 3 Storage upload targets, in slot order", async () => {
+    asAdmin();
+    state.tables.horse = { select: { single: { id: "h1" } } };
+    state.tables.post = { mutate: { single: { id: "p6", status: "draft", type: "photo", horse_id: "h1" } } };
+    const r = await POST(
+      postReq({ horseId: "h1", type: "photo", sourceTrainerId: "t1", photoCount: 3 }),
+    );
+    expect(r.status).toBe(202);
+    // Order matters: slot 0 is the legacy `original` path, then photo-1, photo-2.
+    expect(state.calls.storage).toEqual([
+      { bucket: "post-media", path: "p6/original" },
+      { bucket: "post-media", path: "p6/photo-1" },
+      { bucket: "post-media", path: "p6/photo-2" },
+    ]);
+  });
+
+  it("photoCount: 3 → data.uploads carries all 3 slots; the top level keeps slot 0 (back-compat)", async () => {
+    asAdmin();
+    state.tables.horse = { select: { single: { id: "h1" } } };
+    state.tables.post = { mutate: { single: { id: "p6", status: "draft", type: "photo", horse_id: "h1" } } };
+    const r = await POST(
+      postReq({ horseId: "h1", type: "photo", sourceTrainerId: "t1", photoCount: 3 }),
+    );
+    expect(r.status).toBe(202);
+    const j = await r.json();
+    expect(j.data.uploads).toHaveLength(3);
+    expect(j.data.uploads.map((u: { sortOrder: number }) => u.sortOrder)).toEqual([0, 1, 2]);
+    expect(j.data.uploads.map((u: { path: string }) => u.path)).toEqual([
+      "p6/original",
+      "p6/photo-1",
+      "p6/photo-2",
+    ]);
+    // Existing single-photo callers still read these fields at the TOP level —
+    // slot 0, unchanged, even though this draft minted three targets.
+    expect(j.data.path).toBe("p6/original");
+    expect(j.data.uploadUrl).toBeTruthy();
+  });
+
+  it("no photoCount at all → exactly one Storage call, data.uploads has length 1 (single-photo path unchanged)", async () => {
+    asAdmin();
+    state.tables.horse = { select: { single: { id: "h1" } } };
+    state.tables.post = { mutate: { single: { id: "p7", status: "draft", type: "photo", horse_id: "h1" } } };
+    const r = await POST(postReq({ horseId: "h1", type: "photo", sourceTrainerId: "t1" }));
+    expect(r.status).toBe(202);
+    expect(state.calls.storage).toEqual([{ bucket: "post-media", path: "p7/original" }]);
+    const j = await r.json();
+    expect(j.data.uploads).toHaveLength(1);
+  });
+
+  it("photoCount: 1 behaves identically to absent", async () => {
+    asAdmin();
+    state.tables.horse = { select: { single: { id: "h1" } } };
+    state.tables.post = { mutate: { single: { id: "p8", status: "draft", type: "photo", horse_id: "h1" } } };
+    const r = await POST(
+      postReq({ horseId: "h1", type: "photo", sourceTrainerId: "t1", photoCount: 1 }),
+    );
+    expect(r.status).toBe(202);
+    expect(state.calls.storage).toEqual([{ bucket: "post-media", path: "p8/original" }]);
+    const j = await r.json();
+    expect(j.data.uploads).toHaveLength(1);
+    expect(j.data.uploads[0]).toMatchObject({ sortOrder: 0, path: "p8/original" });
+  });
+
+  it("photoCount: 11 → 400 validation_failed, no Storage call at all", async () => {
+    asAdmin();
+    const r = await POST(
+      postReq({ horseId: "h1", type: "photo", sourceTrainerId: "t1", photoCount: 11 }),
+    );
+    expect(r.status).toBe(400);
+    const j = await r.json();
+    expect(j.error.code).toBe("validation_failed");
+    expect(state.calls.storage).toHaveLength(0);
+  });
+
+  it.each([0, 2.5, "3"])("photoCount: %j → 400 validation_failed", async (photoCount) => {
+    asAdmin();
+    const r = await POST(
+      postReq({ horseId: "h1", type: "photo", sourceTrainerId: "t1", photoCount }),
+    );
+    expect(r.status).toBe(400);
+    const j = await r.json();
+    expect(j.error.code).toBe("validation_failed");
+  });
+
+  it("photoCount: 3 with type: 'video' → 400 (only a photo post may exceed 1), no Mux call", async () => {
+    asAdmin();
+    const r = await POST(
+      postReq({ horseId: "h1", type: "video", sourceTrainerId: "t1", photoCount: 3 }),
+    );
+    expect(r.status).toBe(400);
+    const j = await r.json();
+    expect(j.error.code).toBe("validation_failed");
+    expect(createMuxDirectUpload).not.toHaveBeenCalled();
+  });
+
+  it("photoCount: 2 with type: 'voice' → 400 (only a photo post may exceed 1)", async () => {
+    asAdmin();
+    const r = await POST(
+      postReq({ horseId: "h1", type: "voice", sourceTrainerId: "t1", photoCount: 2 }),
+    );
+    expect(r.status).toBe(400);
+    const j = await r.json();
+    expect(j.error.code).toBe("validation_failed");
+  });
+
+  it("post.media_url is still recorded as <id>/original for a multi-photo create (the mirror starts at slot 0)", async () => {
+    asAdmin();
+    state.tables.horse = { select: { single: { id: "h1" } } };
+    state.tables.post = { mutate: { single: { id: "p9", status: "draft", type: "photo", horse_id: "h1" } } };
+    await POST(postReq({ horseId: "h1", type: "photo", sourceTrainerId: "t1", photoCount: 3 }));
+    const updateCall = state.calls.mutations.find((m) => m.table === "post" && m.op === "update");
+    expect(updateCall?.payload).toMatchObject({ media_url: "p9/original" });
+  });
+
+  it("signing failure on a multi-photo create → 502 storage_unavailable, draft rolled back", async () => {
+    asAdmin();
+    state.tables.horse = { select: { single: { id: "h1" } } };
+    state.tables.post = { mutate: { single: { id: "p10", status: "draft", type: "photo", horse_id: "h1" } } };
+    state.storage.signed = { data: null, error: { message: "nope" } };
+    const r = await POST(
+      postReq({ horseId: "h1", type: "photo", sourceTrainerId: "t1", photoCount: 3 }),
+    );
+    expect(r.status).toBe(502);
+    const j = await r.json();
+    expect(j.error.code).toBe("storage_unavailable");
+    // Scoped, not a bare DELETE (guardrail 2) — same shape as the voice
+    // rollback assertion above.
+    expect(state.calls.mutations).toContainEqual(
+      expect.objectContaining({
+        table: "post",
+        op: "delete",
+        filters: expect.arrayContaining([
+          { column: "id", value: "p10" },
+          { column: "status", value: "draft" },
+        ]),
+      }),
+    );
+  });
+});

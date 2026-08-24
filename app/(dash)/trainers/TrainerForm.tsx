@@ -260,13 +260,22 @@ export default function TrainerForm(props: Props) {
         if (!res.ok) {
           setError(
             res.status === 409
-              ? "A trainer with a matching name already exists — adjust the name."
+              ? // Deliberately does NOT advise renaming. This is the last line of
+                // defence against duplicates, and it is reachable in a state where
+                // the trainer was already created (a lost response after the
+                // server committed) — telling the admin to change the name is
+                // exactly what turns that into a second live trainer.
+                "A trainer with this name already exists. Open it from the Trainers list rather than adding another."
               : await readError(res),
           );
           return;
         }
         const { data } = await res.json();
         trainerId = data.id;
+        // Recorded BEFORE any further await. The trainer row is committed at this
+        // point, so if anything after this throws — saveContacts hitting a network
+        // drop, say — a re-submit must UPDATE this trainer, never create a second.
+        setSavedId(trainerId);
         await saveContacts(trainerId);
       }
 
@@ -277,6 +286,11 @@ export default function TrainerForm(props: Props) {
 
       router.push("/trainers");
       router.refresh();
+    } catch {
+      // Without this, a rejection mid-save unwound silently: no message, the
+      // button simply re-enabled, and the admin had no way to tell whether
+      // anything had been written.
+      setError("Something went wrong while saving. Some changes may already be saved — reload before retrying.");
     } finally {
       setSaving(false);
     }

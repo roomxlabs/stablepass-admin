@@ -12,7 +12,11 @@ import TrainerForm, { type TrainerData } from "./TrainerForm";
 
 const h = vi.hoisted(() => ({
   storage: [] as { bucket: string; op: string; path?: string; paths?: string[] }[],
-  script: { uploadError: null as { message: string } | null, removeError: null as { message: string } | null },
+  script: {
+    uploadError: null as { message: string } | null,
+    removeError: null as { message: string } | null,
+    contactsThrow: false,
+  },
 }));
 
 vi.mock("next/link", () => ({
@@ -39,7 +43,8 @@ vi.mock("@/lib/supabase/client", () => ({
         },
         remove: async (paths: string[]) => {
           h.storage.push({ bucket, op: "remove", paths });
-          return { data: null, error: h.script.removeError };
+          // Mirrors storage-api: the response lists the rows actually removed.
+          return { data: paths.map((name) => ({ name })), error: h.script.removeError };
         },
       }),
     },
@@ -59,6 +64,8 @@ function stubFetch() {
       const u = String(url);
       // The signed download of the private original.
       if (u.startsWith("https://signed.local/")) return { ok: true, blob: async () => ({ type: "image/jpeg" }) };
+      // A network drop on the contacts write, mid-save.
+      if (h.script.contactsThrow && u.includes("/contacts")) throw new TypeError("Failed to fetch");
       bff.push({
         url: u,
         method: init?.method,
@@ -94,6 +101,7 @@ beforeEach(() => {
   h.storage.length = 0;
   h.script.uploadError = null;
   h.script.removeError = null;
+  h.script.contactsThrow = false;
   bff = [];
   push.mockClear();
   stubFetch();
@@ -181,6 +189,9 @@ describe("TrainerForm — saving with the toggle ON copies the photo", () => {
     // idempotent, and the only way to be sure nothing was left behind by an
     // earlier half-completed publish) — but it must never PUT anything there.
     expect(h.storage.filter((c) => c.op === "upload")).toHaveLength(0);
+    // …and it really does sweep. Without this the comment above was the only
+    // thing asserting it, so reverting the sweep left this test green.
+    expect(h.storage.some((c) => c.op === "remove" && c.bucket === "marketing-photos")).toBe(true);
   });
 });
 
@@ -245,6 +256,32 @@ describe("TrainerForm — a failed copy never blocks the save", () => {
     await waitFor(() => expect(push).toHaveBeenCalledWith("/trainers"));
     expect(patches().filter((c) => "marketingVisible" in (c.body ?? {}))).toHaveLength(profilePatches);
     expect(patches().at(-1)!.body!.marketingPhotoPath).toBe(`trainers/${EDIT_ID}.jpg`);
+  });
+
+  // Regression: `savedId` used to be recorded only AFTER `saveContacts`, and
+  // onSubmit had no catch. A network drop writing contacts therefore unwound
+  // past it silently — no message, button re-enabled — and the next submit
+  // created a SECOND trainer even though the first was already committed.
+  it("re-submitting after the contacts write THROWS updates, it does not create again", async () => {
+    h.script.contactsThrow = true;
+    render(<TrainerForm mode="create" />);
+    fireEvent.change(screen.getByTestId("trainer-name"), { target: { value: "New Trainer" } });
+    // Give contact 1 a name so saveContacts actually issues a request.
+    fireEvent.change(screen.getAllByPlaceholderText("e.g. Sam Freedman")[0], {
+      target: { value: "Chris Waller" },
+    });
+    fireEvent.click(screen.getByTestId("submit-trainer"));
+
+    await waitFor(() => expect(bff.filter((c) => c.url === "/api/admin/trainers")).toHaveLength(1));
+    // The failure must be visible rather than silently re-enabling the button.
+    await waitFor(() => expect(screen.getByRole("alert").textContent).toMatch(/went wrong/i));
+
+    h.script.contactsThrow = false;
+    fireEvent.click(screen.getByTestId("submit-trainer"));
+    await waitFor(() =>
+      expect(bff.some((c) => c.url === `/api/admin/trainers/${NEW_ID}` && c.method === "PATCH")).toBe(true),
+    );
+    expect(bff.filter((c) => c.url === "/api/admin/trainers")).toHaveLength(1);
   });
 
   // Regression: `isEdit` came from the props and never updated, so after a

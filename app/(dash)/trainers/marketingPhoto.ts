@@ -94,18 +94,44 @@ export function marketingPhotoCandidates(trainerId: string): string[] {
   return MARKETING_EXTS.map((ext) => `trainers/${trainerId}.${ext}`);
 }
 
-async function removeKeys(sb: SupabaseClient, keys: string[]): Promise<boolean> {
+/**
+ * `expected`, when given, is a key we KNOW should have been deleted.
+ *
+ * storage-api answers a delete with the rows it actually removed, and a delete
+ * that removed nothing because RLS filtered it is byte-identical to one that
+ * removed nothing because the keys did not exist: `{ data: [], error: null }`.
+ * Without this check an admin whose session had lost its AAL2 claim would see a
+ * clean "removed from the site" while the object stayed anonymously fetchable —
+ * the one failure mode where this guardrail fails SILENTLY. Un-publish is also
+ * the only path with no preceding upload to prove the session can still write.
+ */
+async function removeKeys(
+  sb: SupabaseClient,
+  keys: string[],
+  expected: string | null = null,
+): Promise<boolean> {
   if (keys.length === 0) return true;
-  const { error } = await sb.storage.from(MARKETING_PHOTO_BUCKET).remove(keys);
-  return !error;
+  const { data, error } = await sb.storage.from(MARKETING_PHOTO_BUCKET).remove(keys);
+  if (error) return false;
+  if (!expected) return true;
+  // Older/faked clients may not return the removed rows; only treat an ARRAY
+  // response as authoritative, so a missing `data` is not read as a failure.
+  if (!Array.isArray(data)) return true;
+  return data.some((o) => (o as { name?: string })?.name === expected);
 }
 
 // Delete every public object for this trainer except `keep` (the one just
 // uploaded, if any).
-async function sweep(sb: SupabaseClient, trainerId: string, keep: string | null): Promise<boolean> {
+async function sweep(
+  sb: SupabaseClient,
+  trainerId: string,
+  keep: string | null,
+  expected: string | null = null,
+): Promise<boolean> {
   return removeKeys(
     sb,
     marketingPhotoCandidates(trainerId).filter((p) => p !== keep),
+    expected,
   );
 }
 
@@ -141,8 +167,16 @@ export async function publishMarketingPhoto(
     // private bucket it is copied FROM sets no such restriction. Passing a
     // known-good contentType for unknown bytes would launder exactly the case
     // the allow-list exists to stop, so the allow-list is honoured here too.
-    if (blob.type && !ALLOWED_CONTENT_TYPES.has(blob.type))
-      return { ok: false, path: previousPath, message: unsupportedMessage(blob.type) };
+    // Note `!blob.type` is refused too, not just a known-bad type. Unknown bytes
+    // relabelled from the file extension are the same laundering by another
+    // door, and the only thing stopping them reaching the public origin today is
+    // the bucket's allow-list — one layer away, and green tests either way.
+    if (!blob.type || !ALLOWED_CONTENT_TYPES.has(blob.type))
+      return {
+        ok: false,
+        path: previousPath,
+        message: unsupportedMessage(blob.type || "an unrecognised format"),
+      };
 
     const { error } = await sb.storage.from(MARKETING_PHOTO_BUCKET).upload(target, blob, {
       upsert: true,
@@ -186,7 +220,9 @@ export async function unpublishMarketingPhoto(
   // an upload succeeded but recording the path did not, and treating it as
   // "nothing to do" is what let an object outlive its trainer's consent.
   try {
-    if (!(await sweep(sb, trainerId, null)))
+    // When a path IS recorded we know that object exists, so require the delete
+    // to actually report removing it — see removeKeys.
+    if (!(await sweep(sb, trainerId, null, publishedPath)))
       return { ok: false, path: publishedPath, message: REMOVE_FAILED };
     return { ok: true, path: null };
   } catch {

@@ -65,7 +65,6 @@ test("marketing toggle ON", async ({ page }) => {
   // t1 is seeded marketing_visible in the mock, so this asserts the EDIT PAGE
   // actually seeds the checkbox rather than tolerating either state.
   await expect(cb).toBeChecked();
-  await expect(cb).toBeChecked();
   // getByText() is a case-insensitive substring match, so the bare string also
   // matches the checkbox's own "Show on marketing site" label — scope to the
   // card heading.

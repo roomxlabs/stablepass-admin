@@ -21,6 +21,8 @@ function makeFakeSb(script: {
   signedUrl?: string | null;
   uploadError?: { message: string } | null;
   removeError?: { message: string } | null;
+  /** Model an RLS-filtered delete: 200, no error, but nothing actually removed. */
+  removeFilteredByRls?: boolean;
 }) {
   const calls: Call[] = [];
   const sb = {
@@ -38,7 +40,11 @@ function makeFakeSb(script: {
         },
         remove: async (paths: string[]) => {
           calls.push({ bucket, op: "remove", paths });
-          return { data: null, error: script.removeError ?? null };
+          // storage-api answers with the rows it actually deleted.
+          return {
+            data: script.removeFilteredByRls ? [] : paths.map((name) => ({ name })),
+            error: script.removeError ?? null,
+          };
         },
       }),
     },
@@ -218,6 +224,18 @@ describe("publishMarketingPhoto — refusing what the public bucket must not hol
     expect(calls.some((c) => c.op === "upload")).toBe(false);
   });
 
+  it("REFUSES bytes with NO content type rather than labelling them from the extension", async () => {
+    // The other door into the same laundering: unknown bytes relabelled
+    // image/jpeg because the private path happened to end in .jpg.
+    const { sb, calls } = makeFakeSb({});
+    stubFetch(true, "");
+    const r = await publishMarketingPhoto(sb, TRAINER_ID, "mystery.jpg");
+    expect(r.ok).toBe(false);
+    if (r.ok) throw new Error("unreachable");
+    expect(r.message).toMatch(/unrecognised format/i);
+    expect(calls.some((c) => c.op === "upload")).toBe(false);
+  });
+
   it("declares the real content type on the upload, never a guessed one", async () => {
     const { sb, calls } = makeFakeSb({});
     stubFetch(true, "image/webp");
@@ -302,6 +320,25 @@ describe("unpublishMarketingPhoto — toggle OFF", () => {
     expect(r.path).toBe(JPG);
     if (r.ok) throw new Error("unreachable");
     expect(r.message).toMatch(/could not be removed/i);
+  });
+
+  it("REGRESSION: a delete that removed NOTHING is not reported as success", async () => {
+    // storage-api returns 200 with an empty list both when the keys did not
+    // exist AND when RLS filtered the delete (an admin session that lost its
+    // AAL2 claim). Treating that as success cleared the DB path while the object
+    // stayed anonymously fetchable — the one silent failure of this guardrail.
+    const { sb } = makeFakeSb({ removeFilteredByRls: true });
+    const r = await unpublishMarketingPhoto(sb, TRAINER_ID, JPG);
+    expect(r.ok).toBe(false);
+    expect(r.path).toBe(JPG);
+  });
+
+  it("does not warn when there was no recorded object to remove", async () => {
+    // Same empty response, but nothing was expected to exist, so this is a
+    // genuine no-op rather than a filtered delete.
+    const { sb } = makeFakeSb({ removeFilteredByRls: true });
+    const r = await unpublishMarketingPhoto(sb, TRAINER_ID, null);
+    expect(r).toEqual({ ok: true, path: null });
   });
 
   it("touches only the public bucket — never the private one (guardrail)", async () => {

@@ -387,7 +387,10 @@ export default function HorseForm({ mode, trainers, horseId, initial = {} }: Pro
             <div className="adm-card-head">
               <div>
                 <h2>Profile photo</h2>
-                <div className="sub">Cover image shown on the horse&apos;s profile (16:9 recommended).</div>
+                {/* ENG-749: was "Cover image … (16:9 recommended)". The form now
+                    saves a SQUARE crop, so that line told the admin to supply a
+                    shape this screen no longer stores. */}
+                <div className="sub">Shown on the horse&apos;s profile and in horse lists (square crop).</div>
               </div>
             </div>
             <div className="adm-card-body">
@@ -417,7 +420,7 @@ export default function HorseForm({ mode, trainers, horseId, initial = {} }: Pro
                         </>
                       )}
                     </div>
-                    <div className="adm-help" style={{ marginTop: 6 }}>JPEG or PNG · up to 5 MB · ideally 1600×900</div>
+                    <div className="adm-help" style={{ marginTop: 6 }}>JPEG or PNG · up to 5 MB · ideally 1200×1200</div>
                   </>
                 )}
                 <input ref={fileRef} type="file" accept="image/png,image/jpeg" onChange={onPickPhoto} />

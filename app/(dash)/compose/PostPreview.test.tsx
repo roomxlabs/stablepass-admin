@@ -382,3 +382,105 @@ describe("guardrail: no watermarking in admin", () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// ENG-748 — the multi-photo carousel.
+//
+// The governing rule is ENG-740's, not a design preference: a post with ZERO
+// post_media rows renders from post.media_url alone, so "0 rows" and "1 photo"
+// are the SAME rendering case. Only two or more photos may show a pager.
+// ---------------------------------------------------------------------------
+describe("ENG-748 · the preview carousel", () => {
+  const THREE = ["blob:a", "blob:b", "blob:c"];
+
+  it("draws no dots and no count for a single photo", () => {
+    renderPreview({ mediaType: "photo", mediaUrl: "blob:a", photos: ["blob:a"] });
+    expect(screen.queryByTestId("preview-dots")).toBeNull();
+    expect(screen.queryByTestId("preview-count")).toBeNull();
+  });
+
+  it("draws no dots when there is no photo set at all (a legacy post)", () => {
+    // The mirror-only case: post_media is empty, post.media_url carries the
+    // photo. It must look exactly like the single-photo case above.
+    renderPreview({ mediaType: "photo", mediaUrl: "blob:a", photos: undefined });
+    expect(screen.queryByTestId("preview-dots")).toBeNull();
+    expect(screen.getByTestId("preview-img").getAttribute("src")).toBe("blob:a");
+  });
+
+  it("draws one dot per photo, and a 1-based count, for a set of three", () => {
+    renderPreview({ mediaType: "photo", mediaUrl: THREE[0], photos: THREE });
+    expect(screen.getAllByTestId(/^preview-dot-\d$/)).toHaveLength(3);
+    expect(screen.getByTestId("preview-count").textContent).toBe("1/3");
+  });
+
+  it("opens on position 0 — the photo the mirror points at", () => {
+    renderPreview({ mediaType: "photo", mediaUrl: THREE[0], photos: THREE });
+    expect(screen.getByTestId("preview-img").getAttribute("src")).toBe("blob:a");
+    expect(screen.getByTestId("preview-dot-0").getAttribute("aria-current")).toBe("true");
+  });
+
+  it("pages to the photo whose dot was clicked", () => {
+    renderPreview({ mediaType: "photo", mediaUrl: THREE[0], photos: THREE });
+    fireEvent.click(screen.getByTestId("preview-dot-2"));
+    expect(screen.getByTestId("preview-img").getAttribute("src")).toBe("blob:c");
+    expect(screen.getByTestId("preview-count").textContent).toBe("3/3");
+    expect(screen.getByTestId("preview-dot-2").getAttribute("aria-current")).toBe("true");
+    expect(screen.getByTestId("preview-dot-0").getAttribute("aria-current")).toBe("false");
+  });
+
+  it("names each dot's position for a screen reader", () => {
+    renderPreview({ mediaType: "photo", mediaUrl: THREE[0], photos: THREE });
+    expect(screen.getByTestId("preview-dot-1").getAttribute("aria-label")).toBe(
+      "Show photo 2 of 3",
+    );
+  });
+
+  it("clamps the shown index when the set shrinks under it", () => {
+    // The operator removes the photo they are looking at. Deriving the index on
+    // read (rather than correcting it in an effect) is what stops this painting
+    // a blank box for a frame — or reading past the end of the array.
+    const { rerender } = render(
+      <PostPreview data={{ ...BASE, mediaType: "photo", mediaUrl: THREE[0], photos: THREE }} />,
+    );
+    fireEvent.click(screen.getByTestId("preview-dot-2"));
+    expect(screen.getByTestId("preview-count").textContent).toBe("3/3");
+
+    rerender(
+      <PostPreview
+        data={{ ...BASE, mediaType: "photo", mediaUrl: THREE[0], photos: THREE.slice(0, 2) }}
+      />,
+    );
+    expect(screen.getByTestId("preview-count").textContent).toBe("2/2");
+    expect(screen.getByTestId("preview-img").getAttribute("src")).toBe("blob:b");
+  });
+
+  it("re-decodes on a page rather than reusing the element", () => {
+    // Keyed by URL. Without the key React reuses the <img>, onLoad never fires
+    // for the new photo, and the readout keeps describing the previous one.
+    renderPreview({ mediaType: "photo", mediaUrl: THREE[0], photos: THREE });
+    const first = screen.getByTestId("preview-img");
+    fireEvent.click(screen.getByTestId("preview-dot-1"));
+    expect(screen.getByTestId("preview-img")).not.toBe(first);
+  });
+
+  it("NEVER draws a carousel for a video, however many photos are passed", () => {
+    // The reel path is ENG-747's and must stay untouched: routing a video
+    // through here would put a pager on a 9:16 reel and re-render it as an
+    // <img>. `photos` is meaningless for a single Mux asset.
+    renderPreview({ mediaType: "video", mediaUrl: "blob:reel", photos: THREE });
+    expect(screen.queryByTestId("preview-dots")).toBeNull();
+    expect(screen.getByTestId("preview-video")).toBeTruthy();
+    expect(screen.queryByTestId("preview-img")).toBeNull();
+  });
+
+  it("keeps the media box at 16:10 across a page — photos never re-clamp", () => {
+    // resolveAspect short-circuits photos to ASPECT_DEFAULT, so the card does
+    // not jump as the operator pages. Pinning it here because a future change
+    // that let photos measure would make the carousel visibly lurch.
+    renderPreview({ mediaType: "photo", mediaUrl: THREE[0], photos: THREE });
+    const box = screen.getByTestId("preview-media");
+    expect(box.style.aspectRatio).toBe("1.6");
+    fireEvent.click(screen.getByTestId("preview-dot-1"));
+    expect(screen.getByTestId("preview-media").style.aspectRatio).toBe("1.6");
+  });
+});

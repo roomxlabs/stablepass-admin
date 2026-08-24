@@ -221,6 +221,13 @@ describe("ComposeScreen", () => {
       title: null,
       body: "Spot-on before Saturday.",
       sourceTrainerId: "t1",
+      // ENG-748 — a single-photo post now also persists its post_media row 0.
+      // This is the ticket's "mirror only; one post_media row", and ENG-740's
+      // "row 0 is created lazily by the first admin edit": the mirror still
+      // points at <postId>/original and nothing an existing client reads
+      // changed, but the ordered table now knows about this photo too, so the
+      // post can gain a second one later without a backfill.
+      media: ["p1/original"],
     });
   });
 
@@ -498,6 +505,10 @@ describe("ComposeScreen", () => {
       title: null,
       body: "",
       sourceTrainerId: "t1",
+      // ENG-748 — the scheduled path persists the photo set too, for the same
+      // reason the publish path does (post_media row 0 is created lazily on the
+      // first admin write). Same single photo, same mirror.
+      media: ["p1/original"],
     });
     expect(api.patchPost.mock.invocationCallOrder[0]).toBeLessThan(
       api.schedulePost.mock.invocationCallOrder[0],
@@ -1087,5 +1098,581 @@ describe("ENG-745 · a label this build does not know", () => {
     // Exactly "No label" + the 13 presets; nothing extra bolted on.
     expect([...select.options].map((o) => o.value)).toEqual(["", ...POST_LABEL_PRESETS]);
     expect(select.value).toBe("Trial");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ENG-748 — multi-photo compose: the multiple input, the cap, the reorder strip
+// and the media_url mirror that has to follow it.
+// ---------------------------------------------------------------------------
+describe("ENG-748 · multi-photo compose", () => {
+  // This block provides its OWN object-URL stub and restores it, so nothing
+  // here depends on a global another describe happened to leak (ENG-748 C2).
+  const realCreate = (URL as unknown as { createObjectURL?: unknown }).createObjectURL;
+  let urlSeq = 0;
+  beforeEach(() => {
+    Object.defineProperty(URL, "createObjectURL", {
+      value: () => `blob:eng748-${++urlSeq}`,
+      configurable: true,
+      writable: true,
+    });
+  });
+  afterEach(() => {
+    Object.defineProperty(URL, "createObjectURL", {
+      value: realCreate,
+      configurable: true,
+      writable: true,
+    });
+  });
+
+  /** N photo Files, named so display order is legible in a failure message. */
+  function photoFiles(n: number): File[] {
+    return Array.from(
+      { length: n },
+      (_, i) => new File([new Uint8Array([i])], `p${i + 1}.jpg`, { type: "image/jpeg" }),
+    );
+  }
+
+  /** The 202 a photo create returns, with one upload target per slot. */
+  function draftWithSlots(n: number) {
+    return {
+      id: "p1",
+      status: "draft",
+      type: "photo",
+      watermarked: false,
+      uploadUrl: "https://storage.local/post-media/p1/original",
+      path: "p1/original",
+      token: "tok-0",
+      bucket: "post-media",
+      uploads: Array.from({ length: n }, (_, slot) => ({
+        sortOrder: slot,
+        path: slot === 0 ? "p1/original" : `p1/photo-${slot}`,
+        token: `tok-${slot}`,
+        uploadUrl: `https://storage.local/post-media/p1/${slot === 0 ? "original" : `photo-${slot}`}`,
+        bucket: "post-media",
+      })),
+    };
+  }
+
+  /** Pick `n` photos and wait for every tile to settle. */
+  async function pickPhotos(n: number) {
+    api.createDraft.mockResolvedValue(draftWithSlots(n));
+    api.uploadPhotoToStorage.mockResolvedValue(undefined);
+    api.patchPost.mockResolvedValue(undefined);
+    api.publishPost.mockResolvedValue(undefined);
+
+    renderScreen();
+    pickHorse("horse-opt-h1");
+    selectType("photo");
+    fireEvent.change(screen.getByTestId("media-input"), { target: { files: photoFiles(n) } });
+    await waitFor(() => expect(api.uploadPhotoToStorage).toHaveBeenCalledTimes(n));
+    await screen.findByTestId("upload-done");
+  }
+
+  /**
+   * The strip's display order, read off each tile's `data-photo-path`.
+   *
+   * NOT off `img src`. jsdom has no `URL.createObjectURL`, so `previewUrl` is
+   * null and no <img> renders — `stripOrder()` returned ["","",""] and every
+   * order assertion compared empty strings to empty strings. The block only
+   * appeared to work because an unrelated earlier `describe` stubs
+   * `URL.createObjectURL` onto the global in its `beforeEach` and never
+   * restores it, so this block inherited a stub it never asked for. Run with
+   * `-t "reorder"` and the same tests passed with `movePhoto` deleted.
+   * Confirmed both ways before fixing (ENG-748 C2).
+   */
+  const stripOrder = () =>
+    screen
+      .getAllByTestId(/^photo-tile-\d+$/)
+      .map((t) => t.getAttribute("data-photo-path") ?? "");
+
+  describe("the multiple attribute is photo-only", () => {
+    it("sets `multiple` once the operator chooses Photo", () => {
+      renderScreen();
+      selectType("photo");
+      expect((screen.getByTestId("media-input") as HTMLInputElement).multiple).toBe(true);
+    });
+
+    it("does NOT set it for video — a single Mux asset", () => {
+      renderScreen();
+      selectType("video");
+      expect((screen.getByTestId("media-input") as HTMLInputElement).multiple).toBe(false);
+    });
+
+    it("does NOT set it for voice — a single Storage object", () => {
+      renderScreen();
+      selectType("voice");
+      expect((screen.getByTestId("media-input") as HTMLInputElement).multiple).toBe(false);
+    });
+
+    it("does NOT set it in edit mode, where media is read-only", () => {
+      const initial: EditInitial = {
+        id: "post-9",
+        status: "published",
+        mediaType: "photo",
+        mediaUrl: "https://signed.example/photo.jpg",
+        title: "T",
+        caption: "C",
+        bylineId: "t1",
+        label: null,
+        scheduledFor: null,
+        horse: HORSES[0],
+      };
+      render(<ComposeScreen horses={HORSES} trainers={TRAINERS} initial={initial} />);
+      expect((screen.getByTestId("media-input") as HTMLInputElement).multiple).toBe(false);
+    });
+  });
+
+  describe("the cap", () => {
+    it("blocks 11 files with a message and uploads NOTHING", async () => {
+      api.createDraft.mockResolvedValue(draftWithSlots(11));
+      renderScreen();
+      pickHorse("horse-opt-h1");
+      selectType("photo");
+      fireEvent.change(screen.getByTestId("media-input"), { target: { files: photoFiles(11) } });
+
+      const err = await screen.findByTestId("photo-error");
+      expect(err.textContent).toContain("up to 10 photos");
+      expect(err.textContent).toContain("you picked 11");
+      // The whole point: nothing was created and nothing was uploaded.
+      expect(api.createDraft).not.toHaveBeenCalled();
+      expect(api.uploadPhotoToStorage).not.toHaveBeenCalled();
+      expect(screen.queryByTestId("photo-strip")).toBeNull();
+    });
+
+    it("accepts exactly 10", async () => {
+      await pickPhotos(10);
+      expect(screen.getAllByTestId(/^photo-tile-\d+$/)).toHaveLength(10);
+      expect(api.uploadPhotoToStorage).toHaveBeenCalledTimes(10);
+    });
+  });
+
+  describe("the upload set", () => {
+    it("asks for one target per file and uploads each to its own slot path", async () => {
+      await pickPhotos(3);
+      expect(api.createDraft).toHaveBeenCalledWith({
+        horseId: "h1",
+        type: "photo",
+        sourceTrainerId: "t1",
+        photoCount: 3,
+      });
+      // Slot 0 keeps <postId>/original; extras take <postId>/photo-<n>.
+      expect(api.uploadPhotoToStorage.mock.calls.map((c) => c[0].path)).toEqual([
+        "p1/original",
+        "p1/photo-1",
+        "p1/photo-2",
+      ]);
+    });
+
+    it("omits photoCount entirely for a single photo (byte-identical request)", async () => {
+      await pickPhotos(1);
+      expect(api.createDraft).toHaveBeenCalledWith({
+        horseId: "h1",
+        type: "photo",
+        sourceTrainerId: "t1",
+      });
+    });
+
+    it("renders a strip tile per photo, numbered from 1", async () => {
+      await pickPhotos(3);
+      expect(screen.getByTestId("photo-pos-0").textContent).toBe("1");
+      expect(screen.getByTestId("photo-pos-2").textContent).toBe("3");
+      expect(screen.getByTestId("photo-strip-help").textContent).toContain("3 of 10 photos");
+    });
+
+    it("badges only position 0 as the cover", async () => {
+      await pickPhotos(3);
+      expect(screen.getAllByTestId("photo-cover")).toHaveLength(1);
+      const tile0 = screen.getByTestId("photo-tile-0");
+      expect(within(tile0).getByTestId("photo-cover")).toBeTruthy();
+    });
+  });
+
+  describe("reorder", () => {
+    it("moves a photo up, and the strip order follows", async () => {
+      await pickPhotos(3);
+      const before = stripOrder();
+      fireEvent.click(screen.getByTestId("photo-up-2"));
+      const after = stripOrder();
+      expect(after).toEqual([before[0], before[2], before[1]]);
+    });
+
+    it("moves a photo down by exactly one place", async () => {
+      await pickPhotos(3);
+      const before = stripOrder();
+      fireEvent.click(screen.getByTestId("photo-down-0"));
+      expect(stripOrder()).toEqual([before[1], before[0], before[2]]);
+    });
+
+    it("disables up on the first tile and down on the last", async () => {
+      await pickPhotos(3);
+      expect((screen.getByTestId("photo-up-0") as HTMLButtonElement).disabled).toBe(true);
+      expect((screen.getByTestId("photo-down-2") as HTMLButtonElement).disabled).toBe(true);
+      expect((screen.getByTestId("photo-up-2") as HTMLButtonElement).disabled).toBe(false);
+      expect((screen.getByTestId("photo-down-0") as HTMLButtonElement).disabled).toBe(false);
+    });
+
+    it("disables BOTH directions for a single photo", async () => {
+      await pickPhotos(1);
+      expect((screen.getByTestId("photo-up-0") as HTMLButtonElement).disabled).toBe(true);
+      expect((screen.getByTestId("photo-down-0") as HTMLButtonElement).disabled).toBe(true);
+    });
+
+    it("swaps a two-photo set", async () => {
+      await pickPhotos(2);
+      const before = stripOrder();
+      fireEvent.click(screen.getByTestId("photo-up-1"));
+      expect(stripOrder()).toEqual([before[1], before[0]]);
+    });
+
+    it("MOVES THE COVER BADGE when the reorder changes position 0", async () => {
+      await pickPhotos(3);
+      fireEvent.click(screen.getByTestId("photo-up-1"));
+      // Still exactly one cover, and it is on the tile now at position 0.
+      expect(screen.getAllByTestId("photo-cover")).toHaveLength(1);
+      expect(within(screen.getByTestId("photo-tile-0")).getByTestId("photo-cover")).toBeTruthy();
+    });
+
+    it("SENDS CONTIGUOUS ORDER, AND THE MIRROR FOLLOWS, on save", async () => {
+      // The ticket's headline hazard. Every existing client reads
+      // post.media_url; if the reorder does not move it, the feed and the
+      // member card show a different image than this preview promised.
+      await pickPhotos(3);
+      // Bring photo-2 (slot 2) to the very front: up twice.
+      fireEvent.click(screen.getByTestId("photo-up-2"));
+      fireEvent.click(screen.getByTestId("photo-up-1"));
+
+      fireEvent.click(screen.getByTestId("primary-action"));
+      await waitFor(() => expect(api.patchPost).toHaveBeenCalled());
+
+      const sent = api.patchPost.mock.calls[0][1].media as string[];
+      // Display order, and the route numbers these 0,1,2 — position 0 first.
+      expect(sent).toEqual(["p1/photo-2", "p1/original", "p1/photo-1"]);
+      // The route mirrors sent[0] into post.media_url, so asserting the head is
+      // asserting the mirror. It is NOT p1/original any more.
+      expect(sent[0]).toBe("p1/photo-2");
+      expect(sent[0]).not.toBe("p1/original");
+    });
+
+    it("the big Step 3 frame and its caption follow the COVER, not the first file picked", async () => {
+      // Found in the reorder screenshot, not by a test: the frame kept showing
+      // `mediaUrl` (the first file picked, which never moves), so after a
+      // reorder the screen said three different things at once — frame "photo
+      // 1 / gallop-1.png", strip "photo 3 is the cover", card "photo 3".
+      // Asserted on the caption line rather than the <img> src. jsdom has no
+      // URL.createObjectURL of its own; this block stubs one in its beforeEach
+      // (see above) so images DO render here, but the caption is the assertion
+      // that stays meaningful either way. The e2e screenshot proves the picture
+      // itself follows; this pins the text that names it.
+      await pickPhotos(3);
+      expect(screen.getByTestId("media-filled").textContent).toContain("p1.jpg");
+
+      // Bring photo 3 to the front.
+      fireEvent.click(screen.getByTestId("photo-up-2"));
+      fireEvent.click(screen.getByTestId("photo-up-1"));
+
+      const zoneAfter = screen.getByTestId("media-filled").textContent ?? "";
+      expect(zoneAfter).not.toContain("p1.jpg");
+      expect(zoneAfter).toContain("p3.jpg");
+      expect(zoneAfter).toContain("cover of 3");
+      // And it agrees with the strip's cover tile.
+      expect(within(screen.getByTestId("photo-tile-0")).getByTestId("photo-cover")).toBeTruthy();
+    });
+
+    it("leaves the set unchanged on save when nothing was reordered", async () => {
+      await pickPhotos(3);
+      fireEvent.click(screen.getByTestId("primary-action"));
+      await waitFor(() => expect(api.patchPost).toHaveBeenCalled());
+      expect(api.patchPost.mock.calls[0][1].media).toEqual([
+        "p1/original",
+        "p1/photo-1",
+        "p1/photo-2",
+      ]);
+    });
+  });
+
+  describe("remove", () => {
+    it("drops the tile and compacts the display order", async () => {
+      await pickPhotos(3);
+      const before = stripOrder();
+      fireEvent.click(screen.getByTestId("photo-remove-1"));
+
+      const after = stripOrder();
+      expect(after).toHaveLength(2);
+      expect(after).toEqual([before[0], before[2]]);
+      // Renumbered, with no gap.
+      expect(screen.getByTestId("photo-pos-0").textContent).toBe("1");
+      expect(screen.getByTestId("photo-pos-1").textContent).toBe("2");
+      expect(screen.queryByTestId("photo-tile-2")).toBeNull();
+    });
+
+    it("promotes a new cover when position 0 is removed, and saves it as the mirror", async () => {
+      await pickPhotos(3);
+      fireEvent.click(screen.getByTestId("photo-remove-0"));
+      expect(within(screen.getByTestId("photo-tile-0")).getByTestId("photo-cover")).toBeTruthy();
+
+      fireEvent.click(screen.getByTestId("primary-action"));
+      await waitFor(() => expect(api.patchPost).toHaveBeenCalled());
+      const sent = api.patchPost.mock.calls[0][1].media as string[];
+      expect(sent).toEqual(["p1/photo-1", "p1/photo-2"]);
+    });
+
+    it("removing the last photo empties the strip and blocks the action", async () => {
+      await pickPhotos(1);
+      fireEvent.click(screen.getByTestId("photo-remove-0"));
+      expect(screen.queryByTestId("photo-strip")).toBeNull();
+      expect((screen.getByTestId("primary-action") as HTMLButtonElement).disabled).toBe(true);
+    });
+  });
+
+  describe("reordering while an upload is still in flight", () => {
+    it("settles the RIGHT photo — completion matches by PATH, not by index", async () => {
+      // The trap: the upload loop resolves slot by slot while the operator is
+      // free to reorder underneath it. Matching a finished upload back to a tile
+      // by ARRAY INDEX would settle whichever photo has since moved into that
+      // slot — so a photo whose bytes never landed gets marked uploaded and
+      // persisted, and its post_media row points at an object that is not there.
+      //
+      // The reorder therefore has to happen while slot 1 is genuinely IN
+      // FLIGHT. An earlier version of this test reordered after every upload
+      // had settled and passed even with index-based matching, because the
+      // state rides on the photo object and a reorder just moves the objects —
+      // it proved nothing. Verified by mutation: index-based matching turns
+      // this version red.
+      api.createDraft.mockResolvedValue(draftWithSlots(3));
+      api.patchPost.mockResolvedValue(undefined);
+      api.publishPost.mockResolvedValue(undefined);
+
+      let failSlot1!: (e: Error) => void;
+      const slot1 = new Promise<void>((_, reject) => {
+        failSlot1 = reject;
+      });
+      api.uploadPhotoToStorage
+        .mockResolvedValueOnce(undefined) // slot 0 lands
+        .mockReturnValueOnce(slot1) // slot 1 hangs
+        .mockResolvedValueOnce(undefined); // slot 2 lands
+
+      renderScreen();
+      pickHorse("horse-opt-h1");
+      selectType("photo");
+      fireEvent.change(screen.getByTestId("media-input"), { target: { files: photoFiles(3) } });
+
+      // Wait until slot 1 is the one in flight, then reorder underneath it:
+      // move p3 (index 2) to the front, so the order is [p3, p1, p2] and the
+      // in-flight photo p2 has moved from index 1 to index 2.
+      await waitFor(() => expect(api.uploadPhotoToStorage).toHaveBeenCalledTimes(2));
+      fireEvent.click(screen.getByTestId("photo-up-2"));
+      fireEvent.click(screen.getByTestId("photo-up-1"));
+
+      failSlot1(new Error("network died"));
+      await waitFor(() => expect(api.uploadPhotoToStorage).toHaveBeenCalledTimes(3));
+
+      // The failure must land on p2 — now at index 2 — NOT on index 1, which
+      // is what an index-based matcher would have marked.
+      await waitFor(() => expect(screen.getByTestId("photo-retry-2")).toBeTruthy());
+      expect(screen.queryByTestId("photo-retry-1")).toBeNull();
+      expect(screen.queryByTestId("photo-retry-0")).toBeNull();
+
+      // The saved set is the two that really uploaded, in display order, with
+      // the failed one absent — and the mirror is the new position 0.
+      fireEvent.click(screen.getByTestId("primary-action"));
+      await waitFor(() => expect(api.patchPost).toHaveBeenCalled());
+      expect(api.patchPost.mock.calls[0][1].media).toEqual(["p1/photo-2", "p1/original"]);
+    });
+  });
+
+  // ENG-748 C1 (found in review) — the screen -> preview seam. Before this,
+  // ComposeScreen.test.tsx never referenced preview-dots / preview-count /
+  // preview-dot-* even ONCE, so both "filter the carousel to uploaded photos"
+  // and "send them in reverse" were mutations that stayed green. PostPreview's
+  // own tests pass `photos` in by hand, which proves the component and nothing
+  // about who fills it.
+  describe("the preview carousel shows what will actually be PERSISTED", () => {
+    it("a failed upload leaves NO dots — 1 stored photo renders like a legacy post", async () => {
+      api.createDraft.mockResolvedValue(draftWithSlots(2));
+      api.patchPost.mockResolvedValue(undefined);
+      api.publishPost.mockResolvedValue(undefined);
+      api.uploadPhotoToStorage
+        .mockResolvedValueOnce(undefined)
+        .mockRejectedValueOnce(new Error("network died"));
+
+      renderScreen();
+      pickHorse("horse-opt-h1");
+      selectType("photo");
+      fireEvent.change(screen.getByTestId("media-input"), { target: { files: photoFiles(2) } });
+      await waitFor(() => expect(api.uploadPhotoToStorage).toHaveBeenCalledTimes(2));
+      await screen.findByTestId("photo-retry-1");
+
+      // ENG-740: a post with one stored photo must render exactly like one with
+      // zero post_media rows — no dots, no pager. Two tiles are still in the
+      // strip (the operator can retry or remove), but only one will be stored.
+      expect(screen.queryAllByTestId(/^preview-dot-\d+$/)).toHaveLength(0);
+      expect(screen.queryByTestId("preview-count")).toBeNull();
+      // And the rail is honest about the discrepancy rather than claiming 2.
+      expect(screen.getByTestId("photo-strip-help").textContent).toContain("1 of 2 uploaded");
+    });
+
+    it("counts and pages only the uploaded photos when one of three fails", async () => {
+      api.createDraft.mockResolvedValue(draftWithSlots(3));
+      api.patchPost.mockResolvedValue(undefined);
+      api.publishPost.mockResolvedValue(undefined);
+      api.uploadPhotoToStorage
+        .mockResolvedValueOnce(undefined)
+        .mockRejectedValueOnce(new Error("network died"))
+        .mockResolvedValueOnce(undefined);
+
+      renderScreen();
+      pickHorse("horse-opt-h1");
+      selectType("photo");
+      fireEvent.change(screen.getByTestId("media-input"), { target: { files: photoFiles(3) } });
+      await waitFor(() => expect(api.uploadPhotoToStorage).toHaveBeenCalledTimes(3));
+      await screen.findByTestId("photo-retry-1");
+
+      // Two stored -> a 2-page carousel, not the 3 that were picked.
+      await waitFor(() => expect(screen.getByTestId("preview-count").textContent).toBe("1/2"));
+      expect(screen.queryAllByTestId(/^preview-dot-\d+$/)).toHaveLength(2);
+    });
+
+    it("draws a dot per photo, in DISPLAY order, once all three land", async () => {
+      await pickPhotos(3);
+      expect(screen.getByTestId("preview-count").textContent).toBe("1/3");
+      expect(screen.queryAllByTestId(/^preview-dot-\d+$/)).toHaveLength(3);
+
+      // Reorder, and the carousel opens on the new cover — the same photo the
+      // strip badges and the same path that becomes post.media_url.
+      fireEvent.click(screen.getByTestId("photo-up-2"));
+      fireEvent.click(screen.getByTestId("photo-up-1"));
+      expect(stripOrder()[0]).toBe("p1/photo-2");
+      expect(screen.getByTestId("preview-count").textContent).toBe("1/3");
+
+      // M38 — the carousel must be in DISPLAY order, not merely the right
+      // length. Reversing it kept the count at "1/3" and stayed green, so
+      // assert the photo the carousel OPENS on is the same one the Step 3
+      // frame shows: both must be the cover, i.e. display position 0.
+      const frameImg = screen.getByTestId("media-filled").querySelector("img");
+      const previewImg = screen.getByTestId("preview-img");
+      expect(frameImg?.getAttribute("src")).toBeTruthy();
+      expect(previewImg.getAttribute("src")).toBe(frameImg?.getAttribute("src"));
+
+      fireEvent.click(screen.getByTestId("primary-action"));
+      await waitFor(() => expect(api.patchPost).toHaveBeenCalled());
+      expect((api.patchPost.mock.calls[0][1].media as string[])[0]).toBe("p1/photo-2");
+    });
+  });
+
+  it("C5: never sends a media set for a non-photo post type", async () => {
+    // The photo-only gate on mediaPatch is inert today only because
+    // resetMedia() runs before setPostType, two functions away. Pin it.
+    api.createDraft.mockResolvedValue({
+      id: "v1",
+      status: "draft",
+      type: "video",
+      watermarked: false,
+      uploadUrl: "https://mux.example/upload",
+      muxUploadId: "up1",
+    });
+    api.uploadVideoToMux.mockResolvedValue(undefined);
+    api.patchPost.mockResolvedValue(undefined);
+    api.publishPost.mockResolvedValue(undefined);
+
+    renderScreen();
+    pickHorse("horse-opt-h1");
+    selectType("video");
+    fireEvent.change(screen.getByTestId("media-input"), {
+      target: { files: [new File([new Uint8Array([1])], "clip.mp4", { type: "video/mp4" })] },
+    });
+    await screen.findByTestId("upload-done");
+    fireEvent.click(screen.getByTestId("primary-action"));
+    await waitFor(() => expect(api.patchPost).toHaveBeenCalled());
+    // Absent, not empty: `media: []` would DELETE a post's photos.
+    expect(api.patchPost.mock.calls[0][1]).not.toHaveProperty("media");
+  });
+
+  describe("a mid-way upload failure", () => {
+    it("keeps the uploaded set, marks the failure, and offers a retry", async () => {
+      api.createDraft.mockResolvedValue(draftWithSlots(3));
+      api.patchPost.mockResolvedValue(undefined);
+      api.publishPost.mockResolvedValue(undefined);
+      // Photo 2 of 3 fails; the other two land.
+      api.uploadPhotoToStorage
+        .mockResolvedValueOnce(undefined)
+        .mockRejectedValueOnce(new Error("network died"))
+        .mockResolvedValueOnce(undefined);
+
+      renderScreen();
+      pickHorse("horse-opt-h1");
+      selectType("photo");
+      fireEvent.change(screen.getByTestId("media-input"), { target: { files: photoFiles(3) } });
+      await waitFor(() => expect(api.uploadPhotoToStorage).toHaveBeenCalledTimes(3));
+
+      // All three tiles survive; only the middle one is failed.
+      expect(screen.getAllByTestId(/^photo-tile-\d+$/)).toHaveLength(3);
+      expect(await screen.findByTestId("photo-retry-1")).toBeTruthy();
+      expect(screen.queryByTestId("photo-retry-0")).toBeNull();
+
+      // And the post is still publishable with the two that made it — the
+      // failed photo is simply not persisted, so no post_media row can point at
+      // an object that is not in Storage.
+      fireEvent.click(screen.getByTestId("primary-action"));
+      await waitFor(() => expect(api.patchPost).toHaveBeenCalled());
+      expect(api.patchPost.mock.calls[0][1].media).toEqual(["p1/original", "p1/photo-2"]);
+    });
+
+    it("retry re-PUTs that photo to its own slot and clears the failure", async () => {
+      api.createDraft.mockResolvedValue(draftWithSlots(2));
+      api.uploadPhotoToStorage
+        .mockResolvedValueOnce(undefined)
+        .mockRejectedValueOnce(new Error("network died"));
+
+      renderScreen();
+      pickHorse("horse-opt-h1");
+      selectType("photo");
+      fireEvent.change(screen.getByTestId("media-input"), { target: { files: photoFiles(2) } });
+      const retry = await screen.findByTestId("photo-retry-1");
+
+      api.uploadPhotoToStorage.mockResolvedValueOnce(undefined);
+      fireEvent.click(retry);
+      await waitFor(() => expect(screen.queryByTestId("photo-retry-1")).toBeNull());
+      // Same slot path, not a new one — no orphaned object.
+      expect(api.uploadPhotoToStorage.mock.calls.at(-1)![0].path).toBe("p1/photo-1");
+    });
+
+    it("the cover skips a FAILED first photo, because the mirror will", async () => {
+      api.createDraft.mockResolvedValue(draftWithSlots(2));
+      api.uploadPhotoToStorage
+        .mockRejectedValueOnce(new Error("network died"))
+        .mockResolvedValueOnce(undefined);
+
+      renderScreen();
+      pickHorse("horse-opt-h1");
+      selectType("photo");
+      fireEvent.change(screen.getByTestId("media-input"), { target: { files: photoFiles(2) } });
+      await waitFor(() => expect(api.uploadPhotoToStorage).toHaveBeenCalledTimes(2));
+
+      // Position 0 failed, so post.media_url will land on photo-1 — and the
+      // badge has to say so, or it promises the feed an image never stored.
+      await waitFor(() =>
+        expect(within(screen.getByTestId("photo-tile-1")).queryByTestId("photo-cover")).toBeTruthy(),
+      );
+      expect(within(screen.getByTestId("photo-tile-0")).queryByTestId("photo-cover")).toBeNull();
+    });
+  });
+
+  describe("a non-photo file in the set", () => {
+    it("rejects the whole pick and uploads nothing", async () => {
+      renderScreen();
+      pickHorse("horse-opt-h1");
+      selectType("photo");
+      const mixed = [
+        new File([new Uint8Array([1])], "ok.jpg", { type: "image/jpeg" }),
+        new File([new Uint8Array([2])], "clip.mp4", { type: "video/mp4" }),
+      ];
+      fireEvent.change(screen.getByTestId("media-input"), { target: { files: mixed } });
+
+      const err = await screen.findByTestId("type-mismatch");
+      expect(err.textContent).toContain("clip.mp4");
+      expect(api.createDraft).not.toHaveBeenCalled();
+      expect(api.uploadPhotoToStorage).not.toHaveBeenCalled();
+    });
   });
 });

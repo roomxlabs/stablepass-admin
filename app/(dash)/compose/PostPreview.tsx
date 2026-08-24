@@ -28,6 +28,17 @@ export type PostPreviewData = {
   dims: MediaDimensions;
   /** `off` outside a fresh local pick — see MeasureState. */
   measure: MeasureState;
+  /**
+   * ENG-748 — the ordered photo set for a multi-photo post, as preview URLs in
+   * DISPLAY order. Photo posts only.
+   *
+   * Optional, and one photo is the same rendering case as none: ENG-740's
+   * contract is explicit that a post with zero `post_media` rows renders from
+   * `post.media_url` alone, so "0 rows" and "1 photo" must both draw NO dots and
+   * NO pager. Only a set of two or more becomes a carousel; anything else falls
+   * through to the single-image path below, unchanged.
+   */
+  photos?: string[];
 };
 
 export default function PostPreview({
@@ -41,7 +52,22 @@ export default function PostPreview({
   /** Called once the browser knows the file's intrinsic size, or can't. */
   onMeasure?: (dims: MediaDimensions) => void;
 }) {
-  const { horseName, byline, caption, mediaType, mediaUrl, racesToday, dims, measure } = data;
+  const { horseName, byline, caption, mediaType, mediaUrl, racesToday, dims, measure, photos } = data;
+
+  // ENG-748 — the carousel, and ONLY for two or more photos on a photo post.
+  //
+  // Video is deliberately excluded rather than "not text": a video post is a
+  // single Mux asset (ENG-740 decision 3) and routing it through here would put
+  // a pager on a reel and re-render it through the <img> branch, undoing
+  // ENG-747's 9:16 fix. Voice has no frame at all.
+  const gallery = mediaType === "photo" && (photos?.length ?? 0) > 1 ? photos! : null;
+  const [shown, setShown] = useState(0);
+  // Clamped on READ rather than corrected in an effect: the operator can delete
+  // the photo currently being shown, and an effect would paint one frame of a
+  // blank box (or an out-of-range read) before it ran. Deriving keeps the index
+  // valid in the same render that shortened the list.
+  const index = gallery ? Math.min(shown, gallery.length - 1) : 0;
+  const shownUrl = gallery ? gallery[index] : mediaUrl;
 
   // The native control bar is opaque and eats the bottom ~21% of a 16:9 box, so
   // showing it by default would hide the very edge this ticket exists to make
@@ -131,10 +157,15 @@ export default function PostPreview({
               that carries no asset — see hasMediaBox. */}
           {hasMediaBox ? (
             <div className={styles.postMedia} data-testid="preview-media" style={{ aspectRatio: `${aspect}` }}>
-              {mediaUrl && mediaType === "photo" ? (
+              {shownUrl && mediaType === "photo" ? (
                 // eslint-disable-next-line @next/next/no-img-element -- local object URL, not a remote asset
                 <img
-                  src={mediaUrl}
+                  // Keyed by URL so flipping the carousel actually swaps the
+                  // decoded image instead of React reusing the element and
+                  // firing no onLoad — which would leave the readout describing
+                  // the photo the operator just paged away from.
+                  key={shownUrl}
+                  src={shownUrl}
                   alt=""
                   data-testid="preview-img"
                   onLoad={(e) =>
@@ -184,6 +215,40 @@ export default function PostPreview({
               ) : (
                 <div className={styles.postMediaEmpty}>Media preview</div>
               )}
+
+              {/* ENG-748 — the member carousel's dots, the pager R16/R21 build
+                  against. Absent entirely for one photo (and for none), per
+                  ENG-740's rule that a post with no post_media rows renders
+                  exactly like a single-photo one.
+
+                  Real buttons, not decoration: the operator is checking the
+                  order they just arranged, so every photo has to be reachable —
+                  and reachable by keyboard, which is why this is not a row of
+                  <span>s with an onClick. The label names the position because
+                  "dot" tells a screen-reader user nothing about where they are. */}
+              {gallery ? (
+                <div className={styles.carouselDots} data-testid="preview-dots">
+                  {gallery.map((url, i) => (
+                    <button
+                      key={url}
+                      type="button"
+                      className={`${styles.carouselDot} ${i === index ? styles.carouselDotOn : ""}`}
+                      aria-label={`Show photo ${i + 1} of ${gallery.length}`}
+                      aria-current={i === index}
+                      data-testid={`preview-dot-${i}`}
+                      onClick={() => setShown(i)}
+                    />
+                  ))}
+                </div>
+              ) : null}
+
+              {/* The count, so the operator can see "3 photos" without counting
+                  dots. Same gate as the dots — never shown for a single photo. */}
+              {gallery ? (
+                <span className={styles.carouselCount} data-testid="preview-count">
+                  {index + 1}/{gallery.length}
+                </span>
+              ) : null}
             </div>
           ) : null}
 

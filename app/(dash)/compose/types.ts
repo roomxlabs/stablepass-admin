@@ -108,6 +108,20 @@ export type CreateDraftResponse = {
   path?: string;
   token?: string;
   bucket?: string;
+  /**
+   * ENG-748 — one direct-upload target per photo SLOT, ascending.
+   *
+   * Additive: `uploads[0]` is the SAME target as the four fields above, which
+   * stay at the top level so a single-photo caller reads exactly what it always
+   * did. Present for every photo/voice draft (length 1 unless `photoCount` asked
+   * for more), absent for video and text.
+   *
+   * `sortOrder` here is the UPLOAD SLOT, which is only incidentally the initial
+   * display position — the operator can reorder the strip before saving, and
+   * `post_media.sort_order` is then assigned from DISPLAY position, not from
+   * this. See `lib/posts/media.ts`.
+   */
+  uploads?: { sortOrder: number; path: string; token: string; uploadUrl: string; bucket: string }[];
 };
 
 /**

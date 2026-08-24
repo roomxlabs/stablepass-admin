@@ -889,3 +889,34 @@ and only the second returns. It still parses. Reviewing the conflict hunk alone 
 each side's block whole from `git show :2:<file>` and `:3:<file>`, confirm each is brace-balanced on
 its own (`node --check` proves syntax, not fall-through), then splice. And order the result
 specific-before-generic and grouped by table, the way the `/rest/v1/horse` block already documents.
+
+## A committed screenshot can outlive the copy it captured (ENG-746, 25 Aug 2026)
+**Symptom:** `e2e/__screenshots__/23-trainer-slug-collision.png` was committed showing the message
+"The name sets the profile web address (/chris-waller)" while the tree shipped "turned into that
+trainer's unique ID (chris-waller)". The PNG is a build artifact but it is also the PR's evidence, so
+the PR would have argued for copy the branch had already rejected as false, and a reviewer reading
+the screenshot instead of the code would have approved the wrong thing.
+**Cause:** the capture commit landed BEFORE the commit that corrected the copy. Nothing relates a
+committed PNG to the source it depicts: `tsc`, `lint` and `vitest` are all blind to it, and the e2e
+assertions that pin the copy live in the spec, not in the image. A screenshot is the one artifact in
+the repo with no integrity check at all.
+**Do this:** whenever the last commit touching copy/markup is NEWER than the last commit touching
+`e2e/__screenshots__/`, re-run the capture before opening the PR - it costs ~20s and is the only way
+to know. `git log -1 --format=%ct -- <src>` vs `git log -1 --format=%ct -- e2e/__screenshots__/`
+answers it. Re-running is also self-checking: an unchanged screen re-renders BYTE-IDENTICAL under
+this harness (22-trainer-website-seeded.png did), so `git status` after a re-shoot names exactly the
+stale ones. Deterministic only for screens without `Date.now()`-relative fixtures - see the
+relative-timestamp gotcha above for the ones that always differ.
+
+## Mutation-check a new column end to end, not just `tsc` (ENG-746, 25 Aug 2026)
+**Symptom/risk:** ENG-785 lost a column across five surfaces with a green typecheck. Adding
+`website_url` traverses five independent hops - the edit page's select string, `TrainerDetailRow`,
+`toTrainerFormSeed`, the form payload, and each route's write map - and a break in any one is silent:
+the field arrives `undefined`, coalesces to null, and the next save NULLs a value nobody touched.
+**Cause:** `tsc` cannot check a runtime PostgREST projection (the row is CAST, not parsed), and an
+OPTIONAL field in the row/prop type removes the compiler's last hold on the remaining hops.
+**Do this:** declare such a field REQUIRED (`string | null`, never `?`) in both the row type and the
+component prop type, derive the select string from a `Record<keyof RowType, true>` map so a missing
+column fails `tsc`, and then actually break each hop in turn and confirm a test goes red before
+trusting the suite. All five hops here were confirmed to fail closed. Note a too-wide projection does
+NOT 500 - PostgREST returns an error the caller swallows and the screen renders empty.

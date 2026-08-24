@@ -100,6 +100,20 @@ describe("describeOrientation", () => {
     }
   });
 
+  it("applies the reel copy to VIDEO only — the sibling guard to resolveAspect's", () => {
+    // resolveAspect's `mediaType === "video"` is pinned by its own test; this
+    // pins describeOrientation's identical guard. Without it that guard can be
+    // widened to `!== "photo"` and the suite stays green while the sentence
+    // ("as a reel") and the box (still 0.8) contradict each other — the exact
+    // bug class this ticket exists to kill. Not reachable from the real screen
+    // today (voice sets measure "off", text has no media box), so this is
+    // defence in depth: the box must not depend on an upstream gate.
+    expect(describeOrientation({ width: 1080, height: 1920 }, null)).toBe(
+      "1080×1920 · Portrait 9:16 · Members see it cropped to 4:5",
+    );
+    expect(resolveAspect({ width: 1080, height: 1920 }, null)).toBe(ASPECT_MIN);
+  });
+
   it("keeps a portrait PHOTO on the 16:10 story — the reel rule is video-only", () => {
     expect(describeOrientation({ width: 1080, height: 1920 }, "photo")).toBe(
       "1080×1920 · Portrait 9:16 · Members see it cropped to 16:10",

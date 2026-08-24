@@ -12,11 +12,26 @@ import { WEBSITE_URL_MESSAGE } from "@/lib/trainers/website-url";
 // PUBLIC one, delete on un-publish.
 
 const h = vi.hoisted(() => ({
-  storage: [] as { bucket: string; op: string; path?: string; paths?: string[] }[],
+  storage: [] as {
+    bucket: string;
+    op: string;
+    path?: string;
+    paths?: string[];
+    // ENG-749: what was actually PUT. The whole point of the crop is that the
+    // bytes change, so a test that only checks the path proves nothing.
+    body?: unknown;
+    contentType?: string;
+  }[],
   script: {
     uploadError: null as { message: string } | null,
     removeError: null as { message: string } | null,
     contactsThrow: false,
+    // ENG-749. jsdom implements no canvas, so the shipped fallback (upload the
+    // original) is what runs by default — which is exactly the behaviour every
+    // pre-existing test in this file was written against. Flipping this on
+    // simulates a real browser so the crop path itself can be exercised.
+    canvas: false,
+    cropBlob: null as Blob | null,
     // ENG-746: script the CREATE response so the 409 branch can be exercised.
     // Carries the status AND the server's own envelope, so a test can prove the
     // form substitutes its own honest copy for a 409 while still passing the
@@ -32,6 +47,25 @@ const push = vi.fn();
 vi.mock("next/navigation", () => ({
   useRouter: () => ({ push, refresh: vi.fn() }),
 }));
+// ENG-749 — ONLY the canvas half is mocked. The crop arithmetic in
+// photoCrop.ts stays real (it is covered for its own sake in photoCrop.test.ts),
+// so these tests exercise the actual rect the component computes and hand it to
+// a stand-in encoder. jsdom cannot run `getContext`, so there is no version of
+// this that encodes real bytes here — that is what the Playwright shots prove.
+vi.mock("../components/photoCropCanvas", () => ({
+  canvasSupported: () => h.script.canvas,
+  loadImage: async () =>
+    h.script.canvas
+      ? {
+          el: {} as HTMLImageElement,
+          url: "blob:crop-source",
+          width: 4000,
+          height: 2000,
+          release: () => {},
+        }
+      : null,
+  cropToBlob: async () => h.script.cropBlob,
+}));
 vi.mock("@/lib/supabase/client", () => ({
   supabaseBrowser: () => ({
     storage: {
@@ -40,8 +74,8 @@ vi.mock("@/lib/supabase/client", () => ({
           h.storage.push({ bucket, op: "createSignedUrl", path });
           return { data: { signedUrl: `https://signed.local/${bucket}/${path}` }, error: null };
         },
-        upload: async (path: string) => {
-          h.storage.push({ bucket, op: "upload", path });
+        upload: async (path: string, body: unknown, opts?: { contentType?: string }) => {
+          h.storage.push({ bucket, op: "upload", path, body, contentType: opts?.contentType });
           // Only the PUBLIC bucket honours the scripted failure; the form's own
           // upload into the private bucket must still succeed, otherwise a test
           // that needs a photo to copy could never get one.
@@ -119,6 +153,8 @@ beforeEach(() => {
   h.script.removeError = null;
   h.script.contactsThrow = false;
   h.script.createFailure = null;
+  h.script.canvas = false;
+  h.script.cropBlob = null;
   bff = [];
   push.mockClear();
   stubFetch();
@@ -594,5 +630,183 @@ describe("TrainerForm — the honest slug-collision message (ENG-746)", () => {
     const text = (await screen.findByRole("alert")).textContent!;
     // "slug" is engineering vocabulary; the admin gets the cause in their terms.
     expect(text).not.toContain("slug");
+  });
+});
+
+// ENG-749 — the crop step. The assertion that matters throughout is on the
+// BODY handed to Storage, not the path: a crop that changed the filename and
+// nothing else would pass every path-based check while storing the original
+// photo, and the member surfaces would look exactly as wrong as before.
+describe("TrainerForm — profile photo crop (ENG-749)", () => {
+  const pick = (container: HTMLElement, file: File) =>
+    fireEvent.change(container.querySelector('input[type="file"]')!, { target: { files: [file] } });
+
+  const jpeg = () => new File(["original-jpeg-bytes"], "waller.jpg", { type: "image/jpeg" });
+  const png = () => new File(["original-png-bytes"], "logo.png", { type: "image/png" });
+
+  const privateUpload = () => h.storage.find((c) => c.op === "upload" && c.bucket === "trainer-photos");
+
+  describe("in a browser that can crop", () => {
+    beforeEach(() => {
+      h.script.canvas = true;
+      h.script.cropBlob = new Blob(["cropped-bytes"], { type: "image/jpeg" });
+    });
+
+    it("opens the crop step on pick and uploads NOTHING until it is resolved", async () => {
+      const { container } = render(<TrainerForm mode="create" />);
+      pick(container, jpeg());
+
+      expect(await screen.findByTestId("photo-crop-dialog")).toBeTruthy();
+      expect(h.storage.filter((c) => c.op === "upload")).toHaveLength(0);
+    });
+
+    it("uploads the CROPPED blob, not the file the admin picked", async () => {
+      const file = jpeg();
+      const { container } = render(<TrainerForm mode="create" />);
+      pick(container, file);
+      fireEvent.click(await screen.findByTestId("photo-crop-apply"));
+      await screen.findByText("Photo added");
+
+      const up = privateUpload()!;
+      expect(up.body).toBe(h.script.cropBlob);
+      // The original File must NOT be what was stored.
+      expect(up.body).not.toBe(file);
+      expect(up.body).not.toBeInstanceOf(File);
+    });
+
+    it("names the object for the BYTES, not for the picked filename", async () => {
+      // ENG-766 derives the PUBLIC marketing object's key and content type from
+      // this extension, so a .png key holding JPEG bytes would publish a
+      // mislabelled object to a public origin. The output format follows the
+      // file's TYPE, so a misnamed pick must still land on the right key.
+      const { container } = render(<TrainerForm mode="create" />);
+      pick(container, new File(["x"], "misnamed.png", { type: "image/jpeg" }));
+      fireEvent.click(await screen.findByTestId("photo-crop-apply"));
+      await screen.findByText("Photo added");
+
+      expect(privateUpload()!.path).toMatch(/\.jpg$/);
+      expect(privateUpload()!.contentType).toBe("image/jpeg");
+    });
+
+    it("keeps a PNG a PNG when the crop preserves it, so transparency survives", async () => {
+      h.script.cropBlob = new Blob(["cropped-png"], { type: "image/png" });
+      const { container } = render(<TrainerForm mode="create" />);
+      pick(container, png());
+      fireEvent.click(await screen.findByTestId("photo-crop-apply"));
+      await screen.findByText("Photo added");
+
+      expect(privateUpload()!.path).toMatch(/\.png$/);
+      expect(privateUpload()!.contentType).toBe("image/png");
+    });
+
+    it("uploads the ORIGINAL file, unchanged, on Use as-is", async () => {
+      const file = jpeg();
+      const { container } = render(<TrainerForm mode="create" />);
+      pick(container, file);
+      fireEvent.click(await screen.findByTestId("photo-crop-use-as-is"));
+      await screen.findByText("Photo added");
+
+      const up = privateUpload()!;
+      // Identity, not content: the very same File object reaches Storage, so
+      // nothing re-encoded it. This is the "byte-identical to today" criterion.
+      expect(up.body).toBe(file);
+      expect(up.body).toBeInstanceOf(File);
+      expect(up.path).toMatch(/\.jpg$/);
+    });
+
+    it("keeps the picked file's own extension on Use as-is", async () => {
+      const { container } = render(<TrainerForm mode="create" />);
+      pick(container, new File(["x"], "waller.JPEG", { type: "image/jpeg" }));
+      fireEvent.click(await screen.findByTestId("photo-crop-use-as-is"));
+      await screen.findByText("Photo added");
+
+      expect(privateUpload()!.path).toMatch(/\.JPEG$/);
+    });
+
+    it("uploads nothing at all when the crop is cancelled", async () => {
+      const { container } = render(<TrainerForm mode="create" />);
+      pick(container, jpeg());
+      fireEvent.click(await screen.findByTestId("photo-crop-cancel"));
+
+      await waitFor(() => expect(screen.queryByTestId("photo-crop-dialog")).toBeNull());
+      expect(h.storage.filter((c) => c.op === "upload")).toHaveLength(0);
+      expect(screen.queryByText("Photo added")).toBeNull();
+    });
+
+    it("falls back to the original rather than losing the photo if encoding fails", async () => {
+      h.script.cropBlob = null; // canvas.toBlob returned null
+      const file = jpeg();
+      const { container } = render(<TrainerForm mode="create" />);
+      pick(container, file);
+      fireEvent.click(await screen.findByTestId("photo-crop-apply"));
+      await screen.findByText("Photo added");
+
+      expect(privateUpload()!.body).toBe(file);
+    });
+
+    it("tells the admin what the circle will show and what gets saved", async () => {
+      const { container } = render(<TrainerForm mode="create" />);
+      pick(container, jpeg());
+      await screen.findByTestId("photo-crop-dialog");
+
+      expect(screen.getByText(/The circle is what shows on the/)).toBeTruthy();
+      // A 4000x2000 source at zoom 1 crops a 2000px square, capped to 1200.
+      expect(screen.getByTestId("photo-crop-meta").textContent).toBe(
+        "Saving 1200×1200 from a 4000×2000 photo",
+      );
+    });
+
+    it("re-cropping the SAME file after a cancel still opens the crop step", async () => {
+      // The file input is reset on pick; without that, choosing the same file
+      // twice fires no change event and the admin is quietly stuck.
+      const { container } = render(<TrainerForm mode="create" />);
+      const file = jpeg();
+      pick(container, file);
+      fireEvent.click(await screen.findByTestId("photo-crop-cancel"));
+      await waitFor(() => expect(screen.queryByTestId("photo-crop-dialog")).toBeNull());
+
+      pick(container, file);
+      expect(await screen.findByTestId("photo-crop-dialog")).toBeTruthy();
+    });
+  });
+
+  describe("in a browser with no canvas", () => {
+    it("skips the crop step entirely and uploads the original, as before this ticket", async () => {
+      const file = jpeg();
+      const { container } = render(<TrainerForm mode="create" />);
+      pick(container, file);
+      await screen.findByText("Photo added");
+
+      expect(screen.queryByTestId("photo-crop-dialog")).toBeNull();
+      expect(privateUpload()!.body).toBe(file);
+      expect(privateUpload()!.path).toMatch(/\.jpg$/);
+    });
+  });
+
+  it("still publishes the CROPPED bytes to the marketing bucket, not the original", async () => {
+    // ENG-766 copies the private object into the public marketing bucket by
+    // re-reading it through a signed URL. Because the crop is baked in BEFORE
+    // that upload, the public site gets the cropped photo for free — this pins
+    // that the ordering never quietly inverts.
+    h.script.canvas = true;
+    h.script.cropBlob = new Blob(["cropped-bytes"], { type: "image/jpeg" });
+
+    const { container } = render(<TrainerForm mode="create" />);
+    fireEvent.change(screen.getByTestId("trainer-name"), { target: { value: "New Trainer" } });
+    pick(container, jpeg());
+    fireEvent.click(await screen.findByTestId("photo-crop-apply"));
+    await screen.findByText("Photo added");
+
+    const storedPath = privateUpload()!.path!;
+    fireEvent.click(toggle());
+    fireEvent.click(screen.getByTestId("submit-trainer"));
+
+    await waitFor(() =>
+      expect(h.storage.some((c) => c.op === "upload" && c.bucket === "marketing-photos")).toBe(true),
+    );
+    // The public copy is read from the object the crop wrote.
+    expect(
+      h.storage.some((c) => c.op === "createSignedUrl" && c.bucket === "trainer-photos" && c.path === storedPath),
+    ).toBe(true);
   });
 });

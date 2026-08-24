@@ -436,19 +436,124 @@ describe("TrainerForm — the Website field (ENG-746)", () => {
   });
 });
 
+// `trainer.website_url` is an unconstrained text column that NO admin surface has
+// ever written, so any value already in it was put there by hand and may be
+// something this form rejects (stablepass-web's own code anticipates a bare
+// domain). Validating it on every save would hold an admin's bio fix hostage to
+// a Website field they never touched, with no way out.
+describe("TrainerForm — a stored website this form cannot parse (ENG-746)", () => {
+  const legacy = () => editTrainer({ websiteUrl: "wallerracing.com.au" });
+
+  it("does not block an unrelated edit, and does not rewrite the value", async () => {
+    render(<TrainerForm mode="edit" trainer={legacy()} contacts={[]} />);
+    fireEvent.change(screen.getByTestId("trainer-name"), { target: { value: "Chris Waller Jr" } });
+    fireEvent.click(screen.getByTestId("submit-trainer"));
+
+    await waitFor(() => expect(push).toHaveBeenCalledWith("/trainers"));
+    // Omitted entirely: the route writes only the keys it receives, so the
+    // column keeps exactly what it had.
+    expect("websiteUrl" in patches()[0].body!).toBe(false);
+  });
+
+  it("says so inline rather than tolerating it silently", () => {
+    render(<TrainerForm mode="edit" trainer={legacy()} contacts={[]} />);
+    expect(screen.getByTestId("website-legacy-invalid")).toBeTruthy();
+  });
+
+  it("shows no such note for a valid stored website", () => {
+    render(
+      <TrainerForm mode="edit" trainer={editTrainer({ websiteUrl: "https://wallerracing.com.au" })} contacts={[]} />,
+    );
+    expect(screen.queryByTestId("website-legacy-invalid")).toBeNull();
+  });
+
+  it("validates again as soon as the admin edits the field", async () => {
+    render(<TrainerForm mode="edit" trainer={legacy()} contacts={[]} />);
+    fireEvent.change(website(), { target: { value: "javascript:alert(1)" } });
+    fireEvent.click(screen.getByTestId("submit-trainer"));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toBe(WEBSITE_URL_MESSAGE);
+    expect(push).not.toHaveBeenCalled();
+  });
+
+  it("lets the admin clear it", async () => {
+    render(<TrainerForm mode="edit" trainer={legacy()} contacts={[]} />);
+    fireEvent.change(website(), { target: { value: "" } });
+    fireEvent.click(screen.getByTestId("submit-trainer"));
+
+    await waitFor(() => expect(push).toHaveBeenCalledWith("/trainers"));
+    expect(patches()[0].body!.websiteUrl).toBeNull();
+  });
+
+  it("lets the admin fix it", async () => {
+    render(<TrainerForm mode="edit" trainer={legacy()} contacts={[]} />);
+    fireEvent.change(website(), { target: { value: "https://wallerracing.com.au" } });
+    fireEvent.click(screen.getByTestId("submit-trainer"));
+
+    await waitFor(() => expect(push).toHaveBeenCalledWith("/trainers"));
+    expect(patches()[0].body!.websiteUrl).toBe("https://wallerracing.com.au");
+  });
+});
+
 // ENG-746 — Mel's block. The old copy ("a matching name already exists — adjust
 // the name") named neither the cause nor the safe fix.
 describe("TrainerForm — the honest slug-collision message (ENG-746)", () => {
-  it("names the real cause: the web address is derived from the name", async () => {
+  it("names the real cause: the name becomes the trainer's unique ID", async () => {
     h.script.createFailure = { status: 409, code: "slug_taken", message: "A trainer with that slug already exists." };
     render(<TrainerForm mode="create" />);
     fireEvent.change(screen.getByTestId("trainer-name"), { target: { value: "Chris Waller" } });
     fireEvent.click(screen.getByTestId("submit-trainer"));
 
     const alert = await screen.findByRole("alert");
-    // The concrete slug, so the admin can see WHY a name that looks free was refused.
-    expect(alert.textContent).toContain("/chris-waller");
-    expect(alert.textContent).toMatch(/web address/i);
+    // The concrete derived value, so the admin can see WHY a name that looked
+    // free was refused.
+    expect(alert.textContent).toContain("chris-waller");
+    expect(alert.textContent).toMatch(/unique ID/i);
+  });
+
+  it("does NOT claim the slug is a web address", async () => {
+    // Regression on this ticket's own honesty. An earlier draft called the slug
+    // the "profile web address" and rendered it as /chris-waller. Nothing in
+    // web, admin or mobile reads trainer.slug, and the member profile resolves
+    // by id, so that URL does not exist - a claim an admin could disprove from
+    // the URL bar in five seconds.
+    h.script.createFailure = { status: 409, code: "slug_taken", message: "A trainer with that slug already exists." };
+    render(<TrainerForm mode="create" />);
+    fireEvent.change(screen.getByTestId("trainer-name"), { target: { value: "Chris Waller" } });
+    fireEvent.click(screen.getByTestId("submit-trainer"));
+
+    const text = (await screen.findByRole("alert")).textContent!;
+    expect(text).not.toMatch(/web address/i);
+    expect(text).not.toMatch(/\/chris-waller/);
+    expect(text).not.toMatch(/\bURL\b/);
+  });
+
+  it("does not claim the two NAMES match, because they need not", async () => {
+    // The collision is on the derived value, so "Chris Waller", "chris waller"
+    // and "Chris  Waller!" all collide while looking different. That is the most
+    // likely shape of the block Mel actually hit.
+    h.script.createFailure = { status: 409, code: "slug_taken", message: "A trainer with that slug already exists." };
+    render(<TrainerForm mode="create" />);
+    fireEvent.change(screen.getByTestId("trainer-name"), { target: { value: "chris  waller" } });
+    fireEvent.click(screen.getByTestId("submit-trainer"));
+
+    const text = (await screen.findByRole("alert")).textContent!;
+    expect(text).toMatch(/even when the names look slightly different/i);
+    // …and it still shows the value that actually collided.
+    expect(text).toContain("chris-waller");
+  });
+
+  it("falls through to the generic message for a 409 with a different code", async () => {
+    // Only the slug collision gets the specific explanation. Any other 409 the
+    // route grows later must not be explained as something it is not.
+    h.script.createFailure = { status: 409, code: "some_other_conflict", message: "Conflicting change." };
+    render(<TrainerForm mode="create" />);
+    fireEvent.change(screen.getByTestId("trainer-name"), { target: { value: "Chris Waller" } });
+    fireEvent.click(screen.getByTestId("submit-trainer"));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toBe("Conflicting change.");
   });
 
   it("offers both fixes, with the duplicate-safe one FIRST", async () => {

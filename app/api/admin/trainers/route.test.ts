@@ -140,6 +140,32 @@ describe("POST /api/admin/trainers — create trainer", () => {
     expect(j.error.code).toBe("validation_failed");
   });
 
+  // ENG-746 mutation guard: parseWebsiteUrl's `typeof raw !== "string"` branch
+  // must reject anything that is not a string before it can reach the insert.
+  // A non-string is a malformed body, not an empty field, so it must 400 -
+  // never fall through and get written to trainer.website_url raw.
+  // Each case is wrapped in its OWN array. vitest's `each` SPREADS an array
+  // element into arguments, so the bare form silently unwrapped
+  // `["https://x.com"]` into the string "https://x.com" and tested the opposite
+  // of what it claimed. The tuple form also removes the `it.each` typing error
+  // that unwrapping produced.
+  it.each([[42], [true], [{}], [["https://x.com"]], [{ toString: "x" }]])(
+    "400s when websiteUrl is a non-string value (%j), no insert attempted",
+    async (websiteUrl) => {
+      asAdmin();
+      // A fixture that WOULD let a valid insert succeed with 201. Without it the
+      // route 400s for a missing-table reason and the assertion below passes
+      // whether or not validation ran, proving nothing.
+      state.tables.trainer = { mutate: { single: { id: "t1", name: "X", slug: "x", status: "active" } } };
+      const r = await POST(postReq({ name: "X", slug: "x", websiteUrl }));
+      expect(r.status).toBe(400);
+      const j = await r.json();
+      expect(j.error.code).toBe("validation_failed");
+      const ins = state.calls.mutations.find((m) => m.table === "trainer");
+      expect(ins).toBeUndefined();
+    },
+  );
+
   it("echoes website_url back to the form", async () => {
     // lib/testing/supabase-fake.ts's builder does not record the `.select()`
     // argument (its `select` method is a no-op passthrough), so there is

@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach } from "vitest";
+import { readFileSync } from "node:fs";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { makeFakeClient, blankState, type FakeState } from "@/lib/testing/supabase-fake";
 import {
@@ -118,12 +119,46 @@ describe("toTrainerFormSeed", () => {
     expect(TRAINER_DETAIL_COLUMNS.split(",")).toContain("website_url");
   });
 
+  // ENG-746 mutation guard: `supabaseServer()` has no Database generic, so the
+  // edit page's `t as TrainerDetailRow` cast typechecks against ANY select
+  // string, including a hand-written literal that drops a column. A cast
+  // cannot check a runtime projection, so reading the page's source text is
+  // the only link in the type -> map -> string -> page chain that the
+  // compiler cannot guard for us.
+  it("edit page selects via the shared TRAINER_DETAIL_COLUMNS constant, not a hand-written literal", () => {
+    const src = readFileSync(new URL("./[id]/edit/page.tsx", import.meta.url), "utf8");
+    expect(src).toContain(".select(TRAINER_DETAIL_COLUMNS)");
+    expect(src).not.toMatch(/\.select\("id,name/);
+  });
+
   it("seeds the website so an unrelated edit cannot blank it", () => {
     expect(toTrainerFormSeed(row).websiteUrl).toBe("https://wallerracing.com.au");
   });
 
   it("seeds a missing website as null rather than undefined", () => {
     expect(toTrainerFormSeed({ ...row, website_url: null }).websiteUrl).toBeNull();
+  });
+
+  it("seeds a dropped website column (undefined, not an explicit null) as null", () => {
+    // Simulates a select that silently dropped website_url: the field then
+    // arrives `undefined` off the wire rather than an explicit `null`. The
+    // cast to TrainerDetailRow cannot catch that at compile time, so `?? null`
+    // in toTrainerFormSeed is the only thing standing between a dropped column
+    // and `websiteUrl: undefined` reaching the form. The cast below is
+    // deliberately lying about the shape, to simulate exactly that dropped
+    // column.
+    const droppedColumn = { ...row, website_url: undefined } as unknown as TrainerDetailRow;
+    expect(toTrainerFormSeed(droppedColumn).websiteUrl).toBeNull();
+  });
+
+  it("seeds a dropped marketing photo path (undefined) as null, the same way", () => {
+    // marketing_photo_path carries the same `?? null` shape and the same
+    // safety property (see the module comment in data.ts): if it seeds as
+    // undefined the form believes nothing is published, and un-publishing
+    // then leaves a live object in a PUBLIC bucket. One case here, not a full
+    // sweep of every seeded field.
+    const droppedColumn = { ...row, marketing_photo_path: undefined } as unknown as TrainerDetailRow;
+    expect(toTrainerFormSeed(droppedColumn).marketingPhotoPath).toBeNull();
   });
 
   it("seeds the marketing flag and the published photo path", () => {

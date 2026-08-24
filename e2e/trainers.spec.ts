@@ -155,11 +155,15 @@ test("slug collision shows the honest message", async ({ page }) => {
 
   const alert = page.locator(".form-err");
   await expect(alert).toBeVisible({ timeout: 30000 });
-  // The three things the ticket requires the copy to carry: the real cause, the
-  // safe fix first, and the rename second.
-  await expect(alert).toContainText("/chris-waller");
+  // What the ticket requires the copy to carry: the real cause, the value that
+  // actually collided, the duplicate-safe fix first, and the rename second.
+  await expect(alert).toContainText("unique ID");
+  await expect(alert).toContainText("chris-waller");
   await expect(alert).toContainText("Trainers list");
   await expect(alert).toContainText("change the full name slightly");
+  // And NOT the claim an earlier draft made: nothing reads trainer.slug, and the
+  // member profile resolves by id, so there is no /chris-waller page to point at.
+  await expect(alert).not.toContainText("web address");
 
   await page.screenshot({ path: "e2e/__screenshots__/23-trainer-slug-collision.png", fullPage: true });
 });

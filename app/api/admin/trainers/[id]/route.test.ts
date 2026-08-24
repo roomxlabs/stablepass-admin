@@ -168,6 +168,30 @@ describe("PATCH /api/admin/trainers/:id — update trainer", () => {
     expect("website_url" in upd!.payload).toBe(false);
   });
 
+  // ENG-746 mutation guard: the presence gate is `"websiteUrl" in (b ?? {})`,
+  // not a `typeof` check, precisely so a non-string value still reaches
+  // parseWebsiteUrl and gets rejected instead of skipping validation and
+  // being copied raw into website_url by the FIELD_MAP loop below.
+  // Each case is wrapped in its OWN array: vitest's `each` SPREADS an array
+  // element into arguments, so the bare form silently unwrapped
+  // `["https://x.com"]` into a plain string and tested the opposite of what it
+  // claimed. The tuple form also fixes the `it.each` typing error.
+  it.each([[42], [true], [{}], [["https://x.com"]], [{ toString: "x" }]])(
+    "400s when websiteUrl is a non-string value (%j), no update attempted",
+    async (websiteUrl) => {
+      asAdmin();
+      // A fixture that WOULD let a valid update succeed with 200, so the 400
+      // below can only come from validation rather than from a missing table.
+      state.tables.trainer = { mutate: { single: { id: "t1" } } };
+      const r = await PATCH(patchReq({ websiteUrl }), ctx);
+      expect(r.status).toBe(400);
+      const j = await r.json();
+      expect(j.error.code).toBe("validation_failed");
+      const upd = state.calls.mutations.find((m) => m.table === "trainer" && m.op === "update");
+      expect(upd).toBeUndefined();
+    },
+  );
+
   it("echoes website_url back", async () => {
     // Same reasoning as app/api/admin/trainers/route.test.ts: the fake's
     // builder never records the `.select()` argument, so the only way to

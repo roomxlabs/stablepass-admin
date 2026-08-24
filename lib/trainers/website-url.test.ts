@@ -78,3 +78,43 @@ describe("parseWebsiteUrl", () => {
     if (r.ok) expect(r.value).not.toBe("https://x.com/");
   });
 });
+
+// The protocol check in website-url.ts is an ALLOW-LIST (accept only http/https).
+// Table-driven rather than one-off cases on purpose: an inverted condition -
+// e.g. rewriting the check into a BLOCK-LIST of "javascript:" / "data:" /
+// "file:" - passes every test above that only tries those three schemes,
+// silently letting everything else (ftp:, mailto:, tel:, vbscript:, blob:,
+// ws:, wss:, chrome:, about:, intent:) through as a "saveable" website. Any
+// such value renders as NO LINK in stablepass-web - an invisible saved
+// website. Enumerating a broad set of non-http(s) schemes here is what
+// actually pins the allow-list shape, not just the three schemes someone
+// happened to think of first.
+describe("parseWebsiteUrl — protocol allow-list (table-driven)", () => {
+  it.each([
+    "javascript:alert(1)",
+    "data:text/html,x",
+    "file:///etc/passwd",
+    "mailto:a@b.com",
+    "ftp://x.com/f",
+    "tel:+61400000000",
+    "vbscript:msgbox(1)",
+    "blob:https://x.com/uuid",
+    "ws://x.com",
+    "wss://x.com",
+    "chrome://settings",
+    "about:blank",
+    "intent://x",
+  ])("rejects %j (not http/https)", (value) => {
+    const r = parseWebsiteUrl(value);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.message).toBe(WEBSITE_URL_MESSAGE);
+  });
+
+  it.each(["http://x.com", "https://x.com", "https://wallerracing.com.au"])(
+    "accepts %j",
+    (value) => {
+      const r = parseWebsiteUrl(value);
+      expect(r).toEqual({ ok: true, value });
+    },
+  );
+});

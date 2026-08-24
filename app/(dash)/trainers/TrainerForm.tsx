@@ -6,6 +6,7 @@ import Link from "next/link";
 import { supabaseBrowser } from "@/lib/supabase/client";
 import { signPhoto } from "@/lib/storage/photos";
 import { parseWebsiteUrl } from "@/lib/trainers/website-url";
+import { slugCollisionMessage } from "@/lib/trainers/slug-collision";
 import { publishMarketingPhoto, unpublishMarketingPhoto } from "./marketingPhoto";
 
 // Add / edit trainer form — matches mockups/web/admin/screens/08-add-trainer.html.
@@ -53,13 +54,23 @@ function emptyContact(role = ""): ContactInput {
   return { role, name: "", email: "", phone: "" };
 }
 
-async function readError(res: Response): Promise<string> {
+// The envelope's error code AND message, read in ONE pass. A Response body can
+// only be consumed once, so the create path cannot check the code and then call
+// readError() for the text - it has to get both together.
+async function readErrorBody(res: Response): Promise<{ code: string | null; message: string }> {
   try {
     const j = await res.json();
-    return j?.error?.message ?? `Request failed (${res.status}).`;
+    return {
+      code: j?.error?.code ?? null,
+      message: j?.error?.message ?? `Request failed (${res.status}).`,
+    };
   } catch {
-    return `Request failed (${res.status}).`;
+    return { code: null, message: `Request failed (${res.status}).` };
   }
+}
+
+async function readError(res: Response): Promise<string> {
+  return (await readErrorBody(res)).message;
 }
 
 export default function TrainerForm(props: Props) {
@@ -99,6 +110,15 @@ export default function TrainerForm(props: Props) {
   const [publishWarning, setPublishWarning] = useState<string | null>(null);
   const [publishing, setPublishing] = useState(false);
   const [savedId, setSavedId] = useState<string | null>(seed?.id ?? null);
+
+  // ENG-746. Whether the Website field still holds exactly what was loaded.
+  const websiteUntouched = websiteUrl === (seed?.websiteUrl ?? "");
+  // A pre-existing stored value this form cannot parse (see onSubmit for why it
+  // does not block the save). Surfaced inline rather than silently tolerated:
+  // the app is not rendering that link, and the admin is the only one who can
+  // tell whether it is worth fixing.
+  const websiteLegacyInvalid =
+    websiteUntouched && websiteUrl.trim() !== "" && !parseWebsiteUrl(websiteUrl).ok;
 
   useEffect(() => {
     const stored = seed?.photoUrl;
@@ -230,10 +250,20 @@ export default function TrainerForm(props: Props) {
       return;
     }
     // ENG-746. Validated with the SAME function both routes use, so the form can
-    // never send a value the server will reject — and never rejects one it would
+    // never send a value the server will reject, and never rejects one it would
     // have accepted. Checked before `setSaving(true)` so a bad URL costs nothing.
+    //
+    // The `websiteUntouched` escape hatch matters: `trainer.website_url` is an
+    // unconstrained text column that no admin surface has ever written, so a row
+    // populated by hand can hold something this form rejects (stablepass-web's
+    // own code explicitly anticipates a bare domain there). Blocking on it would
+    // put a red banner about the Website field in front of an admin who came to
+    // fix a typo in the bio, and leave them no way to save at all. An untouched
+    // bad value is therefore left exactly as it is: not re-validated, and omitted
+    // from the payload below so it is not rewritten either. Touching the field
+    // opts back into validation.
     const website = parseWebsiteUrl(websiteUrl);
-    if (!website.ok) {
+    if (!website.ok && !websiteUntouched) {
       setError(website.message);
       return;
     }
@@ -247,10 +277,12 @@ export default function TrainerForm(props: Props) {
         bio: bio.trim() || null,
         photoUrl,
         marketingVisible,
-        // Always sent, including as null: on PATCH the route writes only the
-        // keys present in the body, so omitting it when empty would make
-        // CLEARING a website impossible.
-        websiteUrl: website.value,
+        // Sent whenever it is VALID, including as null: the route writes only the
+        // keys present in the body, so omitting it when empty would make CLEARING
+        // a website impossible. The only case that is omitted is an untouched
+        // pre-existing value this form cannot parse (see above) - rewriting that
+        // is not ours to do, and leaving the key out means the column keeps it.
+        ...(website.ok ? { websiteUrl: website.value } : {}),
       };
 
       // `savedId` — not the `mode` prop — decides create vs update. After a
@@ -281,23 +313,16 @@ export default function TrainerForm(props: Props) {
           body: JSON.stringify({ ...profile, slug: slugify(name), status: "active" }),
         });
         if (!res.ok) {
+          // ENG-746 - Mel's block. Gated on the error CODE as well as the status,
+          // so only the slug collision gets the specific copy: any other 409 the
+          // route might grow later falls through to the server's own message
+          // rather than being explained as something it is not. The wording and
+          // the reasoning behind it live in lib/trainers/slug-collision.ts.
+          const err = await readErrorBody(res);
           setError(
-            res.status === 409
-              ? // ENG-746 — Mel's block. WHY this 409 means what it says: `slug`
-                // is the ONLY unique constraint on `trainer` (schema.sql; pinned
-                // by the drift guard in route.test.ts), so a 23505 on this insert
-                // is always a slug collision, never anything else. The slug is
-                // derived from Full name, which is why a name that looks free can
-                // still be refused — that is the part the old copy never said.
-                //
-                // The ORDER of the two fixes is deliberate and preserves ENG-766's
-                // reasoning: this 409 is also reachable when the trainer was
-                // already created and the response was lost, so "open the existing
-                // one" must come first. Leading with "rename" is exactly what turns
-                // one lost response into two live trainers. Renaming is still
-                // offered, second, for the genuinely-different-trainer case.
-                `A trainer with this name already exists. The name sets the profile web address (/${slugify(name)}), and each trainer needs its own. Open that trainer from the Trainers list; it may be the one you are adding. If it is genuinely a different trainer, change the full name slightly.`
-              : await readError(res),
+            res.status === 409 && err.code === "slug_taken"
+              ? slugCollisionMessage(slugify(name))
+              : err.message,
           );
           return;
         }
@@ -406,6 +431,12 @@ export default function TrainerForm(props: Props) {
             <div className="adm-help">
               Optional. Shown as a link on the trainer&apos;s profile in the app.
             </div>
+            {websiteLegacyInvalid ? (
+              <div className="adm-help adm-check-note" data-testid="website-legacy-invalid">
+                The saved website is not a full web address, so the app is not showing it. Fix it
+                or clear it when you can. Leaving it alone will not block this save.
+              </div>
+            ) : null}
           </div>
         </div>
       </div>

@@ -138,13 +138,21 @@ export default function PhotoCropField({ file, subject, onCancel, onApply }: Pro
     return () => window.removeEventListener("resize", measure);
   }, [image]);
 
+  // Dismissal is refused mid-encode. Both buttons are already disabled while
+  // busy, but the backdrop and Escape were not: dismissing during the encode
+  // unmounted the dialog while `apply()` was still awaiting, and the pending
+  // onApply then uploaded the photo anyway — a cancel that silently saved.
+  const dismiss = useCallback(() => {
+    if (!busy) onCancel();
+  }, [busy, onCancel]);
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onCancel();
+      if (e.key === "Escape") dismiss();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [onCancel]);
+  }, [dismiss]);
 
   const source: Size = image
     ? { width: image.width, height: image.height }
@@ -196,7 +204,7 @@ export default function PhotoCropField({ file, subject, onCancel, onApply }: Pro
 
   return (
     <div className={styles.root} role="dialog" aria-modal="true" aria-label={`Position the ${subject} photo`} data-testid="photo-crop-dialog">
-      <div className={styles.backdrop} onClick={onCancel} />
+      <div className={styles.backdrop} onClick={dismiss} />
       <div className={styles.panel}>
         <h2 className={styles.title}>Position the photo</h2>
         <div className={styles.sub}>
@@ -269,7 +277,7 @@ export default function PhotoCropField({ file, subject, onCancel, onApply }: Pro
             type="button"
             className="btn btn-light"
             style={{ padding: "8px 16px", fontSize: "13px" }}
-            onClick={onCancel}
+            onClick={dismiss}
             disabled={busy}
             data-testid="photo-crop-cancel"
           >

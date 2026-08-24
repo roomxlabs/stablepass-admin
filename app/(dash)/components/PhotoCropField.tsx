@@ -69,11 +69,21 @@ export default function PhotoCropField({ file, subject, onCancel, onApply }: Pro
   const [viewportPx, setViewportPx] = useState(360);
   const dragRef = useRef<{ id: number; x: number; y: number } | null>(null);
 
-  // Held in a ref as well as state so the unmount cleanup can revoke the object
-  // URL without re-running every time the pan changes.
+  // `onApply` is read through a ref, NOT closed over as a dependency. Both
+  // parents declare their handler inline, so it is a new function on every
+  // parent render — and depending on it made the load effect below re-run
+  // whenever the FORM re-rendered for any unrelated reason (the edit page's
+  // signPhoto resolving, an admin typing a name). That re-ran loadImage and
+  // reset `pan` to centre, silently throwing away the framing the admin had
+  // just dragged. Measured: three decodes of one picked file.
+  const onApplyRef = useRef(onApply);
+  useEffect(() => {
+    onApplyRef.current = onApply;
+  });
+
   const applyAsIs = useCallback(() => {
-    onApply({ blob: file, ext: originalExt(file), cropped: false });
-  }, [file, onApply]);
+    onApplyRef.current({ blob: file, ext: originalExt(file), cropped: false });
+  }, [file]);
 
   useEffect(() => {
     let cancelled = false;

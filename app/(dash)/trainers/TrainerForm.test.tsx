@@ -32,6 +32,9 @@ const h = vi.hoisted(() => ({
     // simulates a real browser so the crop path itself can be exercised.
     canvas: false,
     cropBlob: null as Blob | null,
+    // ENG-749: how many times the picked file was decoded. A second decode
+    // means the load effect re-ran, which resets the admin's framing.
+    loads: 0,
     // ENG-746: script the CREATE response so the 409 branch can be exercised.
     // Carries the status AND the server's own envelope, so a test can prove the
     // form substitutes its own honest copy for a 409 while still passing the
@@ -54,8 +57,9 @@ vi.mock("next/navigation", () => ({
 // this that encodes real bytes here — that is what the Playwright shots prove.
 vi.mock("../components/photoCropCanvas", () => ({
   canvasSupported: () => h.script.canvas,
-  loadImage: async () =>
-    h.script.canvas
+  loadImage: async () => {
+    h.script.loads += 1;
+    return h.script.canvas
       ? {
           el: {} as HTMLImageElement,
           url: "blob:crop-source",
@@ -63,7 +67,8 @@ vi.mock("../components/photoCropCanvas", () => ({
           height: 2000,
           release: () => {},
         }
-      : null,
+      : null;
+  },
   cropToBlob: async () => h.script.cropBlob,
 }));
 vi.mock("@/lib/supabase/client", () => ({
@@ -155,6 +160,7 @@ beforeEach(() => {
   h.script.createFailure = null;
   h.script.canvas = false;
   h.script.cropBlob = null;
+  h.script.loads = 0;
   bff = [];
   push.mockClear();
   stubFetch();
@@ -754,6 +760,26 @@ describe("TrainerForm — profile photo crop (ENG-749)", () => {
       expect(screen.getByTestId("photo-crop-meta").textContent).toBe(
         "Saving 1200×1200 from a 4000×2000 photo",
       );
+    });
+
+    it("survives a parent re-render without re-decoding and losing the framing", async () => {
+      // Both forms declare their onApply handler inline, so it is a new function
+      // on every parent render. If the load effect depended on it, ANY unrelated
+      // re-render of the form — the edit page's signPhoto resolving, an admin
+      // typing — would re-run loadImage and reset the pan to centre, throwing
+      // away the framing the admin had just dragged. Decoding exactly once is
+      // the observable proof that the effect did not re-run.
+      const { container } = render(<TrainerForm mode="create" />);
+      pick(container, jpeg());
+      await screen.findByTestId("photo-crop-dialog");
+      expect(h.script.loads).toBe(1);
+
+      // Re-render the PARENT while the dialog is open.
+      fireEvent.change(screen.getByTestId("trainer-name"), { target: { value: "Chris Waller" } });
+      fireEvent.change(screen.getByTestId("trainer-website"), { target: { value: "https://x.com" } });
+
+      await waitFor(() => expect(screen.getByTestId("photo-crop-dialog")).toBeTruthy());
+      expect(h.script.loads).toBe(1);
     });
 
     it("re-cropping the SAME file after a cancel still opens the crop step", async () => {

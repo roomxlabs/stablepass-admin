@@ -247,10 +247,11 @@ textarea.adm-input { min-height: 110px; resize: vertical; line-height: 1.55; }
   margin-bottom: 16px;
 }
 
-/* Marketing-site publication (ENG-766) ----------------------------------- */ */
+/* Marketing-site publication (ENG-766) -------------------------------- */
 /* Appended at the end of the file on purpose: ENG-746 also edits this screen,
    so keeping these rules in one contiguous block at the tail keeps its rebase
-   to a trivial fast-forward. Values use the shared style.css tokens. */
+   to a trivial fast-forward. Colours come from the shared style.css tokens
+   except where noted on .form-warn below. */
 .adm-check { display: flex; align-items: flex-start; gap: 10px; cursor: pointer; }
 .adm-check input[type="checkbox"] {
   width: 16px;

@@ -12,8 +12,8 @@ function seed() {
   state.tables.trainer = {
     select: {
       rows: [
-        { id: "t1", name: "Chris Waller", display_name: "Chris Waller", slug: "chris-waller", stable_name: "Chris Waller Racing", location: "Rosehill, NSW", status: "active", photo_url: null },
-        { id: "t2", name: "John Thompson", display_name: "John Thompson", slug: "john-thompson", stable_name: "Thompson Stables", location: "Warwick Farm, NSW", status: "onboarding", photo_url: null },
+        { id: "t1", name: "Chris Waller", display_name: "Chris Waller", slug: "chris-waller", stable_name: "Chris Waller Racing", location: "Rosehill, NSW", status: "active", photo_url: null, marketing_visible: true },
+        { id: "t2", name: "John Thompson", display_name: "John Thompson", slug: "john-thompson", stable_name: "Thompson Stables", location: "Warwick Farm, NSW", status: "onboarding", photo_url: null, marketing_visible: false },
       ],
     },
   };
@@ -39,6 +39,23 @@ describe("listTrainers", () => {
     expect(t2.horseCount).toBe(1);
     expect(t2.lastPostAt).toBeNull();
     expect(counts).toEqual({ all: 2, active: 1, onboarding: 1 });
+  });
+
+  // ENG-766: this mapping is what the list's "On site" badge renders from, so it
+  // is asserted directly rather than left to a fixture-shaped `toMatchObject`.
+  it("maps marketing_visible onto the row, per trainer", async () => {
+    seed();
+    const { rows } = await listTrainers(sb(), {});
+    expect(rows.find((r) => r.id === "t1")!.marketingVisible).toBe(true);
+    expect(rows.find((r) => r.id === "t2")!.marketingVisible).toBe(false);
+  });
+
+  it("fails closed: a row with no marketing_visible is NOT badged as published", async () => {
+    state.tables.trainer = {
+      select: { rows: [{ id: "t9", name: "Ghost", display_name: "Ghost", slug: "ghost", status: "active" }] },
+    };
+    const { rows } = await listTrainers(sb(), {});
+    expect(rows[0].marketingVisible).toBe(false);
   });
 
   it("?q= applies an ILIKE over name/display_name/stable/location", async () => {

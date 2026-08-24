@@ -291,6 +291,17 @@ export default function ComposeScreen({
    */
   const coverPath = mirrorPath(photos);
   /**
+   * The photo the cover badge is on — and therefore the one the big Step 3
+   * frame and its meta line must show.
+   *
+   * Without this the frame kept rendering `mediaUrl`, which is the FIRST PICKED
+   * file and never moves. After a reorder the screen said three different
+   * things at once: the frame showed photo 1 (captioned "gallop-1.png"), the
+   * strip badged photo 3 as the cover, and the member card previewed photo 3.
+   * Caught in the reorder screenshot, not by a test.
+   */
+  const coverPhoto = photos.find((p) => p.path === coverPath) ?? null;
+  /**
    * ENG-748 — the ordered photo set to persist, spread into every save.
    *
    * ABSENT unless this is a photo post with something uploaded, exactly like
@@ -1201,9 +1212,10 @@ export default function ComposeScreen({
                   <div
                     className={`${styles.preview} ${postType === "voice" ? styles.previewAudio : ""}`}
                   >
-                    {postType === "photo" && mediaUrl ? (
+                    {postType === "photo" && (coverPhoto?.previewUrl ?? mediaUrl) ? (
+                      // The COVER, not the first file picked — see coverPhoto.
                       // eslint-disable-next-line @next/next/no-img-element -- local object URL preview
-                      <img src={mediaUrl} alt="" />
+                      <img src={coverPhoto?.previewUrl ?? mediaUrl!} alt="" />
                     ) : postType === "video" && mediaUrl ? (
                       // Playable local preview of the picked file (object URL);
                       // native controls replace the decorative play glyph.
@@ -1221,7 +1233,11 @@ export default function ComposeScreen({
                   ) : null}
                   <div className={styles.uploadTools}>
                     <span className={styles.uploadMeta}>
-                      {file.name} · {humanSize(file.size)}
+                      {/* Names the cover for a photo set, so the frame and its
+                          caption cannot describe two different photos. */}
+                      {coverPhoto?.name ?? file.name} ·{" "}
+                      {humanSize(coverPhoto?.size ?? file.size)}
+                      {photos.length > 1 ? ` · cover of ${photos.length}` : ""}
                       {"  "}
                       {upload.state === "creating" || upload.state === "uploading" ? (
                         <span className={styles.uploadStatus}> · uploading{upload.state === "uploading" && upload.pct ? ` ${upload.pct}%` : "…"}</span>
@@ -1233,7 +1249,9 @@ export default function ComposeScreen({
                     </span>
                     <span className={styles.uploadActions}>
                       <button type="button" className={styles.uploadBtn} onClick={() => fileInputRef.current?.click()}>
-                        Replace
+                        {/* A photo pick REPLACES the whole set, so say so once
+                            there is more than one to lose. */}
+                        {photos.length > 1 ? "Replace all" : "Replace"}
                       </button>
                       <button type="button" className={styles.uploadBtn} onClick={resetMedia}>
                         Remove

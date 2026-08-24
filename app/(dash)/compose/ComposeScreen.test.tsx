@@ -1324,6 +1324,30 @@ describe("ENG-748 · multi-photo compose", () => {
       expect(sent[0]).not.toBe("p1/original");
     });
 
+    it("the big Step 3 frame and its caption follow the COVER, not the first file picked", async () => {
+      // Found in the reorder screenshot, not by a test: the frame kept showing
+      // `mediaUrl` (the first file picked, which never moves), so after a
+      // reorder the screen said three different things at once — frame "photo
+      // 1 / gallop-1.png", strip "photo 3 is the cover", card "photo 3".
+      // Asserted on the caption line, not the <img>: jsdom has no
+      // URL.createObjectURL, so `previewUrl` is null here and no image element
+      // is rendered at all. The e2e screenshot is what proves the picture
+      // itself follows; this pins the text that names it.
+      await pickPhotos(3);
+      expect(screen.getByTestId("media-filled").textContent).toContain("p1.jpg");
+
+      // Bring photo 3 to the front.
+      fireEvent.click(screen.getByTestId("photo-up-2"));
+      fireEvent.click(screen.getByTestId("photo-up-1"));
+
+      const zoneAfter = screen.getByTestId("media-filled").textContent ?? "";
+      expect(zoneAfter).not.toContain("p1.jpg");
+      expect(zoneAfter).toContain("p3.jpg");
+      expect(zoneAfter).toContain("cover of 3");
+      // And it agrees with the strip's cover tile.
+      expect(within(screen.getByTestId("photo-tile-0")).getByTestId("photo-cover")).toBeTruthy();
+    });
+
     it("leaves the set unchanged on save when nothing was reordered", async () => {
       await pickPhotos(3);
       fireEvent.click(screen.getByTestId("primary-action"));

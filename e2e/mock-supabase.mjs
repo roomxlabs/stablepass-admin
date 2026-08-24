@@ -351,6 +351,23 @@ const COMPOSE_HORSES = [
   { id: "h12", display_name: "Zoustar", racing_name: "Zoustar", photo_url: null, stable_name: "Randwick", trainer_id: "t1", trainer: { id: "t1", name: "Chris Waller", display_name: "Chris Waller" } },
 ];
 
+const HORSE_EMBED = { id: "h1", display_name: "Mahogany", racing_name: "Mahogany", photo_url: null, stable_name: "Randwick", trainer_id: "t1", trainer: { id: "t1", name: "Chris Waller", display_name: "Chris Waller" } };
+
+// Compose EDIT-mode posts (ENG-745). `/compose?id=<postId>` is the ONLY path
+// that exercises page.tsx's post read and its EditInitial seeding, and page.tsx
+// is an async server component that no unit test can reach — the ComposeScreen
+// unit tests hand `initial` in directly, so they prove nothing about whether the
+// page actually selects and passes `label`. Both states are seeded: ce1 carries
+// a label, ce2 is deliberately unlabelled (the pre-2026-08-19 state that must
+// open on "No label" and stay that way).
+//
+// Text posts on purpose: `text` short-circuits the media branch in page.tsx, so
+// neither Storage signing nor Mux playback resolution has to be mocked.
+const COMPOSE_EDIT_POSTS = [
+  { id: "ce1", type: "text", status: "draft", title: "Barrier trial complete", body: "Pleased with the way he finished off.", label: "Trial", source_trainer_id: "t1", scheduled_for: null, media_url: null, mux_playback_id: null, horse: HORSE_EMBED },
+  { id: "ce2", type: "text", status: "draft", title: "Quiet day in the box", body: "Nothing much to report today.", label: null, source_trainer_id: "t1", scheduled_for: null, media_url: null, mux_playback_id: null, horse: HORSE_EMBED },
+];
+
 // Active horses for the quiet-horse check. h1 posted this week (loud); h2/h3
 // stale; h5 never posted — so three quiet horses, one retired (matches mockup).
 const DASH_HORSES = [
@@ -645,6 +662,46 @@ export function startMockSupabase() {
       sendJson(res, 200, []);
       return;
     }
+    // Compose EDIT mode (ENG-745): `/compose?id=<postId>` reads ONE post with
+    // the horse + trainer embed. Discriminated on `mux_playback_id`, which only
+    // this read selects.
+    //
+    // It MUST sit ahead of the posts-library branch below. That branch matches
+    // on `status`, and compose's edit select carries `status` too, so otherwise
+    // the library's fixture ARRAY would satisfy this `.maybeSingle()` and edit
+    // mode would hydrate from whichever post happened to be first — the exact
+    // "two handlers can both claim one read" trap in .rx/gotchas.md.
+    if (
+      req.method === "GET" &&
+      url.pathname === "/rest/v1/post" &&
+      decodeURIComponent(url.search).includes("mux_playback_id")
+    ) {
+      const accept = req.headers["accept"] ?? "";
+      const idParam = url.searchParams.get("id");
+      const wanted = idParam && idParam.startsWith("eq.") ? idParam.slice(3) : null;
+      const found = COMPOSE_EDIT_POSTS.find((p) => p.id === wanted) ?? null;
+      // Honour column projection for `label` specifically.
+      //
+      // The rest of this mock returns whole fixture rows and ignores `select`,
+      // which is normally harmless — but it makes the ONE thing page.tsx
+      // changed here (adding `label` to its select string) impossible to test:
+      // the row would carry a label whether or not the app asked for it, so
+      // deleting `label` from the select stays green while real PostgREST would
+      // return the column absent and edit mode would silently open every post
+      // on "No label". Drop it when it was not requested, so the e2e can tell.
+      const selected = decodeURIComponent(url.searchParams.get("select") ?? "");
+      let match = found;
+      if (found && !/(^|,)label(,|$)/.test(selected.split("horse:")[0])) {
+        match = { ...found };
+        delete match.label;
+      }
+      // .maybeSingle() does not set the pgrst.object Accept header in this
+      // postgrest-js version — honour the id filter regardless (see the horse
+      // branch above for the same caveat).
+      sendJson(res, 200, accept.includes("pgrst.object") ? match : match ? [match] : []);
+      return;
+    }
+
     // Posts library (T7 / ENG-177). The list read selects `status` — which the
     // trainers' post read (source_trainer_id,published_at,created_at) does not —
     // so use that to serve the full post-library fixtures here, ahead of the

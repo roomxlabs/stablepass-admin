@@ -119,3 +119,30 @@ test("horse picker: every horse reachable, not the first 8", async ({ page }) =>
   await expect(page.getByTestId("horse-opt-h12")).toBeAttached();
   await expect(page.getByTestId("horse-opt-h1")).toHaveCount(0);
 });
+
+// Edit mode is the only path that exercises page.tsx — an async server
+// component no unit test can reach. The ComposeScreen unit tests hand `initial`
+// in directly, so nothing there proves the PAGE selects `label` and seeds it.
+// Deleting `label` from page.tsx's select string leaves the whole vitest suite
+// green; these two are what catch it.
+test("edit mode seeds the picker from the post's stored label", async ({ page }) => {
+  test.setTimeout(90000);
+  await signIn(page);
+  await page.goto("/compose?id=ce1");
+  await expect(page.getByRole("heading", { name: "Edit post" })).toBeVisible({ timeout: 30000 });
+
+  // Hydrated from the row, not defaulted.
+  await expect(page.getByTestId("label-select")).toHaveValue("Trial");
+  await expect(page.getByTestId("title")).toHaveValue("Barrier trial complete");
+  await page.screenshot({ path: "e2e/__screenshots__/23-compose-edit-label-seeded.png" });
+});
+
+test("edit mode opens an unlabelled post on No label", async ({ page }) => {
+  test.setTimeout(90000);
+  await signIn(page);
+  await page.goto("/compose?id=ce2");
+  await expect(page.getByRole("heading", { name: "Edit post" })).toBeVisible({ timeout: 30000 });
+
+  // The pre-2026-08-19 state: no label, and the picker must not invent one.
+  await expect(page.getByTestId("label-select")).toHaveValue("");
+});

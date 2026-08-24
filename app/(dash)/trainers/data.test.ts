@@ -1,7 +1,15 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { makeFakeClient, blankState, type FakeState } from "@/lib/testing/supabase-fake";
-import { listTrainers, initials, timeAgo, toTrainerFormSeed, type TrainerDetailRow } from "./data";
+import {
+  listTrainers,
+  initials,
+  timeAgo,
+  toTrainerFormSeed,
+  TRAINER_DETAIL_COLUMNS,
+  TRAINER_DETAIL_COLUMN_MAP,
+  type TrainerDetailRow,
+} from "./data";
 
 // listTrainers takes the sb client by injection, so no module mock is needed —
 // we drive results per table through the shared Supabase fake.
@@ -95,6 +103,28 @@ describe("toTrainerFormSeed", () => {
     marketing_photo_path: "trainers/t1.jpg",
     website_url: "https://wallerracing.com.au",
   };
+
+  // ENG-746. The edit page CASTS its result to TrainerDetailRow, and a cast
+  // cannot check a runtime projection: drop a column from the select string and
+  // the field arrives undefined, coalesces to null, and the form silently blanks
+  // a saved value on the next save. tsc keeps the map complete against the type;
+  // this keeps the select string equal to the map. Without both halves the chain
+  // has a hole at exactly the point that is hardest to notice.
+  it("selects every column the detail row declares, and no others", () => {
+    expect(TRAINER_DETAIL_COLUMNS.split(",").sort()).toEqual(Object.keys(TRAINER_DETAIL_COLUMN_MAP).sort());
+  });
+
+  it("selects website_url (the column the whole ticket exists to populate)", () => {
+    expect(TRAINER_DETAIL_COLUMNS.split(",")).toContain("website_url");
+  });
+
+  it("seeds the website so an unrelated edit cannot blank it", () => {
+    expect(toTrainerFormSeed(row).websiteUrl).toBe("https://wallerracing.com.au");
+  });
+
+  it("seeds a missing website as null rather than undefined", () => {
+    expect(toTrainerFormSeed({ ...row, website_url: null }).websiteUrl).toBeNull();
+  });
 
   it("seeds the marketing flag and the published photo path", () => {
     const seed = toTrainerFormSeed(row);

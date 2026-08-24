@@ -158,3 +158,17 @@ export function outputFormat(sourceType: string | undefined): OutputFormat {
     ? { mime: "image/png", ext: "png" }
     : { mime: "image/jpeg", ext: "jpg", quality: JPEG_QUALITY };
 }
+
+/**
+ * The extension for bytes that ALREADY EXIST, given their reported type.
+ *
+ * The caller must key the upload off this rather than off the format it asked
+ * for. `HTMLCanvasElement.toBlob` is specified to fall back to `image/png` when
+ * it cannot honour the requested type, so a browser that declined our JPEG
+ * would hand back PNG bytes while `outputFormat` still said "jpg" — the exact
+ * bytes/extension divergence this module exists to prevent, and one nothing
+ * would notice because the encoder is mocked in unit tests.
+ */
+export function extForMime(mime: string | undefined): "png" | "jpg" {
+  return mime === "image/png" ? "png" : "jpg";
+}

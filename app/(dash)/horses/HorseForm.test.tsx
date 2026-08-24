@@ -162,7 +162,7 @@ describe("HorseForm — profile photo crop (ENG-749)", () => {
       await screen.findByText("Photo uploaded");
 
       expect(upload()!.path).toMatch(/\.jpg$/);
-      expect(upload()!.contentType).toBe("image/jpeg");
+      expect((upload()!.body as Blob).type).toBe("image/jpeg");
     });
 
     it("keeps a PNG a PNG when the crop preserves it, so transparency survives", async () => {
@@ -173,7 +173,7 @@ describe("HorseForm — profile photo crop (ENG-749)", () => {
       await screen.findByText("Photo uploaded");
 
       expect(upload()!.path).toMatch(/\.png$/);
-      expect(upload()!.contentType).toBe("image/png");
+      expect((upload()!.body as Blob).type).toBe("image/png");
     });
 
     it("uploads nothing at all when the crop is cancelled", async () => {

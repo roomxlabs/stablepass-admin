@@ -7,6 +7,7 @@ import {
   centredPan,
   clampZoom,
   cropRect,
+  extForMime,
   maxZoom,
   outputEdge,
   outputFormat,
@@ -199,7 +200,11 @@ export default function PhotoCropField({ file, subject, onCancel, onApply }: Pro
       applyAsIs();
       return;
     }
-    onApply({ blob, ext: format.ext, cropped: true });
+    // Keyed off the mime the encoder ACTUALLY returned, not the one we asked
+    // for: toBlob is allowed to fall back to PNG when it cannot honour the
+    // request, and a .jpg key over PNG bytes is the divergence photoCrop.ts
+    // exists to prevent.
+    onApply({ blob, ext: extForMime(blob.type), cropped: true });
   }
 
   return (

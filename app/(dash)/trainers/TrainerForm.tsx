@@ -177,7 +177,7 @@ export default function TrainerForm(props: Props) {
       const sb = supabaseBrowser();
       const { error: upErr } = await sb.storage
         .from(PHOTO_BUCKET)
-        .upload(path, picked.blob, { upsert: true, contentType: picked.blob.type || undefined });
+        .upload(path, picked.blob, { upsert: true });
       if (upErr) {
         setError(`Photo upload failed: ${upErr.message}`);
       } else {

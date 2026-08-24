@@ -32,6 +32,9 @@ const h = vi.hoisted(() => ({
     // simulates a real browser so the crop path itself can be exercised.
     canvas: false,
     cropBlob: null as Blob | null,
+    // ENG-749: hold the encode open so the mid-encode dismissal guard is testable.
+    holdCrop: false,
+    releaseCrop: null as null | (() => void),
     // ENG-749: how many times the picked file was decoded. A second decode
     // means the load effect re-ran, which resets the admin's framing.
     loads: 0,
@@ -69,7 +72,14 @@ vi.mock("../components/photoCropCanvas", () => ({
         }
       : null;
   },
-  cropToBlob: async () => h.script.cropBlob,
+  cropToBlob: async () => {
+    if (h.script.holdCrop) {
+      await new Promise<void>((resolve) => {
+        h.script.releaseCrop = resolve;
+      });
+    }
+    return h.script.cropBlob;
+  },
 }));
 vi.mock("@/lib/supabase/client", () => ({
   supabaseBrowser: () => ({
@@ -161,6 +171,8 @@ beforeEach(() => {
   h.script.canvas = false;
   h.script.cropBlob = null;
   h.script.loads = 0;
+  h.script.holdCrop = false;
+  h.script.releaseCrop = null;
   bff = [];
   push.mockClear();
   stubFetch();
@@ -652,6 +664,15 @@ describe("TrainerForm — profile photo crop (ENG-749)", () => {
 
   const privateUpload = () => h.storage.find((c) => c.op === "upload" && c.bucket === "trainer-photos");
 
+    // NOTE: the SDK's `contentType` upload OPTION is deliberately not asserted
+    // here, and the forms no longer pass it. For a Blob/File body supabase-js
+    // builds a FormData and appends the blob (storage-js
+    // `uploadOrUpdate`, dist/index.mjs:610-614); `options.contentType` is only
+    // read on the non-Blob branch. The stored object's MIME therefore comes
+    // from `blob.type`, which is what these assert. Asserting the option would
+    // be a false signal in both directions - it would go red for a change that
+    // altered nothing on the wire, and stay green for one that did.
+
   describe("in a browser that can crop", () => {
     beforeEach(() => {
       h.script.canvas = true;
@@ -691,7 +712,7 @@ describe("TrainerForm — profile photo crop (ENG-749)", () => {
       await screen.findByText("Photo added");
 
       expect(privateUpload()!.path).toMatch(/\.jpg$/);
-      expect(privateUpload()!.contentType).toBe("image/jpeg");
+      expect((privateUpload()!.body as Blob).type).toBe("image/jpeg");
     });
 
     it("keeps a PNG a PNG when the crop preserves it, so transparency survives", async () => {
@@ -702,7 +723,23 @@ describe("TrainerForm — profile photo crop (ENG-749)", () => {
       await screen.findByText("Photo added");
 
       expect(privateUpload()!.path).toMatch(/\.png$/);
-      expect(privateUpload()!.contentType).toBe("image/png");
+      expect((privateUpload()!.body as Blob).type).toBe("image/png");
+    });
+
+    it("names the object for the bytes the ENCODER returned, not the ones requested", async () => {
+      // `canvas.toBlob` is specified to fall back to image/png when it cannot
+      // honour the requested type. The source here is a JPEG, so outputFormat
+      // asks for image/jpeg — but the encoder hands back PNG. The key must
+      // follow the bytes that exist, or ENG-766 publishes a .jpg key holding
+      // PNG bytes to the public origin.
+      h.script.cropBlob = new Blob(["actually-png"], { type: "image/png" });
+      const { container } = render(<TrainerForm mode="create" />);
+      pick(container, jpeg());
+      fireEvent.click(await screen.findByTestId("photo-crop-apply"));
+      await screen.findByText("Photo added");
+
+      expect(privateUpload()!.path).toMatch(/\.png$/);
+      expect((privateUpload()!.body as Blob).type).toBe("image/png");
     });
 
     it("uploads the ORIGINAL file, unchanged, on Use as-is", async () => {
@@ -760,6 +797,63 @@ describe("TrainerForm — profile photo crop (ENG-749)", () => {
       expect(screen.getByTestId("photo-crop-meta").textContent).toBe(
         "Saving 1200×1200 from a 4000×2000 photo",
       );
+    });
+
+    it("zooming keeps the crop centred and shrinks what is saved", async () => {
+      // The zoom SLIDER was the one control with no coverage: panForZoom is
+      // unit-tested as a pure function, but nothing proved onZoom actually
+      // calls it. Dropping that call leaves every suite green while zooming
+      // walks the subject towards the top-left.
+      const { container } = render(<TrainerForm mode="create" />);
+      pick(container, jpeg());
+      await screen.findByTestId("photo-crop-dialog");
+      // 4000x2000 at zoom 1 crops the full 2000px shorter edge, capped to 1200.
+      expect(screen.getByTestId("photo-crop-meta").textContent).toBe(
+        "Saving 1200×1200 from a 4000×2000 photo",
+      );
+
+      // The rendered offset is the ONLY observable proof that the pan was
+      // re-anchored. Asserting the readout alone would pass even with the
+      // panForZoom call deleted, because the readout is derived from `zoom`.
+      const offset = () =>
+        (document.querySelector("[data-testid='photo-crop-viewport'] img") as HTMLElement).style.left;
+      // zoom 1: a 2000px crop centred at x=1000 in a 360px viewport → -180px.
+      expect(offset()).toBe("-180px");
+
+      fireEvent.change(screen.getByTestId("photo-crop-zoom"), { target: { value: "2" } });
+
+      // Half the crop side, and now UNDER the 1200 cap, so the saved edge
+      // tracks the crop rather than the cap — which also proves the no-upscale
+      // rule is reached through the real component, not just the pure test.
+      expect(screen.getByTestId("photo-crop-meta").textContent).toBe(
+        "Saving 1000×1000 from a 4000×2000 photo",
+      );
+      // Centre held: the 1000px crop starts at x=1500, so the same midpoint
+      // (2000) stays under the middle of the viewport. Without the re-anchor
+      // the crop would stay at x=1000 and render -360px, dragging the subject
+      // towards the top-left — exactly what panForZoom exists to prevent.
+      expect(offset()).toBe("-540px");
+    });
+
+    it("refuses to dismiss mid-encode, so a cancel cannot silently save", async () => {
+      h.script.holdCrop = true;
+      const { container } = render(<TrainerForm mode="create" />);
+      pick(container, jpeg());
+      fireEvent.click(await screen.findByTestId("photo-crop-apply"));
+      await waitFor(() => expect(h.script.releaseCrop).toBeTruthy());
+
+      // Both dismissal routes that were NOT covered by the disabled buttons.
+      fireEvent.keyDown(window, { key: "Escape" });
+      expect(screen.queryByTestId("photo-crop-dialog")).not.toBeNull();
+
+      fireEvent.click(screen.getByTestId("photo-crop-dialog").firstElementChild!);
+      expect(screen.queryByTestId("photo-crop-dialog")).not.toBeNull();
+      expect(h.storage.filter((c) => c.op === "upload")).toHaveLength(0);
+
+      // Letting the encode finish still completes the apply.
+      h.script.releaseCrop!();
+      await screen.findByText("Photo added");
+      expect(privateUpload()!.body).toBe(h.script.cropBlob);
     });
 
     it("survives a parent re-render without re-decoding and losing the framing", async () => {

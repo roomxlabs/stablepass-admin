@@ -91,6 +91,25 @@ async function waitForPreview(page: Page) {
     .toBeGreaterThan(0);
 }
 
+/**
+ * What the stored object ACTUALLY is: its key, and the Content-Type the server
+ * serves it with.
+ *
+ * This is the only place in the repo that observes either. supabase-js sends a
+ * Blob body as multipart FormData and the part's own type becomes the stored
+ * MIME — the `contentType` upload OPTION is ignored for Blob bodies
+ * (storage-js `uploadOrUpdate`), so asserting that option would prove nothing
+ * about the wire. Reading it back through the same signed URL the <img> uses
+ * is what closes that gap.
+ */
+async function storedObject(page: Page): Promise<{ src: string; contentType: string | null }> {
+  return page.evaluate(async () => {
+    const img = document.querySelector<HTMLImageElement>(".preview img")!;
+    const res = await fetch(img.src);
+    return { src: img.src, contentType: res.headers.get("content-type") };
+  });
+}
+
 /** Drag the photo left, which moves the crop window right onto the subject. */
 async function dragOntoSubject(page: Page) {
   const viewport = page.getByTestId("photo-crop-viewport");
@@ -137,6 +156,10 @@ test("trainer: BEFORE — Use as-is stores the raw wide photo (30)", async ({ pa
       () => document.querySelector<HTMLImageElement>(".preview img")!.naturalWidth,
     ),
   ).toBe(1600);
+  const object = await storedObject(page);
+  expect(object.contentType).toBe("image/jpeg");
+  expect(object.src).toMatch(/\.jpg\?/);
+
   await page.screenshot({
     path: "e2e/__screenshots__/30-trainer-photo-as-is-before.png",
     fullPage: true,
@@ -170,6 +193,14 @@ test("trainer: AFTER — dragging onto the subject stores a square crop (31, 32)
   expect(stored.w).toBe(stored.h);
   expect(stored.w).toBe(800);
 
+  // The key and the bytes must agree: a JPEG source crops to JPEG, so the
+  // object is served as image/jpeg from a .jpg key. ENG-766's marketing copy
+  // derives the PUBLIC object's key from this one, so a disagreement here is
+  // what would put mislabelled bytes on a public origin.
+  const object = await storedObject(page);
+  expect(object.contentType).toBe("image/jpeg");
+  expect(object.src).toMatch(/\.jpg\?/);
+
   await page.screenshot({
     path: "e2e/__screenshots__/32-trainer-photo-cropped-after.png",
     fullPage: true,
@@ -200,6 +231,10 @@ test("horse: the crop step opens and stores a square crop (33, 34)", async ({ pa
     return { w: img.naturalWidth, h: img.naturalHeight };
   });
   expect(stored.w).toBe(stored.h);
+
+  const object = await storedObject(page);
+  expect(object.contentType).toBe("image/jpeg");
+  expect(object.src).toMatch(/\.jpg\?/);
 
   await page.screenshot({
     path: "e2e/__screenshots__/34-horse-photo-cropped.png",

@@ -462,9 +462,39 @@ export function startMockSupabase() {
 
       // Mint a signed URL. supabase-js builds the final href as
       // `${storageUrl}${signedURL}`, so this must be root-relative to /storage/v1.
+      //
+      // TWO shapes, and they are not interchangeable. `createSignedUrl` (one
+      // path) POSTs to `/object/sign/<bucket>/<path>` and expects an OBJECT;
+      // `createSignedUrls` (the batch used by every list screen via
+      // signPhotoMap) POSTs to `/object/sign/<bucket>` with `{paths}` in the
+      // body and expects an ARRAY, which storage-js immediately `.map()`s.
+      // Answering the batch call with the singular shape throws a TypeError
+      // that is NOT a StorageError, so it escapes the caller's error handling
+      // and takes down SSR instead of degrading to a placeholder. Unreachable
+      // today only because every fixture has `photo_url: null` — the first
+      // fixture with a photo would hit it.
       if (req.method === "POST" && signed) {
-        await drainBinary(req);
-        sendJson(res, 200, { signedURL: `/object/sign/${rest.slice(5)}?token=mock` });
+        const body = await drainBinary(req);
+        const after = rest.slice(5);
+        if (!after.includes("/")) {
+          let paths = [];
+          try {
+            paths = JSON.parse(body.toString("utf8"))?.paths ?? [];
+          } catch {
+            paths = [];
+          }
+          sendJson(
+            res,
+            200,
+            paths.map((path) => ({
+              path,
+              signedURL: `/object/sign/${after}/${path}?token=mock`,
+              error: null,
+            })),
+          );
+          return;
+        }
+        sendJson(res, 200, { signedURL: `/object/sign/${after}?token=mock` });
         return;
       }
 

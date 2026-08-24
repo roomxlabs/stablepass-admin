@@ -115,7 +115,6 @@ export default function HorseForm({ mode, trainers, horseId, initial = {} }: Pro
       const { error: upErr } = await sb.storage.from(PHOTO_BUCKET).upload(path, picked.blob, {
         cacheControl: "3600",
         upsert: true,
-        contentType: picked.blob.type || undefined,
       });
       if (upErr) throw upErr;
       // Store the object path (private bucket); sign it for the live preview.

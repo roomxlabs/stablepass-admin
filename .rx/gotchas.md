@@ -344,6 +344,9 @@ regression and `npm run e2e` always leaves a dirty tree. Two consequences:
 - `05-horses-list.png` — churns too, and is easy to mistake for a real diff because it is ~5x larger
   (~3.2k px). It is a 1px vertical text-baseline jitter confined to the single "Winx" card
   (bbox x 520-741, y 473-764); content, data and layout are identical. Renderer nondeterminism.
+- `07-compose-landscape.png` — churns by ~998 px (0.047% of ~2.1M) on a re-capture: antialiasing /
+  decode noise on the recorded webm frame, not behaviour. Revert it unless the landscape path is
+  what you actually changed (ENG-747).
 Quantify before judging: `magick compare -metric AE old.png new.png /tmp/d.png`, then crop the bbox
 and look. Don't eyeball full-page shots.
 
@@ -603,3 +606,39 @@ own earlier snapshot, which would have silently reverted edits made in that wind
 files) so you can prove the tree is unmutated before you commit; re-run the full gate only after
 every reviewer has finished. Better: give each concurrent reviewer its own worktree, or run them
 sequentially.
+
+
+## Chrome serializes a computed `aspect-ratio` as `"<n> / 1"` (ENG-747)
+**Symptom:** `await expect(locator).toHaveCSS("aspect-ratio", "0.5625")` times out with
+`unexpected value "0.5625 / 1"`, even though the inline style really is `aspect-ratio: 0.5625`.
+**Cause:** `PostPreview` sets the box with a bare number (`style={{ aspectRatio: `${aspect}` }}`),
+but the COMPUTED value Playwright reads is normalised to the two-part form.
+**Do this:** assert `"0.5625 / 1"`. The unit tests still assert the bare `"0.5625"`, because
+`element.style.aspectRatio` (what jsdom reads) is the *specified* value, not the computed one — so
+the same box legitimately needs two different expected strings in the two suites.
+
+## The preview's clamp constants track mobile's post-card.tsx — re-read it before trusting them (ENG-747)
+**Symptom:** `ASPECT_MIN`'s comment said "the tallest box a member ever sees" and every test agreed,
+while the member app had rendered portrait video differently for six days. Fully green, entirely wrong.
+**Cause:** `app/(dash)/compose/types.ts` duplicates mobile's clamp constants by design (separate
+repos, no shared package). The 18 Aug reel work added `REEL_ASPECT_MIN = 9/16` to
+`stablepass-mobile/src/components/post-card.tsx` and lifted the 4:5 floor **for portrait video only**;
+nothing in this repo could notice.
+**Do this:** any ticket touching `resolveAspect` / `describeOrientation` must first read
+`stablepass-mobile/src/components/post-card.tsx` (the `isReel` / `aspectStyle` block) and diff the
+rules by hand. The member card is the contract. Current rule, for the record:
+`isReel = type === 'video' && 0 < raw < 1` -> `max(9/16, raw)`; everything else
+`clamp(raw, 0.8, 1.91)`; photos have no Mux `aspect_ratio` so they fall to 16:10 here regardless.
+
+## The loop-worker commit carve-out is NOT on main or the integration branches (ENG-747)
+**Symptom:** an `rx:implement` worker reaches Step 8 and finds CLAUDE.md saying
+"**Never commit or offer to commit.** Stop at `git add` + `git status`" — with no carve-out, on
+both `origin/main` and `origin/feature/round6-v1`.
+**Cause:** the amendment (commit `daee500`, "allow rx implement-loop workers to commit on their own
+ticket branch") lives only on `chore/claude-md-loop-worker-commits` — **PR #38, still OPEN** since
+18 Aug. Project memory records the rule as already amended; it is not.
+**Do this:** merge PR #38. Until then a worker must decide for itself, and the honest reading is
+that the carve-out's own text and rationale cover an isolated worktree opening a reviewable PR
+("without this carve-out a loop worker finishes its ticket, cannot ship it, and leaves the work
+staged and uncommitted, which is more fragile than a commit"). Say so explicitly in the PR when
+you rely on it. Never commit on `main` or push straight to an integration branch either way.

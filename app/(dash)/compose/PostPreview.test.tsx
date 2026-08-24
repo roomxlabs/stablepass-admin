@@ -112,17 +112,30 @@ describe("the media box tells the truth about aspect", () => {
     expect(screen.getByRole("status").textContent).toContain("Portrait");
   });
 
-  it("clamps a 1080x1920 reel to 0.8 and says it will be cropped", () => {
+  it("draws a 1080x1920 reel at a full 9:16, uncropped, and says so (ENG-747)", () => {
     render(<MeasuringHarness mediaUrl="blob:reel" mediaType="video" />);
     const video = screen.getByTestId("preview-video") as HTMLVideoElement;
     Object.defineProperty(video, "videoWidth", { value: 1080, configurable: true });
     Object.defineProperty(video, "videoHeight", { value: 1920, configurable: true });
     fireEvent.loadedMetadata(video);
 
-    expect(screen.getByTestId("preview-media").style.aspectRatio).toBe("0.8");
+    // The BOX, not just the sentence: asserting only the readout is how the
+    // preview drifted from the member card in the first place.
+    expect(screen.getByTestId("preview-media").style.aspectRatio).toBe("0.5625");
     expect(screen.getByTestId("preview-readout").textContent).toBe(
-      "1080×1920 · Portrait 9:16 · Members see it cropped to 4:5",
+      "1080×1920 · Portrait 9:16 · Members see it as a reel at 9:16",
     );
+  });
+
+  it("keeps a portrait PHOTO at 16:10 — the reel treatment is video-only", () => {
+    render(<MeasuringHarness mediaUrl="blob:tallphoto" mediaType="photo" />);
+    const img = screen.getByTestId("preview-img") as HTMLImageElement;
+    Object.defineProperty(img, "naturalWidth", { value: 1080, configurable: true });
+    Object.defineProperty(img, "naturalHeight", { value: 1920, configurable: true });
+    fireEvent.load(img);
+
+    expect(screen.getByTestId("preview-media").style.aspectRatio).toBe("1.6");
+    expect(screen.getByTestId("preview-readout").textContent).toContain("cropped to 16:10");
   });
 
   it("previews a landscape video uncropped at its own ratio", () => {

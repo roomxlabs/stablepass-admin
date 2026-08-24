@@ -5,6 +5,7 @@ import {
   ASPECT_DEFAULT,
   ASPECT_MAX,
   ASPECT_MIN,
+  REEL_ASPECT_MIN,
   aestToday,
   describeOrientation,
   displayHorseName,
@@ -17,9 +18,32 @@ describe("resolveAspect", () => {
     expect(resolveAspect({ width: 1000, height: 1000 })).toBe(1);
   });
 
-  it("clamps a portrait reel to 4:5 — the case the operator currently cannot see", () => {
+  it("still clamps a portrait NON-video to 4:5", () => {
+    // No media type = a text post (ComposeScreen reports text as null). The
+    // classic floor is unchanged for everything that is not a portrait video.
     expect(resolveAspect({ width: 1080, height: 1920 })).toBe(ASPECT_MIN);
     expect(resolveAspect({ width: 1080, height: 1920 })).toBe(0.8);
+  });
+
+  it("draws a portrait VIDEO as a reel at its own ratio, down to 9:16 (ENG-747)", () => {
+    // The regression this ticket reopened: the member card has drawn a
+    // portrait video at its raw ratio since 18 Aug 2026, while this preview
+    // was still flooring it at 4:5 — so the operator vetted a crop that no
+    // member would ever see.
+    expect(resolveAspect({ width: 1080, height: 1920 }, "video")).toBe(REEL_ASPECT_MIN);
+    expect(resolveAspect({ width: 1080, height: 1920 }, "video")).toBeCloseTo(0.5625, 6);
+    // Between 4:5 and square nothing changes — reel and classic agree.
+    expect(resolveAspect({ width: 1080, height: 1350 }, "video")).toBe(0.8);
+    // Taller than 9:16 IS floored, exactly as the member card floors it.
+    expect(resolveAspect({ width: 1080, height: 2400 }, "video")).toBe(REEL_ASPECT_MIN);
+    // A portrait PHOTO is untouched by the reel rule: still the 16:10 box.
+    expect(resolveAspect({ width: 1080, height: 1920 }, "photo")).toBe(ASPECT_DEFAULT);
+  });
+
+  it("pins the reel floor to the member card's 9:16", () => {
+    // Duplicated constant, separate repos: if mobile's REEL_ASPECT_MIN moves,
+    // this is the line that should force someone to look here too.
+    expect(REEL_ASPECT_MIN).toBe(9 / 16);
   });
 
   it("clamps ultra-wide to 1.91:1", () => {
@@ -54,9 +78,31 @@ describe("describeOrientation", () => {
     );
   });
 
-  it("warns that a portrait reel will be cropped", () => {
+  it("tells the truth about a portrait reel: uncropped at 9:16 (ENG-747)", () => {
     expect(describeOrientation({ width: 1080, height: 1920 }, "video")).toBe(
-      "1080×1920 · Portrait 9:16 · Members see it cropped to 4:5",
+      "1080×1920 · Portrait 9:16 · Members see it as a reel at 9:16",
+    );
+  });
+
+  it("warns only when a reel is TALLER than 9:16, which is the only real crop", () => {
+    expect(describeOrientation({ width: 1080, height: 2400 }, "video")).toBe(
+      "1080×2400 · Portrait 9:20 · Members see it as a reel, cropped to 9:16",
+    );
+  });
+
+  it("never says 'cropped to 4:5' about a video again — that promise is dead", () => {
+    // The exact drift this ticket exists to kill. Sweep the whole portrait
+    // range rather than one sample, so a partial revert cannot pass.
+    for (const height of [1350, 1400, 1600, 1920, 2200, 2400, 3000]) {
+      expect(describeOrientation({ width: 1080, height }, "video")).not.toContain(
+        "cropped to 4:5",
+      );
+    }
+  });
+
+  it("keeps a portrait PHOTO on the 16:10 story — the reel rule is video-only", () => {
+    expect(describeOrientation({ width: 1080, height: 1920 }, "photo")).toBe(
+      "1080×1920 · Portrait 9:16 · Members see it cropped to 16:10",
     );
   });
 

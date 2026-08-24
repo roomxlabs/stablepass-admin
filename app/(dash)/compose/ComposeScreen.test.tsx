@@ -740,12 +740,15 @@ describe("ComposeScreen — preview measurement", () => {
     Object.defineProperty(video, "videoHeight", { value: 1920, configurable: true });
     fireEvent.loadedMetadata(video);
 
+    // ENG-747: end to end through the real screen, a 9:16 file now previews as
+    // a full reel. This is the assertion that proves the fix reaches the
+    // operator, not just the pure helper.
     await waitFor(() =>
       expect(screen.getByTestId("preview-readout").textContent).toBe(
-        "1080×1920 · Portrait 9:16 · Members see it cropped to 4:5",
+        "1080×1920 · Portrait 9:16 · Members see it as a reel at 9:16",
       ),
     );
-    expect(screen.getByTestId("preview-media").style.aspectRatio).toBe("0.8");
+    expect(screen.getByTestId("preview-media").style.aspectRatio).toBe("0.5625");
   });
 
   it("clears the previous measurement when the operator swaps the file", async () => {

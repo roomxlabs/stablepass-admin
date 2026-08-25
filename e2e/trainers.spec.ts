@@ -97,6 +97,77 @@ test("trainers list On site badge", async ({ page }) => {
   await page.screenshot({ path: "e2e/__screenshots__/20-trainers-on-site-badge.png", fullPage: true });
 });
 
+// ENG-746 — the Website field and the honest slug-collision message.
+
+test("website field seeds from the trainer row", async ({ page }) => {
+  test.setTimeout(90000);
+  await signIn(page);
+  await page.goto("/trainers/t1/edit");
+  await expect(page.getByTestId("trainer-form")).toBeVisible({ timeout: 30000 });
+
+  // t1 is the only fixture carrying a website_url, so a passing assertion here
+  // proves the whole seeding path: the edit page selected the column, data.ts
+  // mapped it, and the form rendered it. A form that merely renders an empty
+  // Website input would fail this.
+  const website = page.getByTestId("trainer-website");
+  await expect(website).toHaveValue("https://wallerracing.com.au");
+
+  await website.scrollIntoViewIfNeeded();
+  await page.screenshot({ path: "e2e/__screenshots__/22-trainer-website-seeded.png", fullPage: true });
+});
+
+test("website field is empty for a trainer without one", async ({ page }) => {
+  test.setTimeout(90000);
+  await signIn(page);
+  await page.goto("/trainers/t2/edit");
+  await expect(page.getByTestId("trainer-form")).toBeVisible({ timeout: 30000 });
+  // t2 has no website_url. This is the other half of the seeding proof: a form
+  // that hardcoded the value, or a mapper that fell back to some default, would
+  // fail here even though the test above passed.
+  await expect(page.getByTestId("trainer-website")).toHaveValue("");
+});
+
+test("slug collision shows the honest message", async ({ page }) => {
+  test.setTimeout(90000);
+  await signIn(page);
+
+  // The 409 is injected at the BFF boundary rather than in mock-supabase.mjs on
+  // purpose. This POST is issued by the browser, so page.route can intercept it
+  // (unlike the server-side Supabase calls, which never pass through Playwright),
+  // and it keeps the order-sensitive /rest/v1 dispatcher untouched. The body is
+  // the real envelope shape from lib/api/envelope.ts.
+  await page.route("**/api/admin/trainers", (route) =>
+    route.request().method() === "POST"
+      ? route.fulfill({
+          status: 409,
+          contentType: "application/json",
+          body: JSON.stringify({
+            error: { code: "slug_taken", message: "A trainer with that slug already exists." },
+          }),
+        })
+      : route.continue(),
+  );
+
+  await page.goto("/trainers/new");
+  await expect(page.getByTestId("trainer-form")).toBeVisible({ timeout: 30000 });
+  await page.getByTestId("trainer-name").fill("Chris Waller");
+  await page.getByTestId("submit-trainer").click();
+
+  const alert = page.locator(".form-err");
+  await expect(alert).toBeVisible({ timeout: 30000 });
+  // What the ticket requires the copy to carry: the real cause, the value that
+  // actually collided, the duplicate-safe fix first, and the rename second.
+  await expect(alert).toContainText("unique ID");
+  await expect(alert).toContainText("chris-waller");
+  await expect(alert).toContainText("Trainers list");
+  await expect(alert).toContainText("change the full name slightly");
+  // And NOT the claim an earlier draft made: nothing reads trainer.slug, and the
+  // member profile resolves by id, so there is no /chris-waller page to point at.
+  await expect(alert).not.toContainText("web address");
+
+  await page.screenshot({ path: "e2e/__screenshots__/23-trainer-slug-collision.png", fullPage: true });
+});
+
 test("failed photo copy warning", async ({ page }) => {
   test.setTimeout(90000);
 
@@ -142,6 +213,12 @@ test("failed photo copy warning", async ({ page }) => {
     mimeType: "image/jpeg",
     buffer: PNG,
   });
+  // ENG-749: picking a file now opens the crop step, and its overlay would
+  // intercept the submit click below. This test is about the marketing copy
+  // failing, not about cropping, so take the use-as-is route — it uploads this
+  // exact PNG unchanged, which is what the test was written against.
+  await page.getByTestId("photo-crop-use-as-is").click();
+  await expect(page.getByTestId("photo-crop-dialog")).toBeHidden();
   await expect(page.getByText("Photo added")).toBeVisible({ timeout: 15000 });
 
   const cb = page.getByTestId("marketing-visible");

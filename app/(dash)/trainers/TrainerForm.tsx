@@ -5,6 +5,9 @@ import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { supabaseBrowser } from "@/lib/supabase/client";
 import { signPhoto } from "@/lib/storage/photos";
+import { parseWebsiteUrl } from "@/lib/trainers/website-url";
+import { slugCollisionMessage } from "@/lib/trainers/slug-collision";
+import PhotoCropField, { type PickedPhoto } from "../components/PhotoCropField";
 import { publishMarketingPhoto, unpublishMarketingPhoto } from "./marketingPhoto";
 
 // Add / edit trainer form — matches mockups/web/admin/screens/08-add-trainer.html.
@@ -27,6 +30,13 @@ export type TrainerData = {
   status: "active" | "onboarding";
   marketingVisible: boolean;
   marketingPhotoPath: string | null;
+  /**
+   * ENG-746. REQUIRED, not optional, on purpose: every caller that builds a
+   * seed must decide what to pass. An optional field here would let the edit
+   * page drop `website_url` from its `select(...)` and still typecheck, and the
+   * form would then silently blank a saved website on the next save.
+   */
+  websiteUrl: string | null;
 };
 
 type Props =
@@ -45,13 +55,23 @@ function emptyContact(role = ""): ContactInput {
   return { role, name: "", email: "", phone: "" };
 }
 
-async function readError(res: Response): Promise<string> {
+// The envelope's error code AND message, read in ONE pass. A Response body can
+// only be consumed once, so the create path cannot check the code and then call
+// readError() for the text - it has to get both together.
+async function readErrorBody(res: Response): Promise<{ code: string | null; message: string }> {
   try {
     const j = await res.json();
-    return j?.error?.message ?? `Request failed (${res.status}).`;
+    return {
+      code: j?.error?.code ?? null,
+      message: j?.error?.message ?? `Request failed (${res.status}).`,
+    };
   } catch {
-    return `Request failed (${res.status}).`;
+    return { code: null, message: `Request failed (${res.status}).` };
   }
+}
+
+async function readError(res: Response): Promise<string> {
+  return (await readErrorBody(res)).message;
 }
 
 export default function TrainerForm(props: Props) {
@@ -64,6 +84,9 @@ export default function TrainerForm(props: Props) {
   const [stableName, setStableName] = useState(seed?.stableName ?? "");
   const [location, setLocation] = useState(seed?.location ?? "");
   const [bio, setBio] = useState(seed?.bio ?? "");
+  // ENG-746. Held as a STRING (never null) so the input stays controlled; the
+  // empty string is converted back to NULL at save time by parseWebsiteUrl.
+  const [websiteUrl, setWebsiteUrl] = useState(seed?.websiteUrl ?? "");
   const [photoUrl, setPhotoUrl] = useState<string | null>(seed?.photoUrl ?? null);
   // `photoUrl` holds the private-bucket object PATH; sign it for the <img>.
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
@@ -75,6 +98,9 @@ export default function TrainerForm(props: Props) {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
+  // ENG-749. The picked file awaiting its crop. Non-null mounts the crop step;
+  // nothing is uploaded until it resolves one way or the other.
+  const [pendingPhoto, setPendingPhoto] = useState<File | null>(null);
 
   // Marketing-site publication (ENG-766). `marketingPhotoPath` is the object
   // currently living in the PUBLIC bucket; `publishWarning` carries a failed
@@ -88,6 +114,15 @@ export default function TrainerForm(props: Props) {
   const [publishWarning, setPublishWarning] = useState<string | null>(null);
   const [publishing, setPublishing] = useState(false);
   const [savedId, setSavedId] = useState<string | null>(seed?.id ?? null);
+
+  // ENG-746. Whether the Website field still holds exactly what was loaded.
+  const websiteUntouched = websiteUrl === (seed?.websiteUrl ?? "");
+  // A pre-existing stored value this form cannot parse (see onSubmit for why it
+  // does not block the save). Surfaced inline rather than silently tolerated:
+  // the app is not rendering that link, and the admin is the only one who can
+  // tell whether it is worth fixing.
+  const websiteLegacyInvalid =
+    websiteUntouched && websiteUrl.trim() !== "" && !parseWebsiteUrl(websiteUrl).ok;
 
   useEffect(() => {
     const stored = seed?.photoUrl;
@@ -115,16 +150,34 @@ export default function TrainerForm(props: Props) {
     });
   }
 
-  async function onPhoto(e: React.ChangeEvent<HTMLInputElement>) {
+  // ENG-749. Picking a file no longer uploads it: it opens the crop step, which
+  // hands back the bytes to store. The input is reset so re-picking the SAME
+  // file still fires a change event (an admin who cancels the crop and changes
+  // their mind would otherwise be stuck).
+  function onPhoto(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
+    e.target.value = "";
     if (!file) return;
+    setError(null);
+    setPendingPhoto(file);
+  }
+
+  // ENG-749. `picked.ext` describes the BYTES, not the file the admin chose: a
+  // PNG cropped to JPEG must land on a .jpg key, because ENG-766's marketing
+  // copy derives the public object's key and content type from this extension.
+  // A .png key holding JPEG bytes would publish a mislabelled object to the
+  // public origin. Use-as-is passes the original file and its original
+  // extension straight through, so that path is byte-for-byte what it was.
+  async function uploadPhoto(picked: PickedPhoto) {
+    setPendingPhoto(null);
     setError(null);
     setUploading(true);
     try {
-      const ext = file.name.split(".").pop() || "jpg";
-      const path = `${slugify(name || "trainer")}-${Date.now()}.${ext}`;
+      const path = `${slugify(name || "trainer")}-${Date.now()}.${picked.ext}`;
       const sb = supabaseBrowser();
-      const { error: upErr } = await sb.storage.from(PHOTO_BUCKET).upload(path, file, { upsert: true });
+      const { error: upErr } = await sb.storage
+        .from(PHOTO_BUCKET)
+        .upload(path, picked.blob, { upsert: true });
       if (upErr) {
         setError(`Photo upload failed: ${upErr.message}`);
       } else {
@@ -218,6 +271,24 @@ export default function TrainerForm(props: Props) {
       setError("Full name is required.");
       return;
     }
+    // ENG-746. Validated with the SAME function both routes use, so the form can
+    // never send a value the server will reject, and never rejects one it would
+    // have accepted. Checked before `setSaving(true)` so a bad URL costs nothing.
+    //
+    // The `websiteUntouched` escape hatch matters: `trainer.website_url` is an
+    // unconstrained text column that no admin surface has ever written, so a row
+    // populated by hand can hold something this form rejects (stablepass-web's
+    // own code explicitly anticipates a bare domain there). Blocking on it would
+    // put a red banner about the Website field in front of an admin who came to
+    // fix a typo in the bio, and leave them no way to save at all. An untouched
+    // bad value is therefore left exactly as it is: not re-validated, and omitted
+    // from the payload below so it is not rewritten either. Touching the field
+    // opts back into validation.
+    const website = parseWebsiteUrl(websiteUrl);
+    if (!website.ok && !websiteUntouched) {
+      setError(website.message);
+      return;
+    }
     setSaving(true);
     try {
       const profile = {
@@ -228,6 +299,12 @@ export default function TrainerForm(props: Props) {
         bio: bio.trim() || null,
         photoUrl,
         marketingVisible,
+        // Sent whenever it is VALID, including as null: the route writes only the
+        // keys present in the body, so omitting it when empty would make CLEARING
+        // a website impossible. The only case that is omitted is an untouched
+        // pre-existing value this form cannot parse (see above) - rewriting that
+        // is not ours to do, and leaving the key out means the column keeps it.
+        ...(website.ok ? { websiteUrl: website.value } : {}),
       };
 
       // `savedId` — not the `mode` prop — decides create vs update. After a
@@ -258,15 +335,16 @@ export default function TrainerForm(props: Props) {
           body: JSON.stringify({ ...profile, slug: slugify(name), status: "active" }),
         });
         if (!res.ok) {
+          // ENG-746 - Mel's block. Gated on the error CODE as well as the status,
+          // so only the slug collision gets the specific copy: any other 409 the
+          // route might grow later falls through to the server's own message
+          // rather than being explained as something it is not. The wording and
+          // the reasoning behind it live in lib/trainers/slug-collision.ts.
+          const err = await readErrorBody(res);
           setError(
-            res.status === 409
-              ? // Deliberately does NOT advise renaming. This is the last line of
-                // defence against duplicates, and it is reachable in a state where
-                // the trainer was already created (a lost response after the
-                // server committed) — telling the admin to change the name is
-                // exactly what turns that into a second live trainer.
-                "A trainer with this name already exists. Open it from the Trainers list rather than adding another."
-              : await readError(res),
+            res.status === 409 && err.code === "slug_taken"
+              ? slugCollisionMessage(slugify(name))
+              : err.message,
           );
           return;
         }
@@ -348,6 +426,40 @@ export default function TrainerForm(props: Props) {
                 onChange={(e) => setLocation(e.target.value)} placeholder="e.g. Rosehill, NSW" />
             </div>
           </div>
+
+          {/* ENG-746 — Website. PUBLIC-facing by design: stablepass-web renders it
+              as the "Website" action on the member trainer profile. It belongs in
+              Trainer (identifying information) and explicitly NOT in Contacts:
+              trainer_contact is internal, admin-only data (guardrail #3), and the
+              two must not read to an admin as the same kind of field.
+
+              `type="text"`, not `type="url"`, on purpose. Native URL validation
+              would fire first and replace the message below with the browser's
+              own — and it would not help anyway, since `javascript:alert(1)` is a
+              perfectly valid absolute URL to the platform check. One rule, stated
+              once, shared with the server. */}
+          <div>
+            <label className="adm-label" htmlFor="trainer-website">Website</label>
+            <input
+              id="trainer-website"
+              className="adm-input"
+              type="text"
+              inputMode="url"
+              value={websiteUrl}
+              onChange={(e) => setWebsiteUrl(e.target.value)}
+              placeholder="https://..."
+              data-testid="trainer-website"
+            />
+            <div className="adm-help">
+              Optional. Shown as a link on the trainer&apos;s profile in the app.
+            </div>
+            {websiteLegacyInvalid ? (
+              <div className="adm-help adm-check-note" data-testid="website-legacy-invalid">
+                The saved website is not a full web address, so the app is not showing it. Fix it
+                or clear it when you can. Leaving it alone will not block this save.
+              </div>
+            ) : null}
+          </div>
         </div>
       </div>
 
@@ -413,6 +525,14 @@ export default function TrainerForm(props: Props) {
         </div>
         <div className="adm-card-body">
           <input ref={fileRef} type="file" accept="image/png,image/jpeg" hidden onChange={onPhoto} />
+          {pendingPhoto ? (
+            <PhotoCropField
+              file={pendingPhoto}
+              subject="trainer"
+              onCancel={() => setPendingPhoto(null)}
+              onApply={uploadPhoto}
+            />
+          ) : null}
           <div className={photoUrl ? "upload-zone filled" : "upload-zone"}>
             {photoUrl ? (
               <>

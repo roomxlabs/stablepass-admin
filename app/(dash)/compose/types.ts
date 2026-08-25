@@ -108,6 +108,20 @@ export type CreateDraftResponse = {
   path?: string;
   token?: string;
   bucket?: string;
+  /**
+   * ENG-748 — one direct-upload target per photo SLOT, ascending.
+   *
+   * Additive: `uploads[0]` is the SAME target as the four fields above, which
+   * stay at the top level so a single-photo caller reads exactly what it always
+   * did. Present for every photo/voice draft (length 1 unless `photoCount` asked
+   * for more), absent for video and text.
+   *
+   * `sortOrder` here is the UPLOAD SLOT, which is only incidentally the initial
+   * display position — the operator can reorder the strip before saving, and
+   * `post_media.sort_order` is then assigned from DISPLAY position, not from
+   * this. See `lib/posts/media.ts`.
+   */
+  uploads?: { sortOrder: number; path: string; token: string; uploadUrl: string; bucket: string }[];
 };
 
 /**
@@ -128,6 +142,13 @@ export type EditInitial = {
   caption: string;
   bylineId: string;
   scheduledFor: string | null;
+  /**
+   * ENG-745 — the editorial category, or null for none. Every post created
+   * before 2026-08-19 is null (there is no backfill), so the picker must open
+   * on "No label" rather than defaulting to a preset and silently labelling an
+   * old post the first time someone edits it.
+   */
+  label: string | null;
   horse: HorseOption;
 };
 
@@ -159,17 +180,69 @@ export type MediaDimensions = { width: number; height: number } | null;
  */
 export type MeasureState = "off" | "measuring" | "done";
 
-/** 4:5 — the tallest box a member ever sees. Taller media is cropped to it. */
+/**
+ * 4:5 — the tallest box a NON-REEL asset draws. Taller media is cropped to it.
+ *
+ * No longer "the tallest box a member ever sees": since the 18 Aug 2026 reel
+ * work a portrait VIDEO is exempt from this floor. See REEL_ASPECT_MIN.
+ */
 export const ASPECT_MIN = 0.8;
+/**
+ * 9:16 — the tallest box a REEL draws (client, 18 Aug 2026: a portrait video
+ * follows Instagram's reel treatment, full uncropped ratio, while everything
+ * else keeps the classic card). Only a portrait VIDEO takes this floor.
+ *
+ * A portrait PHOTO does not take it either, but not because it is clamped:
+ * a photo has no Mux asset, so `post.aspect_ratio` is null, so the member
+ * card's `resolveAspect(null)` returns 16:10 and the 4:5 floor is simply
+ * unreachable for it. This screen agrees by returning ASPECT_DEFAULT for a
+ * photo. (Mobile's own comment on REEL_ASPECT_MIN says portrait photos "keep
+ * the 4:5 clamp" — that is aspirational; `lib/feed.ts` nulls the ratio for
+ * anything without a Mux asset, so they never get there. Do not copy it.)
+ *
+ * Duplicated from mobile's REEL_ASPECT_MIN (src/components/post-card.tsx) for
+ * the same reason as the other clamp constants here: separate codebases, no
+ * shared package. The member card is the contract; keep the two in step.
+ */
+export const REEL_ASPECT_MIN = 9 / 16;
 /** 1.91:1 — the widest box a member ever sees. Wider media is cropped to it. */
 export const ASPECT_MAX = 1.91;
 /** 16:10 — used while measuring, and whenever the file cannot be measured. */
 export const ASPECT_DEFAULT = 1.6;
 
 /**
+ * IS THIS ASSET A REEL? — the ONE predicate, mirroring the member card's
+ * `isReel` (stablepass-mobile `src/components/post-card.tsx`).
+ *
+ * Extracted by ENG-769 rather than left inline in `resolveAspect`, because the
+ * reel branch now decides two separate things that must never disagree: the
+ * BOX (this file) and the CHROME (PostPreview). Two independent copies of
+ * `mediaType === "video" && ratio < 1` is exactly the duplication that let the
+ * box and the member card drift apart twice already; one exported predicate
+ * means a future change to the rule cannot move the box without moving the
+ * furniture with it.
+ *
+ * THE THRESHOLD IS UNCHANGED, deliberately (ENG-769 decision 3): `< 1`,
+ * strict, on the RAW ratio before any clamp — the identical comparison
+ * `resolveAspect` already made. A SQUARE video is not a reel.
+ *
+ * `mediaType === "video"` rather than "not a photo", for the reason spelled
+ * out on `resolveAspect` below: `null` here means a TEXT post.
+ */
+export function isReelPreview(dims: MediaDimensions, mediaType: MediaType | null): boolean {
+  if (mediaType !== "video") return false;
+  if (!dims || !(dims.width > 0) || !(dims.height > 0)) return false;
+  return dims.width / dims.height < 1;
+}
+
+/**
  * The width/height the preview box should actually use: the file's own ratio,
  * clamped to what the member card will render. Unknown or degenerate input
  * falls back to 16:10 so the box is never 0-height.
+ *
+ * A PORTRAIT VIDEO IS A REEL and is the one asset exempt from the 4:5 floor —
+ * it draws at its own ratio down to 9:16, exactly as the member card has done
+ * since 18 Aug 2026. See REEL_ASPECT_MIN and the reel branch below.
  *
  * PHOTOS ALWAYS GET 16:10. A photo has no Mux asset, so it has no
  * `aspect_ratio`, so the member app renders it in the unknown-ratio box by
@@ -180,7 +253,22 @@ export const ASPECT_DEFAULT = 1.6;
 export function resolveAspect(dims: MediaDimensions, mediaType: MediaType | null = null): number {
   if (mediaType === "photo") return ASPECT_DEFAULT;
   if (!dims || !(dims.width > 0) || !(dims.height > 0)) return ASPECT_DEFAULT;
-  return Math.min(ASPECT_MAX, Math.max(ASPECT_MIN, dims.width / dims.height));
+  const ratio = dims.width / dims.height;
+  // THE REEL BRANCH, mirroring the member card: a portrait VIDEO draws at its
+  // own ratio down to 9:16 instead of being floored at 4:5. The RAW ratio
+  // decides, before any clamp — clamping first would floor a 9:16 at 0.8 and
+  // hide the very thing that makes it a reel.
+  //
+  // `mediaType === "video"` is deliberate rather than "not a photo": `null`
+  // here means a TEXT post (ComposeScreen reports text as null, see its
+  // previewData comment), and a voice post has no frame to measure. Both are
+  // gated out of the media box upstream anyway, but the box must not depend
+  // on that.
+  // Delegates to the shared predicate (ENG-769) so the box and the chrome can
+  // never take different branches. Behaviour is byte-identical to the inline
+  // `mediaType === "video" && ratio < 1` it replaces.
+  if (isReelPreview(dims, mediaType)) return Math.max(REEL_ASPECT_MIN, ratio);
+  return Math.min(ASPECT_MAX, Math.max(ASPECT_MIN, ratio));
 }
 
 function gcd(a: number, b: number): number {
@@ -240,7 +328,42 @@ export function describeOrientation(dims: MediaDimensions, mediaType: MediaType 
     // this ticket exists to surface — a 9:16 photo loses most of its height.
     const off = Math.abs(ratio - ASPECT_DEFAULT) > 0.05;
     membersSee = off ? "Members see it cropped to 16:10" : "Members see it at 16:10";
+  } else if (mediaType === "video" && ratio < ASPECT_MIN) {
+    // THE REEL BRANCH. Below 4:5 a portrait video is no longer cropped into a
+    // 4:5 box: it plays as a reel at its own ratio, floored at 9:16, so only
+    // something TALLER than 9:16 actually loses anything.
+    //
+    // NOTE THE TWO DIFFERENT THRESHOLDS, both deliberate. `resolveAspect`
+    // above switches at `ratio < 1`, mirroring the member card's `isReel`.
+    // This readout switches at `ratio < ASPECT_MIN` instead, because between
+    // 4:5 and square the reel and classic paths compute an IDENTICAL box, so
+    // the extra word would tell the operator nothing about framing — and the
+    // printed label can round to 1:1 there, which would put "Square … as a
+    // reel" on one line.
+    //
+    // What that used to cost: the member card flips to full reel CHROME at
+    // `ratio < 1`, so a 0.9 portrait video was a reel for members while this
+    // preview drew a classic card around the right-shaped box.
+    //
+    // ENG-769 CLOSED THAT — PostPreview now models the reel chrome itself
+    // (`isReelPreview`, the same `ratio < 1` predicate). So this line is no
+    // longer carrying the whole story on its own: between 4:5 and square the
+    // OPERATOR SEES the reel treatment even though this sentence does not name
+    // it, which is the split these two thresholds were always meant to have.
+    // The sentence is about FRAMING — what gets cropped — and at 0.9 nothing
+    // is, so "Members see it at 9:10" stays the honest answer.
+    //
+    // The chrome is pinned against the member card by
+    // reel-chrome-parity.test.ts. Do not "fix" this threshold to match the
+    // chrome's: they answer different questions, deliberately (ENG-769
+    // decision 3).
+    membersSee =
+      ratio < REEL_ASPECT_MIN
+        ? "Members see it as a reel, cropped to 9:16"
+        : `Members see it as a reel at ${label}`;
   } else if (ratio < ASPECT_MIN) {
+    // Not a video and not a photo: nothing measurable reaches here today, but
+    // the classic clamp stays the honest answer if anything ever does.
     membersSee = "Members see it cropped to 4:5";
   } else if (ratio > ASPECT_MAX) {
     membersSee = "Members see it cropped to 1.91:1";

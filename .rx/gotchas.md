@@ -344,6 +344,9 @@ regression and `npm run e2e` always leaves a dirty tree. Two consequences:
 - `05-horses-list.png` — churns too, and is easy to mistake for a real diff because it is ~5x larger
   (~3.2k px). It is a 1px vertical text-baseline jitter confined to the single "Winx" card
   (bbox x 520-741, y 473-764); content, data and layout are identical. Renderer nondeterminism.
+- `07-compose-landscape.png` — churns by ~998 px (0.047% of ~2.1M) on a re-capture: antialiasing /
+  decode noise on the recorded webm frame, not behaviour. Revert it unless the landscape path is
+  what you actually changed (ENG-747).
 Quantify before judging: `magick compare -metric AE old.png new.png /tmp/d.png`, then crop the bbox
 and look. Don't eyeball full-page shots.
 
@@ -644,6 +647,224 @@ files) so you can prove the tree is unmutated before you commit; re-run the full
 every reviewer has finished. Better: give each concurrent reviewer its own worktree, or run them
 sequentially.
 
+
+## Chrome serializes a computed `aspect-ratio` as `"<n> / 1"` (ENG-747)
+**Symptom:** `await expect(locator).toHaveCSS("aspect-ratio", "0.5625")` times out with
+`unexpected value "0.5625 / 1"`, even though the inline style really is `aspect-ratio: 0.5625`.
+**Cause:** `PostPreview` sets the box with a bare number (`style={{ aspectRatio: `${aspect}` }}`),
+but the COMPUTED value Playwright reads is normalised to the two-part form.
+**Do this:** assert `"0.5625 / 1"`. The unit tests still assert the bare `"0.5625"`, because
+`element.style.aspectRatio` (what jsdom reads) is the *specified* value, not the computed one — so
+the same box legitimately needs two different expected strings in the two suites.
+
+## The preview's clamp constants track mobile's post-card.tsx — re-read it before trusting them (ENG-747)
+**Symptom:** `ASPECT_MIN`'s comment said "the tallest box a member ever sees" and every test agreed,
+while the member app had rendered portrait video differently for six days. Fully green, entirely wrong.
+**Cause:** `app/(dash)/compose/types.ts` duplicates mobile's clamp constants by design (separate
+repos, no shared package). The 18 Aug reel work added `REEL_ASPECT_MIN = 9/16` to
+`stablepass-mobile/src/components/post-card.tsx` and lifted the 4:5 floor **for portrait video only**;
+nothing in this repo could notice.
+**Do this:** any ticket touching `resolveAspect` / `describeOrientation` must first read
+`stablepass-mobile/src/components/post-card.tsx` (the `isReel` / `aspectStyle` block) and diff the
+rules by hand. The member card is the contract. Current rule, for the record:
+`isReel = type === 'video' && 0 < raw < 1` -> `max(9/16, raw)`; everything else
+`clamp(raw, 0.8, 1.91)`; photos have no Mux `aspect_ratio` so they fall to 16:10 here regardless.
+
+## The loop-worker commit carve-out is NOT on main or the integration branches (ENG-747)
+**Symptom:** an `rx:implement` worker reaches Step 8 and finds CLAUDE.md saying
+"**Never commit or offer to commit.** Stop at `git add` + `git status`" — with no carve-out, on
+both `origin/main` and `origin/feature/round6-v1`.
+**Cause:** the amendment (commit `daee500`, "allow rx implement-loop workers to commit on their own
+ticket branch") lives only on `chore/claude-md-loop-worker-commits` — **PR #38, still OPEN** since
+18 Aug. Project memory records the rule as already amended; it is not.
+**RESOLVED 24 Aug 2026 (ENG-769):** PR #38 is MERGED and the carve-out IS on `main` and on
+`feature/round6-v1` — a loop worker may commit on its own ticket branch in its own worktree. The
+rest of this entry is kept for the reasoning only; the decision no longer needs making.
+**Do this (historical):** merge PR #38. Until then a worker must decide for itself, and the honest reading is
+that the carve-out's own text and rationale cover an isolated worktree opening a reviewable PR
+("without this carve-out a loop worker finishes its ticket, cannot ship it, and leaves the work
+staged and uncommitted, which is more fragile than a commit"). Say so explicitly in the PR when
+you rely on it. Never commit on `main` or push straight to an integration branch either way.
+
+
+## Mobile's OWN comments about the clamp are aspirational — verify against lib/feed.ts (ENG-747)
+**Symptom:** a comment in `app/(dash)/compose/types.ts` claimed "portrait PHOTOS keep the 4:5 clamp
+on the member card". Fresh-eyes review proved it false, and it had been copied straight out of
+`stablepass-mobile/src/components/post-card.tsx`'s comment on `REEL_ASPECT_MIN`, which says the
+same thing.
+**Cause:** `lib/feed.ts:189` is `aspectRatio: typeof row.aspect_ratio === 'number' ? ... : null`.
+A photo has no Mux asset, so the column is null/absent, so mobile's `resolveAspect(null)` returns
+`ASPECT_DEFAULT` 16:10. A portrait photo can never REACH the 4:5 clamp — it is not exempt from it,
+it just never gets there. Both repos' comments described intent, not behaviour.
+**Do this:** when mirroring the member card, take the rule from the CODE PATH (`lib/feed.ts` ->
+`post-card.tsx`'s `isReel`/`aspectStyle`), never from a prose comment in either repo, and say in
+your own comment which one you verified. Cross-repo duplicated constants are only as good as the
+last person who checked them.
+
+## Don't run `rx:review` against the LIVE worktree if it may run e2e (ENG-747)
+**Symptom:** the reviewer's Playwright run re-captured `e2e/__screenshots__/08-*.png` mid-review,
+minutes before the worker committed — so the committed PR evidence was the REVIEWER's capture, not
+the worker's, and nobody noticed until the reviewer disclosed it.
+**Cause:** the existing gotcha below covers two reviewers corrupting each other's MUTATIONS. This is
+the adjacent hazard: `page.screenshot({path})` overwrites baselines in place (see the entry above),
+so any reviewer that runs the e2e suite silently rewrites the artifacts the worker is about to
+commit. Harmless here (same behaviour, 575 px / 0.026% apart) but it breaks provenance.
+**Do this:** give the reviewer an `rsync` copy of the worktree with `node_modules` symlinked, or
+tell it explicitly not to run `npm run e2e` / `npx playwright`. If it already ran, re-shoot from the
+clean tree before committing and say so.
+
+## A cross-repo "contract" test must read git REVS, not the sibling's working tree (ENG-745)
+**Symptom:** `lib/posts/labels.test.ts` — which pins admin's 13 post-label presets against
+stablepass-be's `docs/specs/api-contract.md` + the `post_label_preset` migration — failed with
+"cannot reach the preset source of truth", pointing at a path that was *correct*.
+**Cause:** the sibling repo was checked out on `main`, where the round-6 label work does not exist
+yet. The file genuinely was not on disk. Resolving `<workspace>/stablepass-be/<path>` and
+`readFileSync`-ing it makes the guard depend on whatever branch a DIFFERENT repo happens to have
+checked out, which has nothing to do with drift.
+**Do this:** resolve the sibling root via `dirname(resolve(gitCommonDir))` where `gitCommonDir` is
+`git rev-parse --git-common-dir` (NOT `process.cwd()` — under a worktree that is
+`<repo>/.claude/worktrees/<name>`). **The `resolve()` is load-bearing and easy to miss:**
+`--git-common-dir` returns an ABSOLUTE path only from inside a linked worktree; in a normal checkout
+it returns the bare relative string `.git`, so `dirname()` yields `"."` and the sibling path comes out
+relative. Every lookup then misses and the guard fails for a reason unrelated to drift — green for the
+loop (which runs in a worktree), RED for every human dev. Verify any such test in a plain clone, not
+just in the worktree you wrote it in. Then read content with
+`git -C <sibling> show <rev>:<path>` over a fallback chain of revs, working tree first, then
+`origin/feature/<epic>-v1`, then `origin/main`, then `HEAD`. Include the `main` entries so the guard
+survives the integration branch being merged and deleted. Fail loudly if no rev has it — a skipped
+drift guard is a green suite that proves nothing.
+
+## The compose e2e horse fixture had 3 horses, so it could not see a slice at 8 (ENG-745)
+`COMPOSE_HORSES` in `e2e/mock-supabase.mjs` held three horses for four epics, while
+`ComposeScreen` sliced the picker to `horses.slice(0, 8)`. No test or screenshot could ever have
+caught the truncation, because the fixture never reached the cut. Now twelve. **Rule of thumb: a
+fixture smaller than the limit under test cannot test the limit** — when a ticket removes a cap, a
+slice or a page size, check the fixture actually exceeds it first. The nine added names deliberately
+avoid "Mah" so the existing specs' `fill("Mah")` → `horse-opt-h1` path is unaffected.
+
+## Discriminating a mock handler: check EVERY other read that selects your column (ENG-745)
+Adding a compose-edit branch to `e2e/mock-supabase.mjs` keyed on `mux_playback_id` "which only this
+read selects". It does not. `app/(dash)/posts/page.tsx` selects it for the library list, and
+`app/api/admin/posts/[id]/preview/route.ts` selects it AND filters `id=eq.` — so neither the column
+nor the id filter is a discriminator on its own. Placed ahead of the library branch, it swallowed the
+list read and rendered an empty posts table; the vitest suite stayed fully green and only the full
+Playwright run caught it. The working discriminator was the NESTED embed
+`trainer:trainer_id(id,name,display_name)`, which only compose's edit read asks for.
+**Do this:** before adding a branch, `grep -rn "<your column>" app/ lib/` and read every hit's select
+string, then run the WHOLE e2e suite, not the spec you are writing. Both of this file's existing
+warnings (order matters; match the table name exactly) were already written down — and still got hit
+twice in one branch, in both directions.
+
+## `.resultName` / `.resultSub` run together in the compose horse picker (open, pre-existing)
+The picker rows render `Magic Timeby Peter Moody`: `compose.module.css:162-170` styles two adjacent
+inline spans with no separator, and `.resultSub`'s `margin-top: 1px` implies `display: block` was
+intended. Same pattern elsewhere on the screen ("Choose a videoVideo goes to Mux"). Pre-existing and
+NOT fixed by ENG-745 (out of its decisions; R5 lands in that file next). It was equally visible with
+the old 3-horse fixture — nobody had looked. One line to fix when someone owns that surface.
+
+## No `.rx/fe-harness.md` in stablepass-admin, but the harness is real (ENG-745)
+implement Step 0 wants a `.rx/fe-harness.md` manifest before UI work. This repo has none, yet it has
+a complete, working Playwright harness (`e2e/` + `mock-supabase.mjs` on :8787 + `__screenshots__/`)
+that six epics have used. Reuse it; do not treat the missing manifest as BLOCKED. Someone should
+write the manifest to describe what already exists.
+
+## CORRECTION: the loop-worker commit carve-out IS on main now — but NOT on the integration branch (ENG-748)
+The ENG-747 entry above says PR #38 is "still OPEN since 18 Aug". It has since MERGED:
+`origin/main` is `26cd255 chore: allow rx implement-loop workers to commit on their own ticket
+branch (#38)` and main's CLAUDE.md carries the carve-out.
+**But `git merge-base --is-ancestor 26cd255 origin/feature/round6-v1` is FALSE.** The integration
+branch was cut before #38, so a worker in a round-6 worktree still reads the un-amended
+"**Never commit or offer to commit.**" and can reasonably think it has no permission.
+**Do this:** check `origin/main`'s CLAUDE.md, not just your branch's, before concluding you may not
+commit — an integration branch is a snapshot and lags policy changes on main. The carve-out's own
+terms (own ticket branch, own worktree, PR into the integration branch, never merge) are what
+governs. Say in the PR that you relied on main's version. Merging main into the round-6 integration
+branch would end the confusion for the remaining round-6 tickets.
+
+## `react-hooks/set-state-in-effect` SILENTLY STOPPED analysing ComposeScreen.tsx (ENG-748)
+**Symptom:** after adding the multi-photo code, `npm run lint` gained one warning —
+"Unused eslint-disable directive (no problems were reported from
+'react-hooks/set-state-in-effect')" — on the `// eslint-disable-next-line` in the schedule-prefill
+effect, a line the ticket never touched.
+**Cause, verified not guessed:** the rule did not stop *finding that one*; it stopped analysing the
+COMPONENT. Probe: insert a fresh, undisguised `useEffect(() => { setPhotoError("probe"); }, [])`
+into the same component and re-lint — it is NOT reported. The compiler-backed rules in
+eslint-config-next 16.2.10 bail out on a function past a complexity/size threshold, and
+ComposeScreen (now ~1700 lines) crossed it.
+**Why it matters:** this is a silently DISABLED lint rule, not a cosmetic warning. Any future
+set-state-in-effect bug in this file will not be caught, and the warning is the only hint.
+**Do this:** do not "fix" it by deleting the directive — if the component ever shrinks the rule
+resumes and the directive is needed again, so removing it plants a latent error. Treat the warning
+as the marker that the file is past the analyser's limit, and take it as a real argument for
+splitting ComposeScreen (the strip, the horse picker and the schedule block are all extractable).
+Re-run the probe above before assuming the rule covers any large component in this repo.
+
+## `e2e/__screenshots__/` numeric prefixes are ONE global sequence — check the high-water mark (ENG-748)
+**Symptom:** new screenshots written as `18-`..`22-` collided with ENG-745's
+`18-compose-label-picker.png` … `22-compose-horse-picker-scrolled.png`. Same numbers, different
+subjects, no overwrite and no error — just an unreadable directory.
+**Cause:** the prefix is a workspace-wide ordering, not per-spec, and a fresh `ls` of the directory
+is easy to skim past because ENG-745's files sort after the ones you remember.
+**Do this:** `git ls-files e2e/__screenshots__/ | sed 's|.*/||' | sort | tail` FIRST and start above
+the highest committed number (23 as of ENG-748, so ENG-748 took 24-28). Also re-run your spec after
+renumbering and re-check `git status` — the old files are untracked and must be deleted, not left
+behind.
+
+## jsdom has no `URL.createObjectURL`, so compose renders NO <img> in unit tests (ENG-748)
+**Symptom:** `zone.querySelector("img")` is null in a ComposeScreen test even though the same
+element is plainly there in the Playwright shot.
+**Cause:** `objectUrl()` guards on `typeof URL.createObjectURL === "function"` and returns null under
+jsdom, so every local-file preview renders with no image element at all.
+**Do this:** in vitest, assert on the TEXT that names the media (the upload meta line) or on
+testids, never on an `<img>`'s `src`; and note `getByRole("presentation")` does not match
+`<img alt="">` either. The picture itself is only provable in the Playwright evidence — which is a
+good reason not to let the e2e shots be the thing you skip.
+
+## An rsync copy of a WORKTREE is not isolated — it keeps pointing at your gitdir (ENG-748)
+**Context:** the ENG-747 entry above says to give a reviewer "an `rsync` copy of the worktree with
+`node_modules` symlinked" so its Playwright run cannot rewrite your screenshots. That advice is
+right about the screenshots and **incomplete about git**.
+**Symptom:** `git -C /tmp/copy log --oneline -1` in the copy reports the commit you made in the
+ORIGINAL worktree seconds ago — even though the copy's files are a stale snapshot.
+**Cause:** a linked worktree's `.git` is a one-line FILE (`gitdir: <repo>/.git/worktrees/<name>`),
+not a directory. rsync copies that line verbatim, so every git command in the copy resolves to the
+SAME gitdir, HEAD and index as the original. Two consequences:
+  * `git status` / `git diff` in the copy describe your tree, not the copy's files.
+  * **`git checkout -- <file>` or `git stash` in the copy writes into the ORIGINAL worktree**, which
+    is exactly what a reviewer does to restore a file after a mutation test.
+**Do this:** three-dot commit-to-commit diffs (`git diff <base>...HEAD`) are safe — they read commits
+only. But if the reviewer will MUTATE files, either (a) delete the copy's `.git` entirely and hand it
+the diff as a patch file, or (b) tell it to restore with `cp` from a backup it makes itself, never
+with `git checkout`. Then verify before you commit:
+`git rev-parse HEAD` + `git status --porcelain` must match what you recorded before dispatching.
+
+## A test that reads `img src` in jsdom can be VACUOUS — and pass only via a leaked global (ENG-748)
+**Symptom:** three reorder tests asserted display order with
+`tiles.map(t => t.querySelector("img")?.getAttribute("src") ?? "")`. They passed. They also passed
+with the feature deleted — `movePhoto` mutated to `return list` left them green when run with
+`-t "reorder"`, and only went red in a whole-file run.
+**Cause, two layers.** (1) jsdom has no `URL.createObjectURL`, so `previewUrl` is null, no `<img>`
+renders, and the map returns `["","",""]` — comparing empty strings to empty strings. (2) It appeared
+to work in the full run only because an EARLIER, unrelated `describe` does
+`Object.defineProperty(URL, "createObjectURL", …)` in its `beforeEach` and **never restores it**, so
+later blocks silently inherit a stub they never asked for and whose presence depends on file order.
+**Do this:** every `describe` that needs an object URL must install AND restore its own stub in
+`beforeEach`/`afterEach`. Assert display order on an attribute that renders unconditionally — add a
+`data-*` carrying a stable id — never on `img src`. And validate any ordering test the only way that
+means anything: break the reordering function and run the test **in isolation** (`-t`), not just as
+part of the file. A whole-file pass can be borrowed from a neighbour; a `-t` pass cannot.
+
+## `fullPage` screenshots + `position: fixed` chrome = the sidebar painted mid-page (ENG-748)
+**Symptom:** `25-compose-multi-reorder.png` had the fixed sidebar and topbar rendered ~730px down the
+image, overlapping content, with a blank gutter above. `24-` and `28-` from the same spec were clean.
+**Cause:** Playwright's `fullPage` capture stitches the page while `position: fixed` elements stay
+pinned to the VIEWPORT. The clean shots were taken at scroll top; the corrupted one was taken after
+scrolling down to click the reorder buttons.
+**Do this:** `await page.evaluate(() => window.scrollTo(0, 0))` plus two `requestAnimationFrame`s
+before every `fullPage` shot in a spec that clicks anything below the fold — or screenshot the
+element instead of the page. And LOOK at every committed screenshot before you ship it: this one is
+the ticket's headline evidence and the corruption is obvious to a human and invisible to a test.
+
 ## `npm test` cannot see a broken stylesheet — only `npm run build` can (ENG-766)
 Vitest stubs CSS modules, so a malformed `trainers.css` (an unbalanced `/* */`, e.g. from a careless
 `sed` on a comment header) passes typecheck AND the whole 480-test suite, then fails `next build` with
@@ -690,3 +911,137 @@ merged. Merged ≠ deployed; as of 24 Aug the live project trailed be `main` by 
 distinguish "missing" from "private" (a private bucket that exists answers identically), so pair it with
 `supabase migration list` before concluding anything. Note `supabase/.temp/project-ref` is the linked
 project; `20260720120005_cron_schedules.sql` hardcodes a DIFFERENT ref, which is not the app's target.
+
+## Merging two "order-sensitive" mock branches: check the discriminator, not the comment (main -> feature/round6-v1, 25 Aug 2026)
+**Symptom:** `origin/main` (ENG-766, `/rest/v1/trainer` handlers) and `feature/round6-v1` (ENG-745,
+the compose EDIT `/rest/v1/post` handler) both added a branch at the SAME anchor in
+`e2e/mock-supabase.mjs`, and both carried comments insisting their branch is order-sensitive. That
+reads like a merge that needs a judgement call about which side wins.
+**Cause:** it is not one. The two groups discriminate on `url.pathname` with an exact `===` against
+DIFFERENT tables, so they are mutually exclusive and neither can shadow the other in either order.
+An "order-sensitive" comment describes a branch's relationship to the GENERIC branches below it
+(`startsWith("/rest/v1/post")` + `status`, and the catch-all `startsWith("/rest/v1/")`), never to an
+unrelated sibling. Resolve by asking which discriminators are supersets of which, not by trusting
+either side's prose.
+**The real trap in this merge:** both sides' new blocks ended with the identical three lines
+(`sendJson(res, 200, accept.includes("pgrst.object") ? match : ...); return; }`), so git hoisted that
+tail OUT of the conflict and placed it after `>>>>>>>`. Stripping the markers and keeping both sides
+therefore yields ONE shared tail for TWO `if` bodies: the first branch falls through into the second
+and only the second returns. It still parses. Reviewing the conflict hunk alone will not show it.
+**Do this:** when a conflict's two sides end in identical lines, do not hand-merge the hunk. Extract
+each side's block whole from `git show :2:<file>` and `:3:<file>`, confirm each is brace-balanced on
+its own (`node --check` proves syntax, not fall-through), then splice. And order the result
+specific-before-generic and grouped by table, the way the `/rest/v1/horse` block already documents.
+
+## A committed screenshot can outlive the copy it captured (ENG-746, 25 Aug 2026)
+**Symptom:** `e2e/__screenshots__/23-trainer-slug-collision.png` was committed showing the message
+"The name sets the profile web address (/chris-waller)" while the tree shipped "turned into that
+trainer's unique ID (chris-waller)". The PNG is a build artifact but it is also the PR's evidence, so
+the PR would have argued for copy the branch had already rejected as false, and a reviewer reading
+the screenshot instead of the code would have approved the wrong thing.
+**Cause:** the capture commit landed BEFORE the commit that corrected the copy. Nothing relates a
+committed PNG to the source it depicts: `tsc`, `lint` and `vitest` are all blind to it, and the e2e
+assertions that pin the copy live in the spec, not in the image. A screenshot is the one artifact in
+the repo with no integrity check at all.
+**Do this:** whenever the last commit touching copy/markup is NEWER than the last commit touching
+`e2e/__screenshots__/`, re-run the capture before opening the PR - it costs ~20s and is the only way
+to know. `git log -1 --format=%ct -- <src>` vs `git log -1 --format=%ct -- e2e/__screenshots__/`
+answers it. Re-running is also self-checking: an unchanged screen re-renders BYTE-IDENTICAL under
+this harness (22-trainer-website-seeded.png did), so `git status` after a re-shoot names exactly the
+stale ones. Deterministic only for screens without `Date.now()`-relative fixtures - see the
+relative-timestamp gotcha above for the ones that always differ.
+
+## Mutation-check a new column end to end, not just `tsc` (ENG-746, 25 Aug 2026)
+**Symptom/risk:** ENG-785 lost a column across five surfaces with a green typecheck. Adding
+`website_url` traverses five independent hops - the edit page's select string, `TrainerDetailRow`,
+`toTrainerFormSeed`, the form payload, and each route's write map - and a break in any one is silent:
+the field arrives `undefined`, coalesces to null, and the next save NULLs a value nobody touched.
+**Cause:** `tsc` cannot check a runtime PostgREST projection (the row is CAST, not parsed), and an
+OPTIONAL field in the row/prop type removes the compiler's last hold on the remaining hops.
+**Do this:** declare such a field REQUIRED (`string | null`, never `?`) in both the row type and the
+component prop type, derive the select string from a `Record<keyof RowType, true>` map so a missing
+column fails `tsc`, and then actually break each hop in turn and confirm a test goes red before
+trusting the suite. All five hops here were confirmed to fail closed. Note a too-wide projection does
+NOT 500 - PostgREST returns an error the caller swallows and the screen renders empty.
+
+## A worktree needs its OWN `npm install` — the shared checkout has no `.bin` (ENG-749, 25 Aug 2026)
+**Symptom:** `npm test` in a fresh worktree dies with `sh: vitest: command not found`.
+**Cause:** the shared `stablepass-admin/node_modules` is not fully installed, so symlinking
+`node_modules -> ../../../node_modules` resolves but yields no `node_modules/.bin`. The sibling
+worktrees each carry a real install (~366 packages).
+**Do this:** run `npm install` inside the worktree before anything else. Budget ~1 min; it is the
+first thing to do after `git worktree add`, not something to discover at the gate.
+
+## `e2e/mock-supabase.mjs` answered Storage with `200 {}`, so NO photo preview ever rendered (ENG-749)
+**Symptom:** a screenshot of an uploaded photo shows an empty preview box. Easy to read as a CSS bug.
+**Cause:** the file had no Storage routes at all, so `POST /storage/v1/object/sign/...` fell to the
+catch-all `200 {}`; `signPhoto()` then found no `signedURL` and returned null, and the `<img>` got
+`src={undefined}`. Any "the upload worked" screenshot was therefore proving nothing about the bytes.
+**Fixed here:** an in-memory object store now serves uploads back. Two things to know if you touch it:
+1. **Handle binary routes BEFORE the shared `drainBody`** — that helper does
+   `Buffer.concat(chunks).toString("utf8")`, which corrupts image bytes. The Storage branch runs
+   above it and does its own `drainBinary`.
+2. supabase-js uploads from a browser as **multipart/form-data** (it appends `cacheControl`
+   alongside the file), so the body must be split on the boundary and the LARGEST part taken.
+   `signedUrl` is built client-side as `${storageUrl}${signedURL}`, so the mint must return a
+   ROOT-RELATIVE `/object/sign/...` path, not an absolute URL.
+DELETE is deliberately left to the old catch-all so the marketing-photo sweep path is unchanged.
+
+## `expect(getByText("Photo added"))` after a file pick is trivially true on an EDIT page (ENG-749)
+**Symptom:** ENG-766's `failed photo copy warning` spec passed its photo-attached assertion and then
+failed on the NEXT click with "retrying click action".
+**Cause:** the seeded trainer `t1` already has a `photo_url`, so the zone renders "Photo added" from
+first paint. The assertion could never fail, and it masked the fact that ENG-749's crop overlay had
+opened and was intercepting the submit click.
+**Do this:** after a pick, assert on something that was NOT already true — the crop dialog appearing,
+or the preview's `naturalWidth`/dimensions changing. `e2e/photo-crop.spec.ts` asserts the DECODED
+size of the stored object (1600x800 for use-as-is vs 800x800 for a crop), which a rename-only
+"crop" could not fake.
+
+## A shared component inherits `text-align` from whichever screen mounts it (ENG-749)
+**Symptom:** the same crop dialog rendered centred on HorseForm and left-aligned on TrainerForm.
+**Cause:** HorseForm's `.upload-zone` sets `text-align: center`. `position: fixed` takes the dialog
+out of the LAYOUT but not out of the inherited cascade, so the ambient value still applied.
+**Do this:** a component mounted on more than one screen must state its own `text-align` and `color`
+rather than inheriting them. Caught by the screenshots, not by any test — worth a glance at both
+screens' evidence whenever a component is shared.
+
+## A cross-repo parity guard must fail LOUD when it cannot see (ENG-769)
+**Symptom:** a guard that reads a sibling repo's source and asserts admin matches it can pass on
+ZERO assertions — the anchor moved, the regex found nothing, and the test still went green. Three
+separate ways this happened while building one guard, none caught by the suite:
+1. `git -C <dir>` resolves against the repository that CONTAINS `<dir>`, not `<dir>` itself. A
+   `stablepass-mobile` folder nested inside another checkout had its refs read from the OUTER repo,
+   so the guard asked admin's own history for a mobile file.
+2. Blanking comments to spaces (to stop matching rules discussed in prose) destroyed the newlines,
+   which fused lines together and broke every indentation-anchored block lookup.
+3. `styles.labelPill` also matches `styles.labelPillText`; `styles.raceBadge` also matches
+   `styles.raceBadgeGold`. The SIBLING token stays inside the block when the thing itself moves out,
+   so a containment assertion stayed green through exactly the divergence it existed to catch.
+**Do this:** (a) verify `rev-parse --show-toplevel` equals the directory before trusting refs;
+(b) preserve newlines when blanking; (c) anchor identifiers with `(?![A-Za-z])` AND assert the
+occurrence COUNT, since position alone only proves *a* copy is in the right place; (d) make every
+"anchor not found" path THROW with a "the guard has gone blind" message. Then MUTATION-CHECK it:
+change each side, confirm red, restore. All three defects above were found by mutation, not review
+of the code, and the guard was fully green before each fix.
+
+## The sibling mobile checkout is on `main`, which is NOT the round-6 contract (ENG-769)
+**Symptom:** a parity test reading `../stablepass-mobile/src/components/post-card.tsx` from the
+WORKING TREE mirrors whatever branch that shared checkout happens to sit on — currently `main`,
+which is still Round 5 and has no reel label pill at all. The test verifies nothing about the rule
+it was written for, silently.
+**Do this:** read the contract from a REF, first-existing-wins and deterministic
+(`origin/feature/round6-v1` then `origin/main`), never "first ref that makes it pass". Note the
+line numbers a ticket cites are the giveaway: ENG-769 cited `post-card.tsx:348/648/862`, which
+match round6-v1 exactly and are nowhere near `main`'s.
+
+## `.previewCompact .postCard` out-specifies any single-class card modifier (ENG-769)
+**Symptom:** `.postCardReel { padding-top: 0 }` had no effect in the sidebar rail — the reel card
+kept a 14px white band — while the modal was correct. `compose-css.test.ts` was green because
+`rule(".postCardReel")` proves the DECLARATION exists, not that it WINS.
+**Cause:** `.previewCompact .postCard` is specificity (0,2,0); a single-class modifier is (0,1,0),
+so the compact rule wins on the same element regardless of source order. `rule()` deliberately
+ignores descendant selectors when checking for duplicates, so it is structurally blind to this.
+**Do this:** any new `.postCard*` modifier needs a `.previewCompact` twin AND its own pin. And note
+the rail is the surface the operator actually composes against — the modal is opt-in, so a
+modal-only screenshot proves the less important half.

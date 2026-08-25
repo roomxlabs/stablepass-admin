@@ -156,7 +156,7 @@ const D = 24 * H;
 const ago = (ms) => new Date(Date.now() - ms).toISOString();
 
 const TRAINER_SEED = [
-  { id: "t1", name: "Chris Waller", stable_name: "Chris Waller Racing", location: "Rosehill, NSW", status: "active", horses: 12, email: "chris@wallerstable.com.au", lastPost: 2 * H, marketing_visible: true },
+  { id: "t1", name: "Chris Waller", stable_name: "Chris Waller Racing", location: "Rosehill, NSW", status: "active", horses: 12, email: "chris@wallerstable.com.au", lastPost: 2 * H, marketing_visible: true, website_url: "https://wallerracing.com.au" },
   { id: "t2", name: "Peter Moody", stable_name: "Moody Racing", location: "Caulfield, VIC", status: "active", horses: 4, email: "peter@moody.com.au", lastPost: 6 * H },
   { id: "t3", name: "James Cummings", stable_name: "Godolphin Australia", location: "Agnes Banks, NSW", status: "active", horses: 3, email: "james@godolphin.com.au", lastPost: D, marketing_visible: true },
   { id: "t4", name: "Anthony & Sam Cummings", stable_name: "Leilani Lodge", location: "Randwick, NSW", status: "active", horses: 2, email: "team@leilanilodge.com.au", lastPost: 2 * D },
@@ -172,6 +172,10 @@ function buildDb(seed) {
     // ENG-766: marketing-visibility flag + the public-bucket object path it
     // publishes to. Fresh fixtures always start with no copied photo.
     marketing_visible: t.marketing_visible === true, marketing_photo_path: null,
+    // ENG-746: the public per-trainer website link. Only t1 carries one, so the
+    // edit-page capture proves the field SEEDS from the row rather than merely
+    // rendering, and every other trainer still proves the empty case.
+    website_url: t.website_url ?? null,
   }));
   const horses = [];
   const posts = [];
@@ -380,6 +384,38 @@ const COMPOSE_HORSES = [
   { id: "h1", display_name: "Mahogany", racing_name: "Mahogany", photo_url: null, stable_name: "Randwick", trainer_id: "t1", trainer: { id: "t1", name: "Chris Waller", display_name: "Chris Waller" } },
   { id: "h2", display_name: "Black Caviar", racing_name: "Black Caviar", photo_url: null, stable_name: "Caulfield", trainer_id: "t2", trainer: { id: "t2", name: "Peter Moody", display_name: "Peter Moody" } },
   { id: "h3", display_name: "Winx", racing_name: "Winx", photo_url: null, stable_name: "Rosehill", trainer_id: "t1", trainer: { id: "t1", name: "Chris Waller", display_name: "Chris Waller" } },
+  // ENG-745 — the roster runs past 8 on purpose. The picker used to
+  // `.slice(0, 8)` both branches, so with the search box empty (how it opens)
+  // everything from the 9th on was unreachable. Three fixtures could never
+  // catch that; these nine are what make the regression visible, in the e2e
+  // shots and in any future run. None contain "Mah", so the existing specs'
+  // `fill("Mah")` + `horse-opt-h1` path is unaffected.
+  { id: "h4", display_name: "Anamoe", racing_name: "Anamoe", photo_url: null, stable_name: "Randwick", trainer_id: "t3", trainer: { id: "t3", name: "James Cummings", display_name: "James Cummings" } },
+  { id: "h5", display_name: "Northern Star", racing_name: "Northern Star", photo_url: null, stable_name: "Caulfield", trainer_id: "t2", trainer: { id: "t2", name: "Peter Moody", display_name: "Peter Moody" } },
+  { id: "h6", display_name: "Verry Elleegant", racing_name: "Verry Elleegant", photo_url: null, stable_name: "Rosehill", trainer_id: "t1", trainer: { id: "t1", name: "Chris Waller", display_name: "Chris Waller" } },
+  { id: "h7", display_name: "Saxon Warrior", racing_name: "Saxon Warrior", photo_url: null, stable_name: "Flemington", trainer_id: "t3", trainer: { id: "t3", name: "James Cummings", display_name: "James Cummings" } },
+  { id: "h8", display_name: "Magic Time", racing_name: "Magic Time", photo_url: null, stable_name: "Caulfield", trainer_id: "t2", trainer: { id: "t2", name: "Peter Moody", display_name: "Peter Moody" } },
+  { id: "h9", display_name: "Nature Strip", racing_name: "Nature Strip", photo_url: null, stable_name: "Randwick", trainer_id: "t1", trainer: { id: "t1", name: "Chris Waller", display_name: "Chris Waller" } },
+  { id: "h10", display_name: "Golden Slipper", racing_name: "Golden Slipper", photo_url: null, stable_name: "Rosehill", trainer_id: "t2", trainer: { id: "t2", name: "Peter Moody", display_name: "Peter Moody" } },
+  { id: "h11", display_name: "Sunlight", racing_name: "Sunlight", photo_url: null, stable_name: "Flemington", trainer_id: "t3", trainer: { id: "t3", name: "James Cummings", display_name: "James Cummings" } },
+  { id: "h12", display_name: "Zoustar", racing_name: "Zoustar", photo_url: null, stable_name: "Randwick", trainer_id: "t1", trainer: { id: "t1", name: "Chris Waller", display_name: "Chris Waller" } },
+];
+
+const HORSE_EMBED = { id: "h1", display_name: "Mahogany", racing_name: "Mahogany", photo_url: null, stable_name: "Randwick", trainer_id: "t1", trainer: { id: "t1", name: "Chris Waller", display_name: "Chris Waller" } };
+
+// Compose EDIT-mode posts (ENG-745). `/compose?id=<postId>` is the ONLY path
+// that exercises page.tsx's post read and its EditInitial seeding, and page.tsx
+// is an async server component that no unit test can reach — the ComposeScreen
+// unit tests hand `initial` in directly, so they prove nothing about whether the
+// page actually selects and passes `label`. Both states are seeded: ce1 carries
+// a label, ce2 is deliberately unlabelled (the pre-2026-08-19 state that must
+// open on "No label" and stay that way).
+//
+// Text posts on purpose: `text` short-circuits the media branch in page.tsx, so
+// neither Storage signing nor Mux playback resolution has to be mocked.
+const COMPOSE_EDIT_POSTS = [
+  { id: "ce1", type: "text", status: "draft", title: "Barrier trial complete", body: "Pleased with the way he finished off.", label: "Trial", source_trainer_id: "t1", scheduled_for: null, media_url: null, mux_playback_id: null, horse: HORSE_EMBED },
+  { id: "ce2", type: "text", status: "draft", title: "Quiet day in the box", body: "Nothing much to report today.", label: null, source_trainer_id: "t1", scheduled_for: null, media_url: null, mux_playback_id: null, horse: HORSE_EMBED },
 ];
 
 // Active horses for the quiet-horse check. h1 posted this week (loud); h2/h3
@@ -390,6 +426,54 @@ const DASH_HORSES = [
   { id: "h3", display_name: "Winx", racing_name: "WINX (AUS)", training_status: "retired", photo_url: null, status: "active" },
   { id: "h5", display_name: "Anamoe", racing_name: "ANAMOE (AUS)", training_status: "spelling", photo_url: null, status: "active" },
 ];
+
+// ---- Storage objects (ENG-749) --------------------------------------------
+// An in-memory object store, so a screenshot of an uploaded photo shows the
+// bytes that were actually PUT rather than a broken <img>. Without this the
+// catch-all answered the sign request with `200 {}`, signPhoto() got no URL,
+// and every photo preview in the evidence would have been empty — which would
+// have made a crop screenshot prove nothing at all.
+const STORAGE = new Map();
+
+async function drainBinary(req) {
+  return new Promise((resolve) => {
+    const chunks = [];
+    req.on("data", (c) => chunks.push(c));
+    req.on("end", () => resolve(Buffer.concat(chunks)));
+    req.on("error", () => resolve(Buffer.alloc(0)));
+  });
+}
+
+// supabase-js uploads from a browser as multipart/form-data, and appends
+// `cacheControl` alongside the file. Take the LARGEST part (always the image)
+// and read that part's own Content-Type, so the stored type reflects what the
+// client actually sent rather than being guessed from the file extension —
+// which is exactly the mislabelling ENG-749 has to avoid.
+function extractUpload(buf, contentTypeHeader) {
+  const fallback = { body: buf, contentType: "application/octet-stream" };
+  const m = /boundary=(?:"([^"]+)"|([^;]+))/i.exec(contentTypeHeader || "");
+  if (!m) return fallback;
+  const boundary = Buffer.from(`--${(m[1] || m[2]).trim()}`);
+  const parts = [];
+  let i = buf.indexOf(boundary);
+  while (i !== -1) {
+    const next = buf.indexOf(boundary, i + boundary.length);
+    if (next === -1) break;
+    const seg = buf.subarray(i + boundary.length, next);
+    const headEnd = seg.indexOf("\r\n\r\n");
+    if (headEnd !== -1) {
+      const head = seg.subarray(0, headEnd).toString("utf8");
+      const ct = /content-type:\s*([^\r\n;]+)/i.exec(head);
+      parts.push({
+        body: seg.subarray(headEnd + 4, Math.max(headEnd + 4, seg.length - 2)),
+        contentType: ct ? ct[1].trim() : "application/octet-stream",
+      });
+    }
+    i = next;
+  }
+  parts.sort((a, b) => b.body.length - a.body.length);
+  return parts[0] ?? fallback;
+}
 
 async function drainBody(req) {
   return new Promise((resolve) => {
@@ -408,6 +492,79 @@ export function startMockSupabase() {
       res.writeHead(204, corsHeaders());
       res.end();
       return;
+    }
+
+    // ENG-749 — Storage. Deliberately BEFORE the shared `drainBody` below:
+    // that helper stringifies the body as utf8, which corrupts image bytes.
+    // These branches cannot shadow anything (the generic table dispatcher only
+    // matches `/rest/v1/`), and DELETE is left to fall through to the existing
+    // catch-all so the marketing-photo removal path is untouched.
+    if (url.pathname.startsWith("/storage/v1/object/")) {
+      const rest = url.pathname.slice("/storage/v1/object/".length);
+      const signed = rest.startsWith("sign/");
+
+      // Mint a signed URL. supabase-js builds the final href as
+      // `${storageUrl}${signedURL}`, so this must be root-relative to /storage/v1.
+      //
+      // TWO shapes, and they are not interchangeable. `createSignedUrl` (one
+      // path) POSTs to `/object/sign/<bucket>/<path>` and expects an OBJECT;
+      // `createSignedUrls` (the batch used by every list screen via
+      // signPhotoMap) POSTs to `/object/sign/<bucket>` with `{paths}` in the
+      // body and expects an ARRAY, which storage-js immediately `.map()`s.
+      // Answering the batch call with the singular shape throws a TypeError
+      // that is NOT a StorageError, so it escapes the caller's error handling
+      // and takes down SSR instead of degrading to a placeholder. Unreachable
+      // today only because every fixture has `photo_url: null` — the first
+      // fixture with a photo would hit it.
+      if (req.method === "POST" && signed) {
+        const body = await drainBinary(req);
+        const after = rest.slice(5);
+        if (!after.includes("/")) {
+          let paths = [];
+          try {
+            paths = JSON.parse(body.toString("utf8"))?.paths ?? [];
+          } catch {
+            paths = [];
+          }
+          sendJson(
+            res,
+            200,
+            paths.map((path) => ({
+              path,
+              signedURL: `/object/sign/${after}/${path}?token=mock`,
+              error: null,
+            })),
+          );
+          return;
+        }
+        sendJson(res, 200, { signedURL: `/object/sign/${after}?token=mock` });
+        return;
+      }
+
+      // Serve the stored bytes back to the <img>.
+      if (req.method === "GET" && signed) {
+        const object = STORAGE.get(decodeURIComponent(rest.slice(5)));
+        if (!object) {
+          res.writeHead(404, corsHeaders());
+          res.end();
+          return;
+        }
+        res.writeHead(200, {
+          "Content-Type": object.contentType,
+          "Content-Length": object.body.length,
+          "Cache-Control": "no-store",
+          ...corsHeaders(),
+        });
+        res.end(object.body);
+        return;
+      }
+
+      if (!signed && (req.method === "POST" || req.method === "PUT")) {
+        const stored = extractUpload(await drainBinary(req), req.headers["content-type"]);
+        STORAGE.set(decodeURIComponent(rest), stored);
+        sendJson(res, 200, { Key: rest });
+        return;
+      }
     }
 
     // Always drain the body so the client's request stream completes cleanly.
@@ -676,6 +833,26 @@ export function startMockSupabase() {
       sendJson(res, 200, []);
       return;
     }
+    // ---------------------------------------------------------------------
+    // ORDERING (resolved when main merged into feature/round6-v1, 25 Aug 2026)
+    //
+    // Two independently written groups landed at this exact anchor: the
+    // /rest/v1/trainer handlers (ENG-766) and the compose EDIT /rest/v1/post
+    // handler (ENG-745). Both sides' comments assert their branch is
+    // order-sensitive, so the merge looked like it needed a judgement call.
+    // It does not: the two groups discriminate on `url.pathname` with an exact
+    // `===` against DIFFERENT tables ("/rest/v1/trainer" vs "/rest/v1/post"),
+    // so they are mutually exclusive and NEITHER can shadow the other in
+    // either order. Each group's real constraint is only against the generic
+    // branches further down, and both are satisfied here:
+    //   * every /rest/v1/trainer branch is ahead of the generic
+    //     `startsWith("/rest/v1/")` dispatcher, which would otherwise answer
+    //     the edit page's `.maybeSingle()` with all six trainer rows;
+    //   * the compose edit branch is ahead of the posts-library branch, which
+    //     matches the broader `startsWith("/rest/v1/post")` + `status`.
+    // Grouped by table and ordered specific-before-generic, per the
+    // /rest/v1/horse block above.
+    // ---------------------------------------------------------------------
 
     // /rest/v1/trainer — single row by id: the edit page's `.eq("id",
     // id).maybeSingle()` (ENG-766). Same maybeSingle() trap noted on the horse
@@ -724,6 +901,63 @@ export function startMockSupabase() {
       const row = { ...body, id };
       const accept = req.headers["accept"] ?? "";
       sendJson(res, 200, accept.includes("pgrst.object") ? row : [row]);
+      return;
+    }
+
+    // Compose EDIT mode (ENG-745): `/compose?id=<postId>` reads ONE post with
+    // the horse + trainer embed.
+    //
+    // Discriminated on `mux_playback_id` in the select AND an `id=eq.` filter.
+    // BOTH are required, and the filter is the load-bearing half: the posts
+    // LIBRARY server read (app/(dash)/posts/page.tsx:19) also selects
+    // `mux_playback_id`, so keying on the column alone swallowed the library's
+    // list read and handed it this branch's single-row lookup — which, with no
+    // id to match, returned `[]` and rendered an empty table. Only compose's
+    // `.eq("id", id).maybeSingle()` carries `id=eq.`.
+    //
+    // It must also sit AHEAD of the posts-library branch below: that branch
+    // matches on `status`, which compose's edit select carries too, so behind
+    // it the library's fixture ARRAY would satisfy a `.maybeSingle()`.
+    //
+    // Two handlers claiming one read, in both directions — the trap in
+    // .rx/gotchas.md, hit twice while writing this one branch.
+    const editIdParam = url.searchParams.get("id");
+    if (
+      req.method === "GET" &&
+      url.pathname === "/rest/v1/post" &&
+      // The NESTED trainer embed is what makes this read unique. Two other
+      // reads select `mux_playback_id` — the posts library list
+      // (app/(dash)/posts/page.tsx:19) and the preview route
+      // (app/api/admin/posts/[id]/preview/route.ts:19) — and the preview route
+      // filters by `id=eq.` as well, so neither the column nor the filter is
+      // enough on its own. Only compose's edit read asks for the horse's
+      // trainer through the horse.
+      decodeURIComponent(url.search).includes("trainer:trainer_id(id,name,display_name)") &&
+      editIdParam &&
+      editIdParam.startsWith("eq.")
+    ) {
+      const accept = req.headers["accept"] ?? "";
+      const wanted = editIdParam.slice(3);
+      const found = COMPOSE_EDIT_POSTS.find((p) => p.id === wanted) ?? null;
+      // Honour column projection for `label` specifically.
+      //
+      // The rest of this mock returns whole fixture rows and ignores `select`,
+      // which is normally harmless — but it makes the ONE thing page.tsx
+      // changed here (adding `label` to its select string) impossible to test:
+      // the row would carry a label whether or not the app asked for it, so
+      // deleting `label` from the select stays green while real PostgREST would
+      // return the column absent and edit mode would silently open every post
+      // on "No label". Drop it when it was not requested, so the e2e can tell.
+      const selected = decodeURIComponent(url.searchParams.get("select") ?? "");
+      let match = found;
+      if (found && !/(^|,)label(,|$)/.test(selected.split("horse:")[0])) {
+        match = { ...found };
+        delete match.label;
+      }
+      // .maybeSingle() does not set the pgrst.object Accept header in this
+      // postgrest-js version — honour the id filter regardless (see the horse
+      // branch above for the same caveat).
+      sendJson(res, 200, accept.includes("pgrst.object") ? match : match ? [match] : []);
       return;
     }
     // Posts library (T7 / ENG-177). The list read selects `status` — which the

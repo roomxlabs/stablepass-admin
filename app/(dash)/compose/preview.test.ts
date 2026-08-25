@@ -5,6 +5,8 @@ import {
   ASPECT_DEFAULT,
   ASPECT_MAX,
   ASPECT_MIN,
+  REEL_ASPECT_MIN,
+  isReelPreview,
   aestToday,
   describeOrientation,
   displayHorseName,
@@ -17,9 +19,32 @@ describe("resolveAspect", () => {
     expect(resolveAspect({ width: 1000, height: 1000 })).toBe(1);
   });
 
-  it("clamps a portrait reel to 4:5 — the case the operator currently cannot see", () => {
+  it("still clamps a portrait NON-video to 4:5", () => {
+    // No media type = a text post (ComposeScreen reports text as null). The
+    // classic floor is unchanged for everything that is not a portrait video.
     expect(resolveAspect({ width: 1080, height: 1920 })).toBe(ASPECT_MIN);
     expect(resolveAspect({ width: 1080, height: 1920 })).toBe(0.8);
+  });
+
+  it("draws a portrait VIDEO as a reel at its own ratio, down to 9:16 (ENG-747)", () => {
+    // The regression this ticket reopened: the member card has drawn a
+    // portrait video at its raw ratio since 18 Aug 2026, while this preview
+    // was still flooring it at 4:5 — so the operator vetted a crop that no
+    // member would ever see.
+    expect(resolveAspect({ width: 1080, height: 1920 }, "video")).toBe(REEL_ASPECT_MIN);
+    expect(resolveAspect({ width: 1080, height: 1920 }, "video")).toBeCloseTo(0.5625, 6);
+    // Between 4:5 and square nothing changes — reel and classic agree.
+    expect(resolveAspect({ width: 1080, height: 1350 }, "video")).toBe(0.8);
+    // Taller than 9:16 IS floored, exactly as the member card floors it.
+    expect(resolveAspect({ width: 1080, height: 2400 }, "video")).toBe(REEL_ASPECT_MIN);
+    // A portrait PHOTO is untouched by the reel rule: still the 16:10 box.
+    expect(resolveAspect({ width: 1080, height: 1920 }, "photo")).toBe(ASPECT_DEFAULT);
+  });
+
+  it("pins the reel floor to the member card's 9:16", () => {
+    // Duplicated constant, separate repos: if mobile's REEL_ASPECT_MIN moves,
+    // this is the line that should force someone to look here too.
+    expect(REEL_ASPECT_MIN).toBe(9 / 16);
   });
 
   it("clamps ultra-wide to 1.91:1", () => {
@@ -54,9 +79,45 @@ describe("describeOrientation", () => {
     );
   });
 
-  it("warns that a portrait reel will be cropped", () => {
+  it("tells the truth about a portrait reel: uncropped at 9:16 (ENG-747)", () => {
     expect(describeOrientation({ width: 1080, height: 1920 }, "video")).toBe(
+      "1080×1920 · Portrait 9:16 · Members see it as a reel at 9:16",
+    );
+  });
+
+  it("warns only when a reel is TALLER than 9:16, which is the only real crop", () => {
+    expect(describeOrientation({ width: 1080, height: 2400 }, "video")).toBe(
+      "1080×2400 · Portrait 9:20 · Members see it as a reel, cropped to 9:16",
+    );
+  });
+
+  it("never says 'cropped to 4:5' about a video again — that promise is dead", () => {
+    // The exact drift this ticket exists to kill. Sweep the whole portrait
+    // range rather than one sample, so a partial revert cannot pass.
+    for (const height of [1350, 1400, 1600, 1920, 2200, 2400, 3000]) {
+      expect(describeOrientation({ width: 1080, height }, "video")).not.toContain(
+        "cropped to 4:5",
+      );
+    }
+  });
+
+  it("applies the reel copy to VIDEO only — the sibling guard to resolveAspect's", () => {
+    // resolveAspect's `mediaType === "video"` is pinned by its own test; this
+    // pins describeOrientation's identical guard. Without it that guard can be
+    // widened to `!== "photo"` and the suite stays green while the sentence
+    // ("as a reel") and the box (still 0.8) contradict each other — the exact
+    // bug class this ticket exists to kill. Not reachable from the real screen
+    // today (voice sets measure "off", text has no media box), so this is
+    // defence in depth: the box must not depend on an upstream gate.
+    expect(describeOrientation({ width: 1080, height: 1920 }, null)).toBe(
       "1080×1920 · Portrait 9:16 · Members see it cropped to 4:5",
+    );
+    expect(resolveAspect({ width: 1080, height: 1920 }, null)).toBe(ASPECT_MIN);
+  });
+
+  it("keeps a portrait PHOTO on the 16:10 story — the reel rule is video-only", () => {
+    expect(describeOrientation({ width: 1080, height: 1920 }, "photo")).toBe(
+      "1080×1920 · Portrait 9:16 · Members see it cropped to 16:10",
     );
   });
 
@@ -153,5 +214,59 @@ describe("aestToday", () => {
     expect(aestToday(new Date("2026-11-01T13:30:00Z"))).toBe("2026-11-02");
     // ...and the hour before the same instant is still the previous day.
     expect(aestToday(new Date("2026-11-01T12:30:00Z"))).toBe("2026-11-01");
+  });
+});
+
+describe("isReelPreview — the ONE reel predicate (ENG-769)", () => {
+  // Extracted so the BOX and the CHROME cannot take different branches. These
+  // pin the predicate itself; reel-chrome-parity.test.ts pins it against the
+  // member card, and PostPreview.test.tsx pins the furniture it drives.
+
+  it("is true only for a portrait VIDEO", () => {
+    const portrait = { width: 1080, height: 1920 };
+    expect(isReelPreview(portrait, "video")).toBe(true);
+    // A portrait photo stays a classic card (Instagram convention).
+    expect(isReelPreview(portrait, "photo")).toBe(false);
+    // Voice has no frame; text has no media box at all. `null` is a TEXT post,
+    // which is why the guard is `=== "video"` and not `!== "photo"`.
+    expect(isReelPreview(portrait, "voice")).toBe(false);
+    expect(isReelPreview(portrait, "text")).toBe(false);
+    expect(isReelPreview(portrait, null)).toBe(false);
+  });
+
+  it("switches STRICTLY below square — a square video is not a reel", () => {
+    expect(isReelPreview({ width: 999, height: 1000 }, "video")).toBe(true);
+    expect(isReelPreview({ width: 1000, height: 1000 }, "video")).toBe(false);
+    expect(isReelPreview({ width: 1001, height: 1000 }, "video")).toBe(false);
+  });
+
+  it("covers the whole portrait range, not just below 4:5", () => {
+    // The readout switches at 0.8 (deliberately — see describeOrientation),
+    // but the CHROME switches at 1. A 0.9 portrait video is the case that
+    // motivated this ticket: a reel for members, a classic card in the preview.
+    for (const [w, h] of [[9, 16], [900, 1000], [990, 1000], [1080, 1350]]) {
+      expect(isReelPreview({ width: w, height: h }, "video")).toBe(true);
+    }
+  });
+
+  it("is false for unmeasured or degenerate dimensions", () => {
+    // Never a reel before we know the size: the box would jump.
+    expect(isReelPreview(null, "video")).toBe(false);
+    expect(isReelPreview({ width: 0, height: 1000 }, "video")).toBe(false);
+    expect(isReelPreview({ width: 1080, height: 0 }, "video")).toBe(false);
+    expect(isReelPreview({ width: -1080, height: 1920 }, "video")).toBe(false);
+  });
+
+  it("agrees with the box resolveAspect draws", () => {
+    // The invariant the extraction exists to protect: reel <=> the reel box.
+    for (const [w, h] of [[1080, 1920], [900, 1000], [1000, 1000], [1400, 1000]]) {
+      const dims = { width: w, height: h };
+      const reel = isReelPreview(dims, "video");
+      const aspect = resolveAspect(dims, "video");
+      const classic = Math.min(ASPECT_MAX, Math.max(ASPECT_MIN, w / h));
+      expect(aspect === Math.max(REEL_ASPECT_MIN, w / h)).toBe(reel || aspect === classic);
+      if (reel) expect(aspect).toBeCloseTo(Math.max(REEL_ASPECT_MIN, w / h), 10);
+      else expect(aspect).toBeCloseTo(classic, 10);
+    }
   });
 });

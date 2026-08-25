@@ -161,3 +161,94 @@ describe("post-type picker fidelity (ENG-611)", () => {
     expect(audio).not.toMatch(/#1a1a1a/i);
   });
 });
+
+// ENG-745. Two CSS facts this ticket now DEPENDS on, neither of which any
+// render test can see (Vitest stubs CSS modules — see the header above).
+//
+// The horse picker stopped truncating its list at 8, which is only safe
+// because `.results` is a scroll box: without the max-height it becomes an
+// unbounded list that runs off the bottom of the panel on a 20-horse stable,
+// and the ticket's "all horses reachable" acceptance criterion quietly stops
+// being true. The scroll box already existed — that is exactly why it is worth
+// pinning, because "it was already there" is how it gets deleted as unused.
+describe("horse picker scrolls rather than truncates (ENG-745)", () => {
+  it("keeps the results list a bounded scroll box", () => {
+    const results = rule(".results");
+    expect(results).toMatch(/max-height:\s*\d+px/);
+    expect(results).toMatch(/overflow-y:\s*auto/);
+  });
+});
+
+describe("the caption counter has no over-limit state (ENG-745)", () => {
+  it("no longer ships a .counterOver rule", () => {
+    // The 240-character cap is gone, so there is no "over" to be in. The rule
+    // is deleted rather than left orphaned: left behind, the next person to
+    // touch the counter re-wires a red state to a limit that no longer exists.
+    expect(CSS, ".counterOver should have gone with the caption cap").not.toContain(".counterOver");
+  });
+
+  it("keeps the plain counter styling", () => {
+    const counter = rule(".counter");
+    expect(counter).toMatch(/font-variant-numeric:\s*tabular-nums/);
+    // A count that changes on every keystroke must not reflow the label row.
+    expect(counter).toMatch(/flex-shrink:\s*0/);
+  });
+});
+
+// ENG-769. The reel treatment is ENTIRELY CSS — an overlaid header on an ink
+// scrim, with the white header row gone. A render test can prove `data-chrome`
+// flips (PostPreview.test.tsx does), but not that the scrim, the light-on-dark
+// type or the removed padding actually exist. Without these the whole visual
+// half of this ticket could be reverted with every other suite green.
+//
+// The values are the member card's own (stablepass-mobile
+// `src/components/post-card.tsx`: reelTopScrim / reelHorse / reelByline,
+// Spacing.lg/xl = 16/20px, Colors.ink #1A1A1A at 55%), so this is a fidelity
+// guard rather than a restatement of arbitrary numbers.
+describe("reel chrome fidelity (ENG-769)", () => {
+  it("overlays the header on an ink scrim at the top of the frame", () => {
+    const scrim = rule(".reelScrim");
+    expect(scrim).toMatch(/position:\s*absolute/);
+    expect(scrim).toMatch(/top:\s*0/);
+    // Ink at 55%, fading to transparent — mobile's LinearGradient.
+    expect(scrim).toMatch(/linear-gradient\(\s*to bottom,\s*rgba\(26,\s*26,\s*26,\s*0\.55\)/);
+    expect(scrim).toMatch(/transparent/);
+    // The video underneath is click-to-play in the modal.
+    expect(scrim).toMatch(/pointer-events:\s*none/);
+  });
+
+  it("sets the overlaid identity light-on-dark", () => {
+    expect(rule(".reelHorse")).toMatch(/color:\s*var\(--white\)/);
+    expect(rule(".reelHorse")).toMatch(/font-family:\s*var\(--font-sans\)/);
+    expect(rule(".reelByline")).toMatch(/color:\s*rgba\(255,\s*255,\s*255,\s*0\.85\)/);
+  });
+
+  it("drops the card's top padding in BOTH scales, since no header row sits above the frame", () => {
+    // Mobile's `reelCard: { paddingTop: 0 }`.
+    expect(rule(".postCardReel")).toMatch(/padding-top:\s*0/);
+
+    // AND the compact rail, which needs its own rule to win the cascade:
+    // `.previewCompact .postCard` is (0,2,0) against `.postCardReel`'s (0,1,0),
+    // so without this the rail draws a 14px white band above every reel while
+    // the modal is correct. Asserting only the single-class rule above proved
+    // the DECLARATION existed, not that it APPLIED — which is how this shipped
+    // green the first time.
+    expect(rule(".previewCompact .postCardReel")).toMatch(/padding-top:\s*0/);
+  });
+
+  it("draws the label pill in brand green with cream type", () => {
+    const pill = rule(".labelPill");
+    expect(pill).toMatch(/background:\s*var\(--brand-green\)/);
+    expect(pill).toMatch(/color:\s*var\(--cream\)/);
+    expect(pill).toMatch(/text-transform:\s*uppercase/);
+    // Tokens, never eyeballed hex.
+    expect(pill).not.toMatch(/#[0-9a-f]{3,6}/i);
+  });
+
+  it("styles the note that explains a dropped label as a note, not an error", () => {
+    const note = rule(".previewReelNote");
+    expect(note).toMatch(/color:\s*var\(--muted\)/);
+    // Never red: the label is not a mistake, it just will not render here.
+    expect(note).not.toMatch(/var\(--danger\)|#c0392b|red/i);
+  });
+});

@@ -40,15 +40,22 @@ export type FakeState = {
      */
     mutations: {
       table: string;
-      op: "insert" | "update" | "delete";
+      op: "insert" | "update" | "delete" | "upsert";
       payload: any;
+      /**
+       * The upsert's conflict target (e.g. `{ onConflict: "post_id,sort_order" }`),
+       * so a test can prove the arbiter is what the writer actually needs
+       * (ENG-748) and not just that SOME upsert happened. `insert`/`update`/
+       * `delete` never carry one, hence optional.
+       */
+      options?: any;
       /**
        * The `.eq()` filters the chain carried, so a test can prove WHICH row a
        * mutation targeted. Without this a rollback assertion is satisfied by a
        * `.delete()` with no filter at all — i.e. by a statement that would
        * delete the whole table.
        */
-      filters: { column: string; value: any }[];
+      filters: { column: string; value: any; op?: string }[];
     }[];
     /** Storage signed-upload targets requested, so "text makes no Storage call" is provable. */
     storage: { bucket: string; path: string }[];
@@ -59,6 +66,11 @@ type Builder = {
   select: (...a: any[]) => Builder;
   insert: (...a: any[]) => Builder;
   update: (...a: any[]) => Builder;
+  // ENG-748: `post_media` is written with `.upsert(rows, { onConflict })`, not
+  // `.insert()` — a set that already has rows at those ordinals must overwrite
+  // them, not 23505. Kept as its own method (mirroring insert) rather than
+  // folded into it, so a test can tell the two calls apart on `op`.
+  upsert: (payload?: any, options?: any) => Builder;
   delete: (...a: any[]) => Builder;
   eq: (...a: any[]) => Builder;
   neq: (...a: any[]) => Builder;
@@ -84,7 +96,7 @@ function makeBuilder(state: FakeState, table: string): Builder {
   let op: "select" | "mutate" = "select";
   // Shared with the recorded mutation (same array reference), so `.eq()` calls
   // chained AFTER .delete()/.update() are still captured.
-  const filters: { column: string; value: any }[] = [];
+  const filters: { column: string; value: any; op?: string }[] = [];
   const script = () => state.tables[table] ?? {};
   const pick = (): ScriptResult => (op === "mutate" ? script().mutate : script().select) ?? {};
   const b: Builder = {
@@ -97,6 +109,14 @@ function makeBuilder(state: FakeState, table: string): Builder {
     update: (payload?: any) => {
       op = "mutate";
       state.calls.mutations.push({ table, op: "update", payload, filters });
+      return b;
+    },
+    // Mirrors `insert` exactly (same op-flip, same script table), but records
+    // `op: "upsert"` and the options arg — the arbiter is the whole point of
+    // calling this instead of `.insert()` (ENG-748), so it has to be provable.
+    upsert: (payload?: any, options?: any) => {
+      op = "mutate";
+      state.calls.mutations.push({ table, op: "upsert", payload, options, filters });
       return b;
     },
     delete: () => {
@@ -116,7 +136,16 @@ function makeBuilder(state: FakeState, table: string): Builder {
     order: () => b,
     range: () => b,
     gt: () => b,
-    gte: () => b,
+    // Records its filter (unlike the other range comparators, which stay
+    // no-ops) because ENG-748's trailing-set trim is a `.delete().eq(post_id)
+    // .gte(sort_order, n)` — without this a test asserting "the tail was
+    // trimmed from the right ordinal" has nothing to read the `n` off, and a
+    // trim that dropped the whole set (gte 0) would look identical to a
+    // correct one.
+    gte: (column?: any, value?: any) => {
+      filters.push({ column, value, op: "gte" });
+      return b;
+    },
     lt: () => b,
     lte: () => b,
     single: async () => ({ data: pick().single ?? null, error: pick().error ?? null }),

@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { supabaseBrowser } from "@/lib/supabase/client";
 import { signPhoto } from "@/lib/storage/photos";
+import PhotoCropField, { type PickedPhoto } from "../components/PhotoCropField";
 import { HORSE_SEXES, TRAINING_STATUSES, dollarsToCents, horseSexLabel, humanizeTrainingStatus } from "./format";
 
 // Shared add/edit form — screens/07-add-horse.html (re-cut 18 Aug 2026). In
@@ -91,6 +92,8 @@ export default function HorseForm({ mode, trainers, horseId, initial = {} }: Pro
   const [error, setError] = useState<string | null>(null);
   // `photoUrl` stores the private-bucket object PATH; sign it for the <img>.
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  // ENG-749. The picked file awaiting its crop; nothing uploads until it resolves.
+  const [pendingPhoto, setPendingPhoto] = useState<File | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -120,16 +123,27 @@ export default function HorseForm({ mode, trainers, horseId, initial = {} }: Pro
 
   const setGelded = (value: boolean) => setForm((f) => ({ ...f, isGelded: value }));
 
-  async function onPickPhoto(e: React.ChangeEvent<HTMLInputElement>) {
+  // ENG-749. Picking opens the crop step rather than uploading; the input is
+  // reset so re-picking the same file after a cancel still fires a change.
+  function onPickPhoto(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
+    e.target.value = "";
     if (!file) return;
+    setError(null);
+    setPendingPhoto(file);
+  }
+
+  // ENG-749. `picked.ext` describes the BYTES, not the picked file — a PNG
+  // cropped to JPEG must land on a .jpg key. Use-as-is passes the original file
+  // and its original extension through unchanged.
+  async function uploadPhoto(picked: PickedPhoto) {
+    setPendingPhoto(null);
     setUploading(true);
     setError(null);
     try {
-      const ext = file.name.split(".").pop() ?? "jpg";
-      const path = `${crypto.randomUUID()}.${ext}`;
+      const path = `${crypto.randomUUID()}.${picked.ext}`;
       const sb = supabaseBrowser();
-      const { error: upErr } = await sb.storage.from(PHOTO_BUCKET).upload(path, file, {
+      const { error: upErr } = await sb.storage.from(PHOTO_BUCKET).upload(path, picked.blob, {
         cacheControl: "3600",
         upsert: true,
       });
@@ -445,7 +459,10 @@ export default function HorseForm({ mode, trainers, horseId, initial = {} }: Pro
             <div className="adm-card-head">
               <div>
                 <h2>Profile photo</h2>
-                <div className="sub">Cover image shown on the horse&apos;s profile (16:9 recommended).</div>
+                {/* ENG-749: was "Cover image … (16:9 recommended)". The form now
+                    saves a SQUARE crop, so that line told the admin to supply a
+                    shape this screen no longer stores. */}
+                <div className="sub">Shown on the horse&apos;s profile and in horse lists (square crop).</div>
               </div>
             </div>
             <div className="adm-card-body">
@@ -475,10 +492,18 @@ export default function HorseForm({ mode, trainers, horseId, initial = {} }: Pro
                         </>
                       )}
                     </div>
-                    <div className="adm-help" style={{ marginTop: 6 }}>JPEG or PNG · up to 5 MB · ideally 1600×900</div>
+                    <div className="adm-help" style={{ marginTop: 6 }}>JPEG or PNG · up to 5 MB · ideally 1200×1200</div>
                   </>
                 )}
                 <input ref={fileRef} type="file" accept="image/png,image/jpeg" onChange={onPickPhoto} />
+                {pendingPhoto ? (
+                  <PhotoCropField
+                    file={pendingPhoto}
+                    subject="horse"
+                    onCancel={() => setPendingPhoto(null)}
+                    onApply={uploadPhoto}
+                  />
+                ) : null}
               </div>
             </div>
           </div>

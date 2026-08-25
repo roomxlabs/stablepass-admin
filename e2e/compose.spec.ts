@@ -270,8 +270,15 @@ for (const shape of [
     await expect(readout).toContainText(`${shape.width}×${shape.height}`);
     await expect(readout).toContainText(shape.name === "landscape" ? "Landscape" : "Portrait");
     if (shape.name === "portrait") {
-      // The single most important case: it is the one the operator cannot see.
-      await expect(readout).toContainText("cropped to 4:5");
+      // The single most important case, and the one ENG-747 reopened: a 9:16
+      // file is a REEL on the member card (18 Aug 2026), so the preview must
+      // draw the whole frame and say so. "cropped to 4:5" was the old lie.
+      await expect(readout).toContainText("as a reel at 9:16");
+      await expect(readout).not.toContainText("cropped to 4:5");
+      // And the box itself is the full 9:16, not the old 0.8 floor. Chrome
+      // serializes a computed unitless aspect-ratio as "<n> / 1", so match
+      // that shape rather than the bare number we set inline.
+      await expect(page.getByTestId("preview-media")).toHaveCSS("aspect-ratio", "0.5625 / 1");
     }
 
     await page.screenshot({

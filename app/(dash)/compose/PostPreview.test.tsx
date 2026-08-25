@@ -30,12 +30,20 @@ function renderPreview(over: Partial<PostPreviewData> = {}) {
 
 /** Mirrors ComposeScreen's ownership of the measurement, so the test drives
  *  the real loop: element reports its size -> state -> re-render. */
-function MeasuringHarness({ mediaUrl, mediaType }: { mediaUrl: string; mediaType: "video" | "photo" }) {
+function MeasuringHarness({
+  mediaUrl,
+  mediaType,
+  // ENG-769 — anything else the case under test needs on the card (a picked
+  // label, say). Spread LAST so a case can override the measured defaults.
+  ...rest
+}: { mediaUrl: string; mediaType: "video" | "photo" } & Partial<
+  Omit<PostPreviewData, "mediaUrl" | "mediaType">
+>) {
   const [dims, setDims] = useState<MediaDimensions>(null);
   const [measure, setMeasure] = useState<MeasureState>("measuring");
   return (
     <PostPreview
-      data={{ ...BASE, mediaUrl, mediaType, dims, measure }}
+      data={{ ...BASE, mediaUrl, mediaType, dims, measure, ...rest }}
       onMeasure={(d) => {
         setMeasure("done");
         setDims(d);
@@ -112,17 +120,30 @@ describe("the media box tells the truth about aspect", () => {
     expect(screen.getByRole("status").textContent).toContain("Portrait");
   });
 
-  it("clamps a 1080x1920 reel to 0.8 and says it will be cropped", () => {
+  it("draws a 1080x1920 reel at a full 9:16, uncropped, and says so (ENG-747)", () => {
     render(<MeasuringHarness mediaUrl="blob:reel" mediaType="video" />);
     const video = screen.getByTestId("preview-video") as HTMLVideoElement;
     Object.defineProperty(video, "videoWidth", { value: 1080, configurable: true });
     Object.defineProperty(video, "videoHeight", { value: 1920, configurable: true });
     fireEvent.loadedMetadata(video);
 
-    expect(screen.getByTestId("preview-media").style.aspectRatio).toBe("0.8");
+    // The BOX, not just the sentence: asserting only the readout is how the
+    // preview drifted from the member card in the first place.
+    expect(screen.getByTestId("preview-media").style.aspectRatio).toBe("0.5625");
     expect(screen.getByTestId("preview-readout").textContent).toBe(
-      "1080×1920 · Portrait 9:16 · Members see it cropped to 4:5",
+      "1080×1920 · Portrait 9:16 · Members see it as a reel at 9:16",
     );
+  });
+
+  it("keeps a portrait PHOTO at 16:10 — the reel treatment is video-only", () => {
+    render(<MeasuringHarness mediaUrl="blob:tallphoto" mediaType="photo" />);
+    const img = screen.getByTestId("preview-img") as HTMLImageElement;
+    Object.defineProperty(img, "naturalWidth", { value: 1080, configurable: true });
+    Object.defineProperty(img, "naturalHeight", { value: 1920, configurable: true });
+    fireEvent.load(img);
+
+    expect(screen.getByTestId("preview-media").style.aspectRatio).toBe("1.6");
+    expect(screen.getByTestId("preview-readout").textContent).toContain("cropped to 16:10");
   });
 
   it("previews a landscape video uncropped at its own ratio", () => {
@@ -367,5 +388,252 @@ describe("guardrail: no watermarking in admin", () => {
       ]);
       cleanup();
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ENG-748 — the multi-photo carousel.
+//
+// The governing rule is ENG-740's, not a design preference: a post with ZERO
+// post_media rows renders from post.media_url alone, so "0 rows" and "1 photo"
+// are the SAME rendering case. Only two or more photos may show a pager.
+// ---------------------------------------------------------------------------
+describe("ENG-748 · the preview carousel", () => {
+  const THREE = ["blob:a", "blob:b", "blob:c"];
+
+  it("draws no dots and no count for a single photo", () => {
+    renderPreview({ mediaType: "photo", mediaUrl: "blob:a", photos: ["blob:a"] });
+    expect(screen.queryByTestId("preview-dots")).toBeNull();
+    expect(screen.queryByTestId("preview-count")).toBeNull();
+  });
+
+  it("draws no dots when there is no photo set at all (a legacy post)", () => {
+    // The mirror-only case: post_media is empty, post.media_url carries the
+    // photo. It must look exactly like the single-photo case above.
+    renderPreview({ mediaType: "photo", mediaUrl: "blob:a", photos: undefined });
+    expect(screen.queryByTestId("preview-dots")).toBeNull();
+    expect(screen.getByTestId("preview-img").getAttribute("src")).toBe("blob:a");
+  });
+
+  it("draws one dot per photo, and a 1-based count, for a set of three", () => {
+    renderPreview({ mediaType: "photo", mediaUrl: THREE[0], photos: THREE });
+    expect(screen.getAllByTestId(/^preview-dot-\d$/)).toHaveLength(3);
+    expect(screen.getByTestId("preview-count").textContent).toBe("1/3");
+  });
+
+  it("opens on position 0 — the photo the mirror points at", () => {
+    renderPreview({ mediaType: "photo", mediaUrl: THREE[0], photos: THREE });
+    expect(screen.getByTestId("preview-img").getAttribute("src")).toBe("blob:a");
+    expect(screen.getByTestId("preview-dot-0").getAttribute("aria-current")).toBe("true");
+  });
+
+  it("pages to the photo whose dot was clicked", () => {
+    renderPreview({ mediaType: "photo", mediaUrl: THREE[0], photos: THREE });
+    fireEvent.click(screen.getByTestId("preview-dot-2"));
+    expect(screen.getByTestId("preview-img").getAttribute("src")).toBe("blob:c");
+    expect(screen.getByTestId("preview-count").textContent).toBe("3/3");
+    expect(screen.getByTestId("preview-dot-2").getAttribute("aria-current")).toBe("true");
+    expect(screen.getByTestId("preview-dot-0").getAttribute("aria-current")).toBe("false");
+  });
+
+  it("names each dot's position for a screen reader", () => {
+    renderPreview({ mediaType: "photo", mediaUrl: THREE[0], photos: THREE });
+    expect(screen.getByTestId("preview-dot-1").getAttribute("aria-label")).toBe(
+      "Show photo 2 of 3",
+    );
+  });
+
+  it("clamps the shown index when the set shrinks under it", () => {
+    // The operator removes the photo they are looking at. Deriving the index on
+    // read (rather than correcting it in an effect) is what stops this painting
+    // a blank box for a frame — or reading past the end of the array.
+    const { rerender } = render(
+      <PostPreview data={{ ...BASE, mediaType: "photo", mediaUrl: THREE[0], photos: THREE }} />,
+    );
+    fireEvent.click(screen.getByTestId("preview-dot-2"));
+    expect(screen.getByTestId("preview-count").textContent).toBe("3/3");
+
+    rerender(
+      <PostPreview
+        data={{ ...BASE, mediaType: "photo", mediaUrl: THREE[0], photos: THREE.slice(0, 2) }}
+      />,
+    );
+    expect(screen.getByTestId("preview-count").textContent).toBe("2/2");
+    expect(screen.getByTestId("preview-img").getAttribute("src")).toBe("blob:b");
+  });
+
+  it("re-decodes on a page rather than reusing the element", () => {
+    // Keyed by URL. Without the key React reuses the <img>, onLoad never fires
+    // for the new photo, and the readout keeps describing the previous one.
+    renderPreview({ mediaType: "photo", mediaUrl: THREE[0], photos: THREE });
+    const first = screen.getByTestId("preview-img");
+    fireEvent.click(screen.getByTestId("preview-dot-1"));
+    expect(screen.getByTestId("preview-img")).not.toBe(first);
+  });
+
+  it("NEVER draws a carousel for a video, however many photos are passed", () => {
+    // The reel path is ENG-747's and must stay untouched: routing a video
+    // through here would put a pager on a 9:16 reel and re-render it as an
+    // <img>. `photos` is meaningless for a single Mux asset.
+    renderPreview({ mediaType: "video", mediaUrl: "blob:reel", photos: THREE });
+    expect(screen.queryByTestId("preview-dots")).toBeNull();
+    expect(screen.getByTestId("preview-video")).toBeTruthy();
+    expect(screen.queryByTestId("preview-img")).toBeNull();
+  });
+
+  it("keeps the media box at 16:10 across a page — photos never re-clamp", () => {
+    // resolveAspect short-circuits photos to ASPECT_DEFAULT, so the card does
+    // not jump as the operator pages. Pinning it here because a future change
+    // that let photos measure would make the carousel visibly lurch.
+    renderPreview({ mediaType: "photo", mediaUrl: THREE[0], photos: THREE });
+    const box = screen.getByTestId("preview-media");
+    expect(box.style.aspectRatio).toBe("1.6");
+    fireEvent.click(screen.getByTestId("preview-dot-1"));
+    expect(screen.getByTestId("preview-media").style.aspectRatio).toBe("1.6");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ENG-769 — THE CHROME MATRIX
+//
+// The preview already drew the right BOX for a reel (ENG-747) while the card
+// around it stayed a classic card: white header row, and — once ENG-745 landed
+// a label picker — a label pill that no member on a reel will ever see. These
+// pin the furniture, not just the shape.
+//
+// `data-chrome` is the assertion surface: Vitest stubs CSS modules, so
+// `styles.postCardReel` is the string "postCardReel" and getComputedStyle sees
+// nothing. See compose-css.test.ts's header for the same reasoning.
+// ---------------------------------------------------------------------------
+
+/** Render at a measured intrinsic size, the way the real screen arrives there. */
+function renderMeasured(
+  width: number,
+  height: number,
+  mediaType: "video" | "photo",
+  over: Partial<Omit<PostPreviewData, "mediaUrl" | "mediaType">> = {},
+) {
+  render(
+    <MeasuringHarness
+      mediaUrl={mediaType === "photo" ? "blob:photo" : "blob:video"}
+      mediaType={mediaType}
+      {...over}
+    />,
+  );
+  if (mediaType === "photo") {
+    const img = screen.getByTestId("preview-img") as HTMLImageElement;
+    Object.defineProperty(img, "naturalWidth", { value: width, configurable: true });
+    Object.defineProperty(img, "naturalHeight", { value: height, configurable: true });
+    fireEvent.load(img);
+  } else {
+    const video = screen.getByTestId("preview-video") as HTMLVideoElement;
+    Object.defineProperty(video, "videoWidth", { value: width, configurable: true });
+    Object.defineProperty(video, "videoHeight", { value: height, configurable: true });
+    fireEvent.loadedMetadata(video);
+  }
+  return screen.getByTestId("post-preview");
+}
+
+describe("reel chrome, across the whole portrait range (ENG-769)", () => {
+  const CASES = [
+    { name: "9:16 video — the canonical reel", w: 1080, h: 1920, type: "video" as const, reel: true },
+    { name: "0.9 video — the case that motivated the ticket", w: 900, h: 1000, type: "video" as const, reel: true },
+    { name: "0.99 video — still portrait, still a reel", w: 990, h: 1000, type: "video" as const, reel: true },
+    { name: "1.0 square video — NOT a reel, `< 1` is strict", w: 1000, h: 1000, type: "video" as const, reel: false },
+    { name: "1.4 landscape video", w: 1400, h: 1000, type: "video" as const, reel: false },
+    { name: "portrait photo — Instagram keeps it a classic card", w: 1080, h: 1920, type: "photo" as const, reel: false },
+  ];
+
+  for (const c of CASES) {
+    it(`${c.name} -> ${c.reel ? "REEL" : "CLASSIC"} chrome`, () => {
+      // racesToday TRUE on purpose: BASE has it false, so asserting the badge
+      // is absent on a reel proved nothing — it was absent in every case and
+      // would have stayed green with the badge moved out of the header and
+      // rendered unconditionally. Found in review.
+      const card = renderMeasured(c.w, c.h, c.type, { label: "Trackwork", racesToday: true });
+
+      expect(card.dataset.chrome).toBe(c.reel ? "reel" : "classic");
+
+      if (c.reel) {
+        // The white header row stands down, taking the label pill and the race
+        // badge with it — exactly as the member card's `{isReel ? null : ...}`
+        // suppresses the whole head.
+        expect(screen.queryByTestId("preview-label")).toBeNull();
+        expect(screen.queryByTestId("preview-race-badge")).toBeNull();
+        // ...and the identity is overlaid on the frame instead.
+        expect(screen.getByTestId("preview-reel-head")).toBeTruthy();
+      } else {
+        expect(screen.getByTestId("preview-label").textContent).toBe("Trackwork");
+        expect(screen.queryByTestId("preview-reel-head")).toBeNull();
+        // The positive half: the badge DOES render on a classic card, which is
+        // what makes its absence on a reel meaningful.
+        expect(screen.getByTestId("preview-race-badge").textContent).toBe("Race day");
+      }
+    });
+  }
+
+  it("tells the operator WHY the label vanished, and only on a reel", () => {
+    // The acceptance criterion this ticket turns on: a label picked for a
+    // portrait video reaches no member, and until now nothing said so.
+    renderMeasured(1080, 1920, "video", { label: "Trackwork" });
+    const note = screen.getByTestId("preview-reel-label-note");
+    expect(note.textContent).toContain("Trackwork");
+    expect(note.textContent).toContain("will not appear");
+    cleanup();
+
+    // No label picked: nothing to warn about, so no note.
+    renderMeasured(1080, 1920, "video", { label: null });
+    expect(screen.queryByTestId("preview-reel-label-note")).toBeNull();
+    cleanup();
+
+    // Label picked on a CLASSIC card: it renders, so again no note.
+    renderMeasured(1000, 1000, "video", { label: "Trackwork" });
+    expect(screen.queryByTestId("preview-reel-label-note")).toBeNull();
+  });
+
+  it("follows the operator when they swap a square video for a portrait one", () => {
+    // The ticket's own edge case: pick a label, then change the media. The
+    // preview has to stop promising the pill, not keep a stale card.
+    const { rerender } = render(
+      <MeasuringHarness mediaUrl="blob:video" mediaType="video" label="Trackwork" />,
+    );
+    const video = screen.getByTestId("preview-video") as HTMLVideoElement;
+    Object.defineProperty(video, "videoWidth", { value: 1000, configurable: true });
+    Object.defineProperty(video, "videoHeight", { value: 1000, configurable: true });
+    fireEvent.loadedMetadata(video);
+    expect(screen.getByTestId("post-preview").dataset.chrome).toBe("classic");
+    expect(screen.getByTestId("preview-label")).toBeTruthy();
+
+    Object.defineProperty(video, "videoWidth", { value: 1080, configurable: true });
+    Object.defineProperty(video, "videoHeight", { value: 1920, configurable: true });
+    fireEvent.loadedMetadata(video);
+    rerender(<MeasuringHarness mediaUrl="blob:video" mediaType="video" label="Trackwork" />);
+
+    expect(screen.getByTestId("post-preview").dataset.chrome).toBe("reel");
+    expect(screen.queryByTestId("preview-label")).toBeNull();
+    expect(screen.getByTestId("preview-reel-label-note")).toBeTruthy();
+  });
+
+  it("never reaches reel chrome on a post with no media box", () => {
+    // Text has no box at all, so the reel branch must be unreachable — the box
+    // must not depend on an upstream gate to stay honest.
+    for (const type of ["text", null] as const) {
+      render(<PostPreview data={{ ...BASE, mediaType: type, dims: { width: 1080, height: 1920 }, measure: "done", label: "Trackwork" }} />);
+      const card = screen.getByTestId("post-preview");
+      expect(card.dataset.chrome).toBe("classic");
+      expect(screen.queryByTestId("preview-reel-head")).toBeNull();
+      cleanup();
+    }
+  });
+
+  it("keeps the caption and reaction bar BELOW the media on a reel", () => {
+    // An in-feed reel is not the fullscreen player: mobile deliberately does
+    // not overlay these. Order in the DOM is the assertion.
+    const card = renderMeasured(1080, 1920, "video");
+    const kids = Array.from(card.children).map((n) => n.getAttribute("data-testid"));
+    expect(kids).toContain("preview-reactions");
+    expect(kids).toContain("preview-caption");
+    expect(kids.indexOf("preview-media")).toBeLessThan(kids.indexOf("preview-reactions"));
+    expect(kids.indexOf("preview-reactions")).toBeLessThan(kids.indexOf("preview-caption"));
   });
 });

@@ -2,6 +2,8 @@ import { NextResponse } from "next/server";
 import { requireAdmin } from "@/lib/auth/admin";
 import { ok, fail } from "@/lib/api/envelope";
 import { createMuxDirectUpload, MuxError } from "@/lib/mux";
+import { isLabelCheckViolation, LABEL_ERROR_MESSAGE, normalisePostLabel } from "@/lib/posts/labels";
+import { MAX_PHOTOS, uploadSlotPath } from "@/lib/posts/media";
 
 const POST_MEDIA_BUCKET = "post-media"; // T15 private bucket (photo/voice)
 // ENG-611: widened from video|photo. `post.type`'s CHECK has permitted all of
@@ -29,7 +31,9 @@ export async function GET(req: Request) {
   let query = sb
     .from("post")
     .select(
-      "id,horse_id,type,status,title,body,like_count,published_at,scheduled_for,created_at,horse:horse_id(display_name,racing_name),trainer:source_trainer_id(name)",
+      // `label` (ENG-745) is selected so the posts library can render the
+      // category chip; that rendering is a later slice, this only carries it.
+      "id,horse_id,type,status,title,body,label,like_count,published_at,scheduled_for,created_at,horse:horse_id(display_name,racing_name),trainer:source_trainer_id(name)",
       { count: "exact" },
     )
     .order("created_at", { ascending: false });
@@ -87,7 +91,7 @@ export async function POST(req: Request) {
   const { sb } = g;
 
   const payload = await req.json().catch(() => ({}));
-  const { horseId, type, title, body, sourceTrainerId, expiresAt } = payload ?? {};
+  const { horseId, type, title, body, sourceTrainerId, expiresAt, label, photoCount } = payload ?? {};
 
   // A horse is required for EVERY type, text included: post.horse_id is NOT
   // NULL and it is what the member app renders in the byline.
@@ -106,6 +110,37 @@ export async function POST(req: Request) {
   if (type === "text" && !hasBody)
     return fail("validation_failed", "A text post requires a non-empty body.", 400);
 
+  // `label` is optional and nullable (ENG-745). Absent or null → no label, which
+  // is what every post created before 2026-08-19 has and what renders no pill.
+  // An off-list value is rejected HERE with a readable message rather than being
+  // left to the CHECK, but the 23514 mapping below still stands as the backstop.
+  const labelValue = "label" in (payload ?? {}) ? normalisePostLabel(label) : null;
+  if (labelValue === undefined)
+    return fail("validation_failed", LABEL_ERROR_MESSAGE, 400);
+
+  // ENG-748 — how many direct-upload targets to mint. PHOTO ONLY: video is a
+  // single Mux asset and voice a single Storage object (ENG-740 decision 3), so
+  // asking for two of either is a client bug and gets a 400 rather than a
+  // second target that nothing would ever read.
+  //
+  // Absent → 1, which is what every caller predating this ticket sends and what
+  // keeps the single-photo path byte-identical. The bound is validated here
+  // because the count decides how many Storage round-trips we make BEFORE any
+  // row exists to constrain it — the table's 0..9 CHECK cannot reject a request
+  // that has not written a row yet.
+  const wantsPhotos = photoCount === undefined || photoCount === null ? 1 : photoCount;
+  if (
+    !Number.isInteger(wantsPhotos) ||
+    wantsPhotos < 1 ||
+    wantsPhotos > MAX_PHOTOS ||
+    (wantsPhotos > 1 && type !== "photo")
+  )
+    return fail(
+      "validation_failed",
+      `photoCount must be a whole number from 1 to ${MAX_PHOTOS}, and only a photo post may exceed 1.`,
+      400,
+    );
+
   // Horse must exist — a clean 404 rather than a raw FK violation.
   const { data: horse } = await sb.from("horse").select("id").eq("id", horseId).maybeSingle();
   if (!horse) return fail("horse_not_found", "Horse not found.", 404);
@@ -121,9 +156,17 @@ export async function POST(req: Request) {
       status: "draft",
       watermarked: false,
       expires_at: expiresAt ?? null,
+      label: labelValue,
     })
-    .select("id,status,type,horse_id,created_at")
+    .select("id,status,type,horse_id,created_at,label")
     .single();
+  // A `post_label_preset` violation is the operator sending a category this
+  // build does not know about (a preset dropped by a later migration, say), not
+  // a server fault — surface it as the same 400 the up-front check produces.
+  // Matched by constraint NAME: a bare 23514 would also swallow `post`'s type /
+  // status / aspect-ratio CHECKs and mislabel them as a category problem.
+  if (isLabelCheckViolation(error))
+    return fail("validation_failed", LABEL_ERROR_MESSAGE, 400);
   if (error || !draft) return fail("insert_failed", error?.message ?? "Could not create draft.", 400);
 
   // text → done. No upload target, so no Storage/Mux call to make and nothing
@@ -150,14 +193,37 @@ export async function POST(req: Request) {
   // Voice reuses the photo path EXACTLY: same private bucket, same
   // `<postId>/original` object, no new bucket and no Mux. There is no duration
   // column on `post`, so nothing here records one.
-  const objectPath = `${draft.id}/original`;
-  const { data: signed, error: storageErr } = await sb.storage
-    .from(POST_MEDIA_BUCKET)
-    .createSignedUploadUrl(objectPath);
-  if (storageErr || !signed) {
-    await sb.from("post").delete().eq("id", draft.id).eq("status", "draft"); // roll back the orphan draft
-    return fail("storage_unavailable", storageErr?.message ?? "Storage is unavailable.", 502);
+  //
+  // ENG-748: `wantsPhotos` targets, one per upload SLOT. Slot 0 keeps
+  // `<postId>/original`, so a single-photo post produces exactly the request it
+  // always did; extras take `<postId>/photo-<n>` per ENG-740's convention. The
+  // slot is the UPLOAD ordinal and is NOT the display position — reordering the
+  // strip never moves bytes, it only changes which path `post_media` row 0 (and
+  // therefore the mirror) points at.
+  const objectPath = uploadSlotPath(draft.id, 0);
+  const uploads: { sortOrder: number; path: string; token: string; uploadUrl: string; bucket: string }[] = [];
+  for (let slot = 0; slot < wantsPhotos; slot++) {
+    const slotObject = uploadSlotPath(draft.id, slot);
+    const { data: s, error: e } = await sb.storage
+      .from(POST_MEDIA_BUCKET)
+      .createSignedUploadUrl(slotObject);
+    if (e || !s) {
+      // Roll the whole draft back rather than hand back a partial set. A client
+      // holding 3 of 5 targets would upload three objects against a post it then
+      // has to reconcile, and the operator would see a strip that silently lost
+      // two of the files they picked.
+      await sb.from("post").delete().eq("id", draft.id).eq("status", "draft");
+      return fail("storage_unavailable", e?.message ?? "Storage is unavailable.", 502);
+    }
+    uploads.push({
+      sortOrder: slot,
+      path: s.path ?? slotObject,
+      token: s.token,
+      uploadUrl: s.signedUrl,
+      bucket: POST_MEDIA_BUCKET,
+    });
   }
+  const signed = uploads[0];
   // Record where the media will land; the bytes go direct to Storage.
   //
   // Checked, not fire-and-forget: if this write is lost the client still gets a
@@ -178,9 +244,13 @@ export async function POST(req: Request) {
     status: "draft",
     type,
     watermarked: false,
-    uploadUrl: signed.signedUrl,
-    path: signed.path ?? objectPath,
+    // Slot 0 stays at the TOP LEVEL, unchanged, so every existing caller and
+    // test keeps reading the same four fields for a single-photo post. `uploads`
+    // is purely additive and carries the same slot 0 as its first entry.
+    uploadUrl: signed.uploadUrl,
+    path: signed.path,
     token: signed.token,
     bucket: POST_MEDIA_BUCKET,
+    uploads,
   });
 }

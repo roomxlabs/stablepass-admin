@@ -18,6 +18,15 @@ import {
   uploadVideoToMux,
 } from "./api";
 import { ACCEPT_BY_TYPE, isUploadType, TYPE_LABEL, uploadTypeForFile } from "./types";
+import {
+  MAX_PHOTOS,
+  mediaSetPayload,
+  mirrorPath,
+  movePhoto,
+  removePhotoAt,
+  uploadedPhotos,
+  type ComposePhoto,
+} from "./photos";
 import type {
   CreateDraftResponse,
   EditInitial,
@@ -28,8 +37,20 @@ import type {
   TrainerOption,
 } from "./types";
 import styles from "./compose.module.css";
+import { isPostLabel, POST_LABEL_PRESETS } from "@/lib/posts/labels";
 
-const CAPTION_MAX = 240;
+/**
+ * ENG-745 removed the 240-character caption cap entirely — there is deliberately
+ * no `CAPTION_MAX` any more.
+ *
+ * It was enforced with `maxLength`, so the textarea silently swallowed every
+ * keystroke past 240 and an operator pasting a long trainer quote lost the tail
+ * with no message. Nothing downstream ever needed the limit: `post.body` is
+ * unbounded `text`, the BFF imposes no cap, and the member feed clamps the
+ * caption to two lines on the card, so a long body is a display concern that is
+ * already handled rather than a data problem. The counter stays, as a passive
+ * character count with no threshold and no red state.
+ */
 type PublishMode = "draft" | "schedule" | "publish";
 type UploadState = "idle" | "creating" | "uploading" | "done" | "error";
 type ActionState = { kind: "idle" | "working" | "ok" | "error"; message?: string };
@@ -47,6 +68,12 @@ function objectUrl(file: File): string | null {
     return URL.createObjectURL(file);
   }
   return null;
+}
+
+/** Release every strip thumbnail's object URL (ENG-748). */
+function revokePhotoUrls(list: readonly ComposePhoto[]): void {
+  if (typeof URL === "undefined" || !URL.revokeObjectURL) return;
+  for (const p of list) if (p.previewUrl?.startsWith("blob:")) URL.revokeObjectURL(p.previewUrl);
 }
 
 function humanSize(bytes: number): string {
@@ -115,8 +142,54 @@ export default function ComposeScreen({
   const [bylineId, setBylineId] = useState<string>(initial?.bylineId ?? "");
   const [title, setTitle] = useState(initial?.title ?? "");
   const [caption, setCaption] = useState(initial?.caption ?? "");
+  // "" is the "No label" option; it is sent to the BFF as an explicit null.
+  // Seeded from the post being edited, so an old unlabelled post opens on
+  // "No label" and stays unlabelled unless the operator picks one.
+  const [label, setLabel] = useState<string>(initial?.label ?? "");
+  const initialLabel = initial?.label ?? "";
+  /**
+   * A stored label this build has no preset for still gets an <option>, so the
+   * control can actually display it.
+   *
+   * Without one the <select> silently falls back to index 0 and reads "No
+   * label" while state holds the real value — the control lying about the post
+   * in front of you, and unfixable by choosing "No label" because that is
+   * already what it shows, so re-picking it fires no change event.
+   */
+  const unknownLabel = initialLabel !== "" && !isPostLabel(initialLabel) ? initialLabel : null;
+  /**
+   * The category fragment every save spreads in — and it is ABSENT unless the
+   * operator actually moved the picker.
+   *
+   * Absent, null and a preset are three different instructions to the route:
+   * absent leaves the column alone, null clears it, a preset sets it. Sending
+   * the current value unconditionally collapsed the first two, and that broke a
+   * post whose stored label this build does not recognise — which happens the
+   * moment stablepass-be adds or removes a preset and admin has not been
+   * redeployed, the same skew the route's 23514 backstop exists for. The picker
+   * could not display that value, so it fell back to "No label" while state
+   * still held the real one; editing only the caption then either 400'd the
+   * whole save or silently relabelled the post. Not writing what nobody touched
+   * makes all of that go away, and is what the operator meant anyway.
+   */
+  const labelPatch: { label?: string | null } =
+    label === initialLabel ? {} : { label: label === "" ? null : label };
 
   const [file, setFile] = useState<File | null>(null);
+  /**
+   * ENG-748 — the ordered photo set, in DISPLAY order. Photo posts only; video
+   * and voice never populate it and every path below that reads it is gated on
+   * the type.
+   *
+   * `file` / `mediaUrl` are deliberately kept alongside it rather than replaced:
+   * they still describe photo 0, so the existing measurement, preview and
+   * upload-status paths (and their tests) keep working untouched, and a
+   * single-photo post behaves exactly as it did before this ticket. This list is
+   * the source of truth for ORDER and for what gets persisted.
+   */
+  const [photos, setPhotos] = useState<ComposePhoto[]>([]);
+  /** Cap breach and per-set upload problems — shown above the strip. */
+  const [photoError, setPhotoError] = useState<string | null>(null);
   /**
    * The post type is CHOSEN up front (step 2), never inferred from the picked
    * file. Inference is what left `text` unauthorable — it has no file to sniff.
@@ -186,14 +259,94 @@ export default function ComposeScreen({
     [trainers, bylineId],
   );
 
+  /**
+   * Every match, NOT the first 8 (ENG-745).
+   *
+   * Both branches used to `.slice(0, 8)`, which made a stable of 20 horses look
+   * like a stable of 8: with the search box empty — how the picker opens — the
+   * 9th horse onward was unreachable, and there was no "8 of 20" affordance to
+   * suggest otherwise. The list is already scrollable (`.results` carries
+   * `max-height` + `overflow-y: auto`, pinned in compose-css.test.ts), so the
+   * full roster costs nothing but a scroll. The roster is client-side and in
+   * the low hundreds at most, so there is no windowing concern here.
+   */
   const matches = useMemo(() => {
     const q = search.trim().toLowerCase();
-    if (!q) return horses.slice(0, 8);
-    return horses.filter((h) => h.name.toLowerCase().includes(q)).slice(0, 8);
+    if (!q) return horses;
+    return horses.filter((h) => h.name.toLowerCase().includes(q));
   }, [horses, search]);
 
   const isText = postType === "text";
-  const draftReady = !!draft && upload.state === "done";
+  /**
+   * A photo post outside edit mode always goes through the multi-photo set
+   * path — for readiness AND for what gets persisted.
+   */
+  const usesPhotoSet = postType === "photo" && !isEdit;
+  /** The photos that actually landed in Storage, in display order. */
+  const readyPhotos = uploadedPhotos(photos);
+  /**
+   * The path `post.media_url` will actually be set to — the first UPLOADED
+   * photo, not simply display position 0.
+   *
+   * The distinction is not pedantic: if the photo at position 0 failed to
+   * upload, the mirror lands on the next one that did, so badging position 0 as
+   * "Cover" would tell the operator the feed will show an image that was never
+   * stored. Same function the save path uses, so the badge cannot disagree with
+   * what gets written.
+   */
+  const coverPath = mirrorPath(photos);
+  /**
+   * The photo the cover badge is on — and therefore the one the big Step 3
+   * frame and its meta line must show.
+   *
+   * Without this the frame kept rendering `mediaUrl`, which is the FIRST PICKED
+   * file and never moves. After a reorder the screen said three different
+   * things at once: the frame showed photo 1 (captioned "gallop-1.png"), the
+   * strip badged photo 3 as the cover, and the member card previewed photo 3.
+   * Caught in the reorder screenshot, not by a test.
+   */
+  const coverPhoto = photos.find((p) => p.path === coverPath) ?? null;
+  /**
+   * ENG-748 — the ordered photo set to persist, spread into every save.
+   *
+   * ABSENT unless this is a photo post with something uploaded, exactly like
+   * `labelPatch`: `media` is a full replacement, so sending `[]` would delete
+   * the post's photos, and sending it on a video/voice/text save would delete
+   * them for a type that never had any. Absent means "leave the set alone",
+   * which is what every path that is not a photo pick means.
+   *
+   * The paths come from `mediaSetPayload`, so display position — not upload
+   * slot — decides `sort_order`, and the route mirrors position 0 into
+   * `post.media_url`.
+   */
+  const mediaPatch: { media?: string[] } =
+    // `usesPhotoSet`, not `postType === "photo"`: edit mode has no media
+    // editing, so it must never send a set either. Note this gate is currently
+    // belt-and-braces — `resetMedia()` runs before `setPostType`, so `photos`
+    // is already empty for any other type — which is exactly why it is worth
+    // stating rather than relying on the ordering of two calls elsewhere.
+    usesPhotoSet && readyPhotos.length > 0
+      ? { media: mediaSetPayload(photos).map((r) => r.mediaUrl) }
+      : {};
+  /**
+   * A multi-photo post is ready when at least one photo has landed and none is
+   * still in flight. A failed tile does NOT block the post — the ticket's rule
+   * is that the post keeps the successfully uploaded set and the strip offers a
+   * retry, so the operator can drop the failure and publish the rest.
+   */
+  const photosSettled = photos.length > 0 && !photos.some((p) => p.state === "uploading");
+  /**
+   * A photo post outside edit mode ALWAYS goes through the set path, so its
+   * readiness always comes from the set — never from `upload.state`.
+   *
+   * Gating on `photos.length > 0` instead was a real bug, caught by the
+   * remove-the-last-photo test: emptying the strip fell back to `upload.state`,
+   * which was still "done" from the upload that had since been removed, so the
+   * screen offered to publish a photo post with no photos.
+   */
+  const draftReady =
+    !!draft &&
+    (usesPhotoSet ? photosSettled && readyPhotos.length > 0 : upload.state === "done");
   /**
    * A text post has no upload, so it can never satisfy `draftReady` — and its
    * draft does not even exist yet, because minting one is what picking a file
@@ -233,6 +386,12 @@ export default function ComposeScreen({
     // this clear and re-populate what we are about to empty.
     pickGeneration.current += 1;
     if (mediaUrl && typeof URL !== "undefined" && URL.revokeObjectURL) URL.revokeObjectURL(mediaUrl);
+    // Every strip thumbnail is its own object URL; dropping the list without
+    // revoking them leaks one blob per photo for the life of the page, and the
+    // operator can re-pick a ten-photo set as often as they like.
+    revokePhotoUrls(photos);
+    setPhotos([]);
+    setPhotoError(null);
     setFile(null);
     setMediaUrl(null);
     setDims(null);
@@ -357,6 +516,203 @@ export default function ComposeScreen({
     }
   }
 
+  /**
+   * ENG-748 — pick one OR MORE photos.
+   *
+   * Photo posts only; every other type still goes through `onPickFile`
+   * unchanged. A one-file pick here produces exactly the same draft, the same
+   * `<postId>/original` object and the same `post.media_url` as before this
+   * ticket — the multi path is not a separate mode, it is the same path with a
+   * count.
+   */
+  async function onPickPhotos(picked: File[]) {
+    if (!horse || !bylineId) {
+      setUpload({ state: "error", pct: 0, error: "Pick a horse first." });
+      return;
+    }
+    if (picked.length === 0) return;
+
+    // THE CAP, enforced before anything is created or uploaded — "11 files
+    // picked: blocked with a message, nothing uploads". Checked here rather than
+    // left to the route so the operator is told immediately, and checked against
+    // the whole pick because this replaces the set rather than appending to it.
+    if (picked.length > MAX_PHOTOS) {
+      setPhotoError(
+        `You can add up to ${MAX_PHOTOS} photos to a post — you picked ${picked.length}. Nothing was uploaded.`,
+      );
+      if (fileInputRef.current) fileInputRef.current.value = "";
+      return;
+    }
+
+    // MIME validation over the WHOLE set before any upload, same rule as the
+    // single pick: one video dragged in with nine photos is an error the
+    // operator resolves, never a silent reclassification of the post.
+    const wrong = picked.find((f) => uploadTypeForFile(f) !== "photo");
+    if (wrong) {
+      const kind = uploadTypeForFile(wrong);
+      setTypeError(
+        `You chose Photo, but “${wrong.name}” is ${kind ? `a ${TYPE_LABEL[kind]}` : wrong.type || "an unrecognised file"}. ` +
+          `Pick photo files only, or change the post type above.`,
+      );
+      if (fileInputRef.current) fileInputRef.current.value = "";
+      return;
+    }
+    setTypeError(null);
+    setPhotoError(null);
+
+    if (draft) void discardDraft(draft.id).catch(() => {});
+    if (mediaUrl && typeof URL !== "undefined" && URL.revokeObjectURL) URL.revokeObjectURL(mediaUrl);
+    revokePhotoUrls(photos);
+
+    setDraft(null);
+    // photo 0 also drives the existing single-file UI + measurement, so the
+    // readout and the card ratio keep describing the cover image.
+    setFile(picked[0]);
+    setMediaUrl(objectUrl(picked[0]));
+    setDims(null);
+    setMeasure("measuring");
+    setUpload({ state: "creating", pct: 0 });
+    setPhotos([]);
+
+    const generation = ++pickGeneration.current;
+    const stale = () => pickGeneration.current !== generation;
+
+    try {
+      const created = await createDraft({
+        horseId: horse.id,
+        type: "photo",
+        sourceTrainerId: bylineId,
+        // ONLY for a genuine multi-pick. `photoCount: 1` and an absent
+        // `photoCount` are identical server-side, so omitting it means a
+        // single-photo post sends the byte-identical request this endpoint has
+        // always received — nothing downstream can tell this ticket shipped.
+        ...(picked.length > 1 ? { photoCount: picked.length } : {}),
+      });
+      if (stale()) {
+        void discardDraft(created.id).catch(() => {});
+        return;
+      }
+      // `uploads` is the multi-photo shape; the four top-level fields are the
+      // shape this endpoint has always returned. Falling back to them means a
+      // ONE-photo pick still works against a route that predates this ticket
+      // (and against every caller that mocks the old shape) — the single-photo
+      // path degrades instead of breaking. A multi-photo pick genuinely cannot
+      // proceed without the extra targets, so it still fails loudly.
+      const targets =
+        created.uploads?.length
+          ? created.uploads
+          : created.uploadUrl && created.path && created.token && created.bucket
+            ? [
+                {
+                  sortOrder: 0,
+                  path: created.path,
+                  token: created.token,
+                  uploadUrl: created.uploadUrl,
+                  bucket: created.bucket,
+                },
+              ]
+            : [];
+      if (targets.length < picked.length) throw new Error("No upload target was returned.");
+
+      setDraft(created);
+      setUpload({ state: "uploading", pct: 0 });
+
+      // Seed the strip up front so the operator watches all N tiles resolve,
+      // rather than seeing them appear one at a time as each upload finishes.
+      const seeded: ComposePhoto[] = picked.map((f, slot) => ({
+        id: `${created.id}-${slot}`,
+        path: targets[slot].path,
+        previewUrl: objectUrl(f),
+        name: f.name,
+        size: f.size,
+        state: "uploading",
+        file: f,
+        bucket: targets[slot].bucket,
+        token: targets[slot].token,
+      }));
+      setPhotos(seeded);
+
+      // Sequential, not Promise.all: ten parallel Storage PUTs from one browser
+      // is what makes the slowest of them time out, and the strip is more
+      // legible resolving in order. Each settles its own tile, so one failure
+      // leaves the rest of the set intact — the ticket's mid-way-failure rule.
+      for (let slot = 0; slot < picked.length; slot++) {
+        const target = targets[slot];
+        try {
+          await uploadPhotoToStorage({
+            bucket: target.bucket,
+            path: target.path,
+            token: target.token,
+            file: picked[slot],
+          });
+          if (stale()) return;
+          setPhotos((prev) =>
+            prev.map((p) => (p.path === target.path ? { ...p, state: "done" } : p)),
+          );
+        } catch (e) {
+          if (stale()) return;
+          setPhotos((prev) =>
+            prev.map((p) =>
+              p.path === target.path ? { ...p, state: "error", error: (e as Error).message } : p,
+            ),
+          );
+        }
+      }
+      if (stale()) return;
+      setUpload({ state: "done", pct: 100 });
+    } catch (e) {
+      if (stale()) return;
+      setUpload({ state: "error", pct: 0, error: (e as Error).message });
+    }
+  }
+
+  /**
+   * Reorder the strip. The move itself is `movePhoto`; what matters HERE is
+   * that nothing else has to happen — the Storage paths do not move, so there
+   * is nothing to re-upload, and `post.media_url` is recomputed from the new
+   * position 0 at save time by `mirrorPath`.
+   */
+  function reorderPhoto(index: number, direction: -1 | 1) {
+    setPhotos((prev) => movePhoto(prev, index, direction));
+  }
+
+  /** Re-PUT one failed photo's bytes to its existing slot target. */
+  async function retryPhoto(index: number) {
+    const target = photos[index];
+    if (!target?.file || !target.bucket || !target.token) return;
+    setPhotos((prev) =>
+      prev.map((p) => (p.path === target.path ? { ...p, state: "uploading", error: undefined } : p)),
+    );
+    try {
+      await uploadPhotoToStorage({
+        bucket: target.bucket,
+        path: target.path,
+        token: target.token,
+        file: target.file,
+      });
+      setPhotos((prev) =>
+        prev.map((p) => (p.path === target.path ? { ...p, state: "done" } : p)),
+      );
+    } catch (e) {
+      setPhotos((prev) =>
+        prev.map((p) =>
+          p.path === target.path ? { ...p, state: "error", error: (e as Error).message } : p,
+        ),
+      );
+    }
+  }
+
+  function dropPhoto(index: number) {
+    setPhotos((prev) => {
+      const gone = prev[index];
+      const next = removePhotoAt(prev, index);
+      // Only after the list no longer references it, and only for a local blob.
+      if (gone) revokePhotoUrls([gone]);
+      return next;
+    });
+    setPhotoError(null);
+  }
+
   async function runAction(next: PublishMode) {
     if (isText) {
       // The body IS the post for a text type, so an empty one is blocked here
@@ -402,6 +758,7 @@ export default function ComposeScreen({
           sourceTrainerId: bylineId,
           title: title.trim() || undefined,
           body: caption,
+          ...labelPatch,
         });
         setDraft(current);
       }
@@ -411,6 +768,8 @@ export default function ComposeScreen({
         title: title.trim() || null,
         body: caption,
         sourceTrainerId: bylineId,
+        ...labelPatch,
+        ...mediaPatch,
       });
 
       if (next === "publish") {
@@ -468,6 +827,7 @@ export default function ComposeScreen({
         title: title.trim() || null,
         body: caption,
         sourceTrainerId: bylineId,
+        ...labelPatch,
       });
       setAction({ kind: "ok", message: "Changes saved." });
       router.push("/posts");
@@ -487,6 +847,7 @@ export default function ComposeScreen({
         title: title.trim() || null,
         body: caption,
         sourceTrainerId: bylineId,
+        ...labelPatch,
       });
       await publishPost(initial.id);
       setAction({ kind: "ok", message: "Post published." });
@@ -519,6 +880,7 @@ export default function ComposeScreen({
         title: title.trim() || null,
         body: caption,
         sourceTrainerId: bylineId,
+        ...labelPatch,
       });
       await schedulePost(initial.id, when.toISOString());
       setAction({
@@ -542,18 +904,69 @@ export default function ComposeScreen({
     // guarded on `mediaUrl && mediaType === …` — so no guard is re-added here,
     // and A1's files are not touched.
     mediaType: isText ? null : postType,
-    mediaUrl,
+    // For a multi-photo post the single-image slot shows DISPLAY POSITION 0 —
+    // the same photo `mirrorPath` will write into `post.media_url` — so the
+    // card the operator is looking at is the card a subscriber gets. Falls back
+    // to the plain `mediaUrl` for every other type and for a single photo.
+    mediaUrl:
+      (postType === "photo" && photos.find((p) => p.path === coverPath)?.previewUrl) || mediaUrl,
+    // ENG-748 (C1, found in review) — the carousel shows the photos that will
+    // actually BE THERE: `readyPhotos`, never the raw list.
+    //
+    // Built from `photos` it counted still-uploading and FAILED tiles, so two
+    // picks with one failure drew "1/2" and two dots for a post that persists a
+    // single post_media row — which ENG-740 says must render exactly like a
+    // one-photo post, with no dots and no pager. Worse, `PostPreview` uses
+    // `gallery[index]` in preference to `mediaUrl`, so the card opened on the
+    // FAILED photo while the strip's Cover badge and the Step 3 frame both
+    // correctly showed another one. Three surfaces, two answers — the same bug
+    // the Step 3 frame fix killed, left alive one component over.
+    //
+    // No `.filter(Boolean)`: a null previewUrl would silently reindex the
+    // gallery against the strip. `readyPhotos` all have one.
+    photos:
+      postType === "photo" && readyPhotos.length > 1
+        ? readyPhotos.map((p) => p.previewUrl ?? "")
+        : undefined,
     // Real race-day data off the picked horse — the badge used to be hardcoded
     // on every post, which made the preview claim a race that wasn't running.
     racesToday: horse?.racesToday ?? false,
+    /**
+     * ENG-769 — the picked label, so the card can draw the pill a member will
+     * actually see, and say so when a reel means they will not.
+     *
+     * DELIBERATE SURFACE WIDENING, called out on the ticket and in the PR:
+     * ENG-769 lists this file as do-not-touch, and its scope was written
+     * believing the preview already showed the label ("an operator can pick a
+     * label ... see it in the preview"). It never did — ENG-745 wired the
+     * picker to the BFF and to nothing else, so `previewData` had no `label`
+     * at all. Two of the ticket's acceptance criteria are unreachable without
+     * this one line, so it is here rather than silently unmet. Nothing else in
+     * this file is touched and no in-flight ticket claims it.
+     *
+     * "" is the picker's "No label" option; the card takes null for that.
+     */
+    label: label || null,
     dims,
     measure,
   };
 
-  const captionOver = caption.length > CAPTION_MAX;
   const primaryLabel =
     mode === "publish" ? "Publish now" : mode === "schedule" ? "Schedule" : "Save as draft";
-  const mediaLabel = isText ? "None — text post" : file || mediaUrl ? `1 ${postType}` : "None yet";
+  // Counts what will be PUBLISHED (uploaded), not what was picked — and says so
+  // when they differ, so a failed upload is visible in the rail rather than
+  // inflating the count (ENG-748 C1).
+  const mediaLabel = isText
+    ? "None — text post"
+    : photos.length > 0
+      ? readyPhotos.length === photos.length
+        ? readyPhotos.length === 1
+          ? "1 photo"
+          : `${readyPhotos.length} photos`
+        : `${readyPhotos.length} of ${photos.length} photos`
+      : file || mediaUrl
+        ? `1 ${postType}`
+        : "None yet";
 
   return (
     <>
@@ -667,8 +1080,15 @@ export default function ComposeScreen({
                           >
                             <span className={styles.resultThumb}>
                               {h.photoUrl ? (
+                                /* Lazy since ENG-745 dropped the slice(0, 8):
+                                   the list is the whole roster now, but only
+                                   ~4 rows are visible in the 260px scroll box,
+                                   so eager loading would fire one signed-URL
+                                   request per horse the moment the picker
+                                   opens. The directive below must stay on the
+                                   line directly above the <img>. */
                                 // eslint-disable-next-line @next/next/no-img-element -- remote horse thumb, fixed box
-                                <img src={h.photoUrl} alt="" />
+                                <img src={h.photoUrl} alt="" loading="lazy" />
                               ) : null}
                             </span>
                             <span>
@@ -790,10 +1210,19 @@ export default function ComposeScreen({
                 className={styles.hiddenFile}
                 type="file"
                 accept={isUploadType(postType) ? ACCEPT_BY_TYPE[postType] : undefined}
+                // ENG-748 — multi-select for PHOTO only, and not in edit mode
+                // (media is read-only there). Video is a single Mux asset and
+                // voice a single Storage object, so neither may offer it.
+                multiple={postType === "photo" && !isEdit}
                 data-testid="media-input"
                 onChange={(e) => {
-                  const f = e.target.files?.[0];
-                  if (f) void onPickFile(f);
+                  const picked = Array.from(e.target.files ?? []);
+                  if (picked.length === 0) return;
+                  // A photo post always goes through the set path, even for one
+                  // file — one code path, so the single-photo case cannot drift
+                  // away from the multi one.
+                  if (postType === "photo" && !isEdit) void onPickPhotos(picked);
+                  else void onPickFile(picked[0]);
                 }}
               />
 
@@ -829,9 +1258,10 @@ export default function ComposeScreen({
                   <div
                     className={`${styles.preview} ${postType === "voice" ? styles.previewAudio : ""}`}
                   >
-                    {postType === "photo" && mediaUrl ? (
+                    {postType === "photo" && (coverPhoto?.previewUrl ?? mediaUrl) ? (
+                      // The COVER, not the first file picked — see coverPhoto.
                       // eslint-disable-next-line @next/next/no-img-element -- local object URL preview
-                      <img src={mediaUrl} alt="" />
+                      <img src={coverPhoto?.previewUrl ?? mediaUrl!} alt="" />
                     ) : postType === "video" && mediaUrl ? (
                       // Playable local preview of the picked file (object URL);
                       // native controls replace the decorative play glyph.
@@ -849,7 +1279,11 @@ export default function ComposeScreen({
                   ) : null}
                   <div className={styles.uploadTools}>
                     <span className={styles.uploadMeta}>
-                      {file.name} · {humanSize(file.size)}
+                      {/* Names the cover for a photo set, so the frame and its
+                          caption cannot describe two different photos. */}
+                      {coverPhoto?.name ?? file.name} ·{" "}
+                      {humanSize(coverPhoto?.size ?? file.size)}
+                      {photos.length > 1 ? ` · cover of ${photos.length}` : ""}
                       {"  "}
                       {upload.state === "creating" || upload.state === "uploading" ? (
                         <span className={styles.uploadStatus}> · uploading{upload.state === "uploading" && upload.pct ? ` ${upload.pct}%` : "…"}</span>
@@ -861,7 +1295,9 @@ export default function ComposeScreen({
                     </span>
                     <span className={styles.uploadActions}>
                       <button type="button" className={styles.uploadBtn} onClick={() => fileInputRef.current?.click()}>
-                        Replace
+                        {/* A photo pick REPLACES the whole set, so say so once
+                            there is more than one to lose. */}
+                        {photos.length > 1 ? "Replace all" : "Replace"}
                       </button>
                       <button type="button" className={styles.uploadBtn} onClick={resetMedia}>
                         Remove
@@ -900,6 +1336,124 @@ export default function ComposeScreen({
                   ) : null}
                 </div>
               )}
+              {/* ENG-748 — the ordering strip. Present only for a photo post
+                  that actually has photos, and only outside edit mode (media is
+                  read-only there). Deliberately rendered for a ONE-photo set
+                  too: the tile is where "Add more" and the upload state live,
+                  and hiding it until a second photo appears would mean the
+                  single-photo operator never sees either.
+
+                  Up/down buttons, not drag — resolved open question, v1. */}
+              {!isEdit && postType === "photo" && photos.length > 0 ? (
+                <>
+                  <div className={styles.photoStrip} data-testid="photo-strip">
+                    {photos.map((p, i) => (
+                      <div
+                        key={p.id}
+                        className={`${styles.photoTile} ${p.state === "error" ? styles.photoTileBad : ""}`}
+                        data-testid={`photo-tile-${i}`}
+                        // A stable per-photo identity that exists even when
+                        // there is no object URL to render an <img> from —
+                        // jsdom has no URL.createObjectURL, so a test that reads
+                        // display order off `img src` compares empty strings and
+                        // proves nothing (ENG-748 C2).
+                        data-photo-path={p.path}
+                      >
+                        <div className={styles.photoThumbWrap}>
+                          {p.previewUrl ? (
+                            // eslint-disable-next-line @next/next/no-img-element -- local object URL
+                            <img className={styles.photoThumb} src={p.previewUrl} alt="" />
+                          ) : null}
+                          {/* 1-based: the operator counts photos from one, and
+                              this is the number they reorder by. sort_order is
+                              0-based on the wire and is never shown. */}
+                          <span className={styles.photoPos} data-testid={`photo-pos-${i}`}>
+                            {i + 1}
+                          </span>
+                          {/* Position 0 is what post.media_url mirrors — the
+                              image the feed, the card and every existing client
+                              shows for this post. Naming it "Cover" is what
+                              makes the reorder's consequence visible. */}
+                          {p.path === coverPath ? (
+                            <span className={styles.photoCover} data-testid="photo-cover">
+                              Cover
+                            </span>
+                          ) : null}
+                        </div>
+                        <div className={styles.photoTools}>
+                          <button
+                            type="button"
+                            className={styles.photoBtn}
+                            onClick={() => reorderPhoto(i, -1)}
+                            disabled={i === 0}
+                            aria-label={`Move photo ${i + 1} earlier`}
+                            data-testid={`photo-up-${i}`}
+                          >
+                            ↑
+                          </button>
+                          <button
+                            type="button"
+                            className={styles.photoBtn}
+                            onClick={() => reorderPhoto(i, 1)}
+                            disabled={i === photos.length - 1}
+                            aria-label={`Move photo ${i + 1} later`}
+                            data-testid={`photo-down-${i}`}
+                          >
+                            ↓
+                          </button>
+                          <button
+                            type="button"
+                            className={`${styles.photoBtn} ${styles.photoBtnKill}`}
+                            onClick={() => dropPhoto(i)}
+                            aria-label={`Remove photo ${i + 1}`}
+                            data-testid={`photo-remove-${i}`}
+                          >
+                            ×
+                          </button>
+                        </div>
+                        <div
+                          className={`${styles.photoState} ${p.state === "error" ? styles.photoStateBad : ""}`}
+                          data-testid={`photo-state-${i}`}
+                          title={p.error ?? p.name}
+                        >
+                          {p.state === "uploading" ? (
+                            "uploading…"
+                          ) : p.state === "done" ? (
+                            humanSize(p.size)
+                          ) : (
+                            <button
+                              type="button"
+                              className={styles.photoBtn}
+                              onClick={() => void retryPhoto(i)}
+                              data-testid={`photo-retry-${i}`}
+                            >
+                              failed — retry
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                  <div className={styles.help} data-testid="photo-strip-help">
+                    {readyPhotos.length === photos.length
+                      ? `${photos.length} of ${MAX_PHOTOS} photos.`
+                      : `${readyPhotos.length} of ${photos.length} uploaded (max ${MAX_PHOTOS}).`}{" "}
+                    The first uploaded photo is the cover — it is what the feed and the member card
+                    show.
+                  </div>
+                </>
+              ) : null}
+
+              {photoError ? (
+                <div
+                  className={`${styles.help} ${styles.uploadError}`}
+                  data-testid="photo-error"
+                  role="alert"
+                >
+                  {photoError}
+                </div>
+              ) : null}
+
               {/* The chosen type vs. what was actually picked. Named on both
                   sides so the operator can see which half to change. */}
               {typeError ? (
@@ -961,20 +1515,59 @@ export default function ComposeScreen({
                 style={{ marginBottom: 14 }}
               />
 
+              {/*
+                ENG-745 — the editorial category behind the green pill on the
+                member card. A <select> rather than a row of 13 pills: at 13
+                presets a pill row wraps to three lines and swamps the two
+                fields it sits between, and this matches the Trainer byline
+                control directly above it, which is the metadata section's
+                established language in the mockup.
+
+                "No label" is a real, selectable option, not a disabled
+                placeholder — clearing a category is something an operator must
+                be able to do, and it is the state every pre-2026-08-19 post is
+                already in.
+              */}
+              <label className={styles.label} htmlFor="post-label">
+                Label
+              </label>
+              <select
+                id="post-label"
+                className={styles.select}
+                value={label}
+                data-testid="label-select"
+                onChange={(e) => setLabel(e.target.value)}
+                style={{ marginBottom: 14 }}
+              >
+                <option value="">No label</option>
+                {unknownLabel ? (
+                  // Not one of this build's presets — shown so the operator can
+                  // see what the post actually carries and decide, instead of
+                  // the control quietly claiming it has none.
+                  <option value={unknownLabel}>{unknownLabel} (not in this version)</option>
+                ) : null}
+                {POST_LABEL_PRESETS.map((preset) => (
+                  <option key={preset} value={preset}>
+                    {preset}
+                  </option>
+                ))}
+              </select>
+
               <div className={styles.captionRow}>
                 <label className={styles.label} htmlFor="caption">
                   {isText ? "Body" : "Caption"}
                   {isText ? <span aria-hidden="true"> *</span> : null}
                 </label>
-                <span className={`${styles.counter} ${captionOver ? styles.counterOver : ""}`}>
-                  {caption.length}/{CAPTION_MAX}
+                {/* Passive count, no threshold and no red state — there is no
+                    limit left to be over (ENG-745). */}
+                <span className={styles.counter} data-testid="caption-counter">
+                  {caption.length} characters
                 </span>
               </div>
               <textarea
                 id="caption"
                 className={styles.textarea}
                 value={caption}
-                maxLength={CAPTION_MAX}
                 required={isText}
                 aria-required={isText || undefined}
                 data-testid="caption"
@@ -987,8 +1580,8 @@ export default function ComposeScreen({
               />
               <div className={styles.help}>
                 {isText
-                  ? `Required — the title and this body are the whole post. Keep it under ${CAPTION_MAX} characters; sounds like the trainer would say it.`
-                  : `Keep it under ${CAPTION_MAX} characters; sounds like the trainer would say it.`}
+                  ? "Required — the title and this body are the whole post. Write it so it sounds like the trainer would say it."
+                  : "Sounds like the trainer would say it. The feed shows the first couple of lines, so lead with what matters."}
               </div>
             </section>
           </div>

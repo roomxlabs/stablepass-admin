@@ -637,7 +637,10 @@ both `origin/main` and `origin/feature/round6-v1`.
 **Cause:** the amendment (commit `daee500`, "allow rx implement-loop workers to commit on their own
 ticket branch") lives only on `chore/claude-md-loop-worker-commits` — **PR #38, still OPEN** since
 18 Aug. Project memory records the rule as already amended; it is not.
-**Do this:** merge PR #38. Until then a worker must decide for itself, and the honest reading is
+**RESOLVED 24 Aug 2026 (ENG-769):** PR #38 is MERGED and the carve-out IS on `main` and on
+`feature/round6-v1` — a loop worker may commit on its own ticket branch in its own worktree. The
+rest of this entry is kept for the reasoning only; the decision no longer needs making.
+**Do this (historical):** merge PR #38. Until then a worker must decide for itself, and the honest reading is
 that the carve-out's own text and rationale cover an isolated worktree opening a reviewable PR
 ("without this carve-out a loop worker finishes its ticket, cannot ship it, and leaves the work
 staged and uncommitted, which is more fragile than a commit"). Say so explicitly in the PR when
@@ -962,3 +965,43 @@ out of the LAYOUT but not out of the inherited cascade, so the ambient value sti
 **Do this:** a component mounted on more than one screen must state its own `text-align` and `color`
 rather than inheriting them. Caught by the screenshots, not by any test — worth a glance at both
 screens' evidence whenever a component is shared.
+
+## A cross-repo parity guard must fail LOUD when it cannot see (ENG-769)
+**Symptom:** a guard that reads a sibling repo's source and asserts admin matches it can pass on
+ZERO assertions — the anchor moved, the regex found nothing, and the test still went green. Three
+separate ways this happened while building one guard, none caught by the suite:
+1. `git -C <dir>` resolves against the repository that CONTAINS `<dir>`, not `<dir>` itself. A
+   `stablepass-mobile` folder nested inside another checkout had its refs read from the OUTER repo,
+   so the guard asked admin's own history for a mobile file.
+2. Blanking comments to spaces (to stop matching rules discussed in prose) destroyed the newlines,
+   which fused lines together and broke every indentation-anchored block lookup.
+3. `styles.labelPill` also matches `styles.labelPillText`; `styles.raceBadge` also matches
+   `styles.raceBadgeGold`. The SIBLING token stays inside the block when the thing itself moves out,
+   so a containment assertion stayed green through exactly the divergence it existed to catch.
+**Do this:** (a) verify `rev-parse --show-toplevel` equals the directory before trusting refs;
+(b) preserve newlines when blanking; (c) anchor identifiers with `(?![A-Za-z])` AND assert the
+occurrence COUNT, since position alone only proves *a* copy is in the right place; (d) make every
+"anchor not found" path THROW with a "the guard has gone blind" message. Then MUTATION-CHECK it:
+change each side, confirm red, restore. All three defects above were found by mutation, not review
+of the code, and the guard was fully green before each fix.
+
+## The sibling mobile checkout is on `main`, which is NOT the round-6 contract (ENG-769)
+**Symptom:** a parity test reading `../stablepass-mobile/src/components/post-card.tsx` from the
+WORKING TREE mirrors whatever branch that shared checkout happens to sit on — currently `main`,
+which is still Round 5 and has no reel label pill at all. The test verifies nothing about the rule
+it was written for, silently.
+**Do this:** read the contract from a REF, first-existing-wins and deterministic
+(`origin/feature/round6-v1` then `origin/main`), never "first ref that makes it pass". Note the
+line numbers a ticket cites are the giveaway: ENG-769 cited `post-card.tsx:348/648/862`, which
+match round6-v1 exactly and are nowhere near `main`'s.
+
+## `.previewCompact .postCard` out-specifies any single-class card modifier (ENG-769)
+**Symptom:** `.postCardReel { padding-top: 0 }` had no effect in the sidebar rail — the reel card
+kept a 14px white band — while the modal was correct. `compose-css.test.ts` was green because
+`rule(".postCardReel")` proves the DECLARATION exists, not that it WINS.
+**Cause:** `.previewCompact .postCard` is specificity (0,2,0); a single-class modifier is (0,1,0),
+so the compact rule wins on the same element regardless of source order. `rule()` deliberately
+ignores descendant selectors when checking for duplicates, so it is structurally blind to this.
+**Do this:** any new `.postCard*` modifier needs a `.previewCompact` twin AND its own pin. And note
+the rail is the surface the operator actually composes against — the modal is opt-in, so a
+modal-only screenshot proves the less important half.

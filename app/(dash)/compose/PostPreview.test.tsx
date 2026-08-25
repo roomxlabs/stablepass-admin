@@ -30,12 +30,20 @@ function renderPreview(over: Partial<PostPreviewData> = {}) {
 
 /** Mirrors ComposeScreen's ownership of the measurement, so the test drives
  *  the real loop: element reports its size -> state -> re-render. */
-function MeasuringHarness({ mediaUrl, mediaType }: { mediaUrl: string; mediaType: "video" | "photo" }) {
+function MeasuringHarness({
+  mediaUrl,
+  mediaType,
+  // ENG-769 — anything else the case under test needs on the card (a picked
+  // label, say). Spread LAST so a case can override the measured defaults.
+  ...rest
+}: { mediaUrl: string; mediaType: "video" | "photo" } & Partial<
+  Omit<PostPreviewData, "mediaUrl" | "mediaType">
+>) {
   const [dims, setDims] = useState<MediaDimensions>(null);
   const [measure, setMeasure] = useState<MeasureState>("measuring");
   return (
     <PostPreview
-      data={{ ...BASE, mediaUrl, mediaType, dims, measure }}
+      data={{ ...BASE, mediaUrl, mediaType, dims, measure, ...rest }}
       onMeasure={(d) => {
         setMeasure("done");
         setDims(d);
@@ -482,5 +490,150 @@ describe("ENG-748 · the preview carousel", () => {
     expect(box.style.aspectRatio).toBe("1.6");
     fireEvent.click(screen.getByTestId("preview-dot-1"));
     expect(screen.getByTestId("preview-media").style.aspectRatio).toBe("1.6");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ENG-769 — THE CHROME MATRIX
+//
+// The preview already drew the right BOX for a reel (ENG-747) while the card
+// around it stayed a classic card: white header row, and — once ENG-745 landed
+// a label picker — a label pill that no member on a reel will ever see. These
+// pin the furniture, not just the shape.
+//
+// `data-chrome` is the assertion surface: Vitest stubs CSS modules, so
+// `styles.postCardReel` is the string "postCardReel" and getComputedStyle sees
+// nothing. See compose-css.test.ts's header for the same reasoning.
+// ---------------------------------------------------------------------------
+
+/** Render at a measured intrinsic size, the way the real screen arrives there. */
+function renderMeasured(
+  width: number,
+  height: number,
+  mediaType: "video" | "photo",
+  over: Partial<Omit<PostPreviewData, "mediaUrl" | "mediaType">> = {},
+) {
+  render(
+    <MeasuringHarness
+      mediaUrl={mediaType === "photo" ? "blob:photo" : "blob:video"}
+      mediaType={mediaType}
+      {...over}
+    />,
+  );
+  if (mediaType === "photo") {
+    const img = screen.getByTestId("preview-img") as HTMLImageElement;
+    Object.defineProperty(img, "naturalWidth", { value: width, configurable: true });
+    Object.defineProperty(img, "naturalHeight", { value: height, configurable: true });
+    fireEvent.load(img);
+  } else {
+    const video = screen.getByTestId("preview-video") as HTMLVideoElement;
+    Object.defineProperty(video, "videoWidth", { value: width, configurable: true });
+    Object.defineProperty(video, "videoHeight", { value: height, configurable: true });
+    fireEvent.loadedMetadata(video);
+  }
+  return screen.getByTestId("post-preview");
+}
+
+describe("reel chrome, across the whole portrait range (ENG-769)", () => {
+  const CASES = [
+    { name: "9:16 video — the canonical reel", w: 1080, h: 1920, type: "video" as const, reel: true },
+    { name: "0.9 video — the case that motivated the ticket", w: 900, h: 1000, type: "video" as const, reel: true },
+    { name: "0.99 video — still portrait, still a reel", w: 990, h: 1000, type: "video" as const, reel: true },
+    { name: "1.0 square video — NOT a reel, `< 1` is strict", w: 1000, h: 1000, type: "video" as const, reel: false },
+    { name: "1.4 landscape video", w: 1400, h: 1000, type: "video" as const, reel: false },
+    { name: "portrait photo — Instagram keeps it a classic card", w: 1080, h: 1920, type: "photo" as const, reel: false },
+  ];
+
+  for (const c of CASES) {
+    it(`${c.name} -> ${c.reel ? "REEL" : "CLASSIC"} chrome`, () => {
+      // racesToday TRUE on purpose: BASE has it false, so asserting the badge
+      // is absent on a reel proved nothing — it was absent in every case and
+      // would have stayed green with the badge moved out of the header and
+      // rendered unconditionally. Found in review.
+      const card = renderMeasured(c.w, c.h, c.type, { label: "Trackwork", racesToday: true });
+
+      expect(card.dataset.chrome).toBe(c.reel ? "reel" : "classic");
+
+      if (c.reel) {
+        // The white header row stands down, taking the label pill and the race
+        // badge with it — exactly as the member card's `{isReel ? null : ...}`
+        // suppresses the whole head.
+        expect(screen.queryByTestId("preview-label")).toBeNull();
+        expect(screen.queryByTestId("preview-race-badge")).toBeNull();
+        // ...and the identity is overlaid on the frame instead.
+        expect(screen.getByTestId("preview-reel-head")).toBeTruthy();
+      } else {
+        expect(screen.getByTestId("preview-label").textContent).toBe("Trackwork");
+        expect(screen.queryByTestId("preview-reel-head")).toBeNull();
+        // The positive half: the badge DOES render on a classic card, which is
+        // what makes its absence on a reel meaningful.
+        expect(screen.getByTestId("preview-race-badge").textContent).toBe("Race day");
+      }
+    });
+  }
+
+  it("tells the operator WHY the label vanished, and only on a reel", () => {
+    // The acceptance criterion this ticket turns on: a label picked for a
+    // portrait video reaches no member, and until now nothing said so.
+    renderMeasured(1080, 1920, "video", { label: "Trackwork" });
+    const note = screen.getByTestId("preview-reel-label-note");
+    expect(note.textContent).toContain("Trackwork");
+    expect(note.textContent).toContain("will not appear");
+    cleanup();
+
+    // No label picked: nothing to warn about, so no note.
+    renderMeasured(1080, 1920, "video", { label: null });
+    expect(screen.queryByTestId("preview-reel-label-note")).toBeNull();
+    cleanup();
+
+    // Label picked on a CLASSIC card: it renders, so again no note.
+    renderMeasured(1000, 1000, "video", { label: "Trackwork" });
+    expect(screen.queryByTestId("preview-reel-label-note")).toBeNull();
+  });
+
+  it("follows the operator when they swap a square video for a portrait one", () => {
+    // The ticket's own edge case: pick a label, then change the media. The
+    // preview has to stop promising the pill, not keep a stale card.
+    const { rerender } = render(
+      <MeasuringHarness mediaUrl="blob:video" mediaType="video" label="Trackwork" />,
+    );
+    const video = screen.getByTestId("preview-video") as HTMLVideoElement;
+    Object.defineProperty(video, "videoWidth", { value: 1000, configurable: true });
+    Object.defineProperty(video, "videoHeight", { value: 1000, configurable: true });
+    fireEvent.loadedMetadata(video);
+    expect(screen.getByTestId("post-preview").dataset.chrome).toBe("classic");
+    expect(screen.getByTestId("preview-label")).toBeTruthy();
+
+    Object.defineProperty(video, "videoWidth", { value: 1080, configurable: true });
+    Object.defineProperty(video, "videoHeight", { value: 1920, configurable: true });
+    fireEvent.loadedMetadata(video);
+    rerender(<MeasuringHarness mediaUrl="blob:video" mediaType="video" label="Trackwork" />);
+
+    expect(screen.getByTestId("post-preview").dataset.chrome).toBe("reel");
+    expect(screen.queryByTestId("preview-label")).toBeNull();
+    expect(screen.getByTestId("preview-reel-label-note")).toBeTruthy();
+  });
+
+  it("never reaches reel chrome on a post with no media box", () => {
+    // Text has no box at all, so the reel branch must be unreachable — the box
+    // must not depend on an upstream gate to stay honest.
+    for (const type of ["text", null] as const) {
+      render(<PostPreview data={{ ...BASE, mediaType: type, dims: { width: 1080, height: 1920 }, measure: "done", label: "Trackwork" }} />);
+      const card = screen.getByTestId("post-preview");
+      expect(card.dataset.chrome).toBe("classic");
+      expect(screen.queryByTestId("preview-reel-head")).toBeNull();
+      cleanup();
+    }
+  });
+
+  it("keeps the caption and reaction bar BELOW the media on a reel", () => {
+    // An in-feed reel is not the fullscreen player: mobile deliberately does
+    // not overlay these. Order in the DOM is the assertion.
+    const card = renderMeasured(1080, 1920, "video");
+    const kids = Array.from(card.children).map((n) => n.getAttribute("data-testid"));
+    expect(kids).toContain("preview-reactions");
+    expect(kids).toContain("preview-caption");
+    expect(kids.indexOf("preview-media")).toBeLessThan(kids.indexOf("preview-reactions"));
+    expect(kids.indexOf("preview-reactions")).toBeLessThan(kids.indexOf("preview-caption"));
   });
 });

@@ -1,0 +1,153 @@
+/* ENG-749 — crop step styles.
+ *
+ * Scoped to a module rather than added to globals.css: this component mounts on
+ * two screens that other tickets own concurrently, and globals.css is a
+ * cross-ticket collision hotspot. Tokens come from globals.css `:root`
+ * (--brand-green #285D50, --cream #FAF7F2, --line #E2DED6, --muted #6B6963);
+ * the backdrop matches the compose preview modal so the two read as one app. */
+
+.root {
+  position: fixed;
+  inset: 0;
+  z-index: 120;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 32px;
+}
+
+.backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(18, 26, 24, 0.88);
+  backdrop-filter: blur(8px);
+}
+
+.panel {
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  max-width: 420px;
+  max-height: 90vh;
+  overflow-y: auto;
+  background: var(--white);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  padding: 24px;
+  font-family: var(--font-sans);
+  /* Both explicit because this dialog mounts inside two different photo
+     blocks. HorseForm's `.upload-zone` centres its text, TrainerForm's does
+     not, so without this the SAME component rendered centred on one screen and
+     left-aligned on the other. `position: fixed` escapes the layout but not the
+     inherited cascade. */
+  text-align: left;
+  color: var(--ink);
+}
+
+.title {
+  font-family: var(--font-serif);
+  font-size: 24px;
+  font-weight: 600;
+  color: var(--ink);
+  margin: 0;
+}
+
+.sub {
+  font-size: 13px;
+  color: var(--muted);
+  margin-top: 4px;
+  line-height: 1.5;
+}
+
+/* The square IS the stored image. The circle drawn over it is what the avatar
+   surfaces actually render, so the admin frames against the real shape rather
+   than guessing which corners survive. */
+.viewport {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  margin: 18px 0 14px;
+  overflow: hidden;
+  border-radius: var(--radius-md);
+  background: var(--cream-dark);
+  touch-action: none;
+  cursor: grab;
+  user-select: none;
+}
+
+.viewport:active {
+  cursor: grabbing;
+}
+
+.image {
+  position: absolute;
+  transform-origin: top left;
+  pointer-events: none;
+  -webkit-user-drag: none;
+  max-width: none;
+}
+
+.circleGuide {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  /* Dims the square's corners: everything outside the circle is stored but is
+     not shown by the circular avatar. Clipped by the viewport's overflow. */
+  box-shadow: 0 0 0 9999px rgba(18, 26, 24, 0.5);
+  border: 2px solid rgba(250, 247, 242, 0.85);
+  pointer-events: none;
+}
+
+.zoomRow {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 6px;
+}
+
+.zoomLabel {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.zoom {
+  flex: 1;
+  accent-color: var(--brand-green);
+  cursor: pointer;
+}
+
+.meta {
+  font-size: 12px;
+  color: var(--muted-light);
+  margin-bottom: 18px;
+}
+
+.actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+/* Pushed left so "Use as-is" reads as the alternative route it is, not as a
+   third option queued behind the primary action. */
+.asIs {
+  margin-right: auto;
+}
+
+.loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  aspect-ratio: 1 / 1;
+  margin: 18px 0;
+  border-radius: var(--radius-md);
+  background: var(--cream-dark);
+  color: var(--muted);
+  font-size: 13px;
+}

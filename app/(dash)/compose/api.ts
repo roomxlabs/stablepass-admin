@@ -41,6 +41,12 @@ export async function createDraft(input: {
    * what keeps every pre-existing caller byte-identical.
    */
   photoCount?: number;
+  /**
+   * ENG-824 — seconds into the video for the Mux poster bake. Snake_case on
+   * the wire to match the column. Omit when unset (mirror `labelPatch`); only
+   * a video post ever sends it.
+   */
+  poster_time_s?: number | null;
 }): Promise<CreateDraftResponse> {
   const res = await fetch("/api/admin/posts", {
     method: "POST",
@@ -74,6 +80,13 @@ export async function patchPost(
      * is what every non-photo save does.
      */
     media?: string[];
+    /**
+     * ENG-824 — poster frame time in seconds. Omit to leave the column alone;
+     * a number sets it. Create usually races ahead of the scrubber, so the
+     * publish PATCH (and the immediate patch on "Use this frame") is how a
+     * picked time reaches the row before Mux `asset.ready`.
+     */
+    poster_time_s?: number | null;
   },
 ): Promise<void> {
   const res = await fetch(`/api/admin/posts/${id}`, {

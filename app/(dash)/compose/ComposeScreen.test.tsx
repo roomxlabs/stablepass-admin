@@ -1675,4 +1675,196 @@ describe("ENG-748 · multi-photo compose", () => {
       expect(api.uploadPhotoToStorage).not.toHaveBeenCalled();
     });
   });
+
+  // --- ENG-824: compose poster scrubber --------------------------------------
+
+  describe("poster scrubber (ENG-824)", () => {
+    beforeEach(() => {
+      // jsdom has no createObjectURL; without it the local preview URL is null
+      // and the scrubber never mounts (gotcha: install AND restore per describe).
+      Object.defineProperty(URL, "createObjectURL", {
+        configurable: true,
+        writable: true,
+        value: vi.fn(() => "blob:http://localhost/eng-824"),
+      });
+      Object.defineProperty(URL, "revokeObjectURL", {
+        configurable: true,
+        writable: true,
+        value: vi.fn(),
+      });
+    });
+
+    afterEach(() => {
+      // Restore so later suites do not inherit a leaked stub (ENG-748 gotcha).
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      delete (URL as any).createObjectURL;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      delete (URL as any).revokeObjectURL;
+    });
+
+    function pickVideo() {
+      const file = new File([new Uint8Array([9, 9, 9])], "gallop.mp4", { type: "video/mp4" });
+      fireEvent.change(screen.getByTestId("media-input"), { target: { files: [file] } });
+      return file;
+    }
+
+    function readyScrubber(currentTime = 2.5) {
+      const video = screen.getByTestId("poster-scrubber-video") as HTMLVideoElement;
+      Object.defineProperty(video, "duration", { configurable: true, value: 10 });
+      Object.defineProperty(video, "currentTime", {
+        configurable: true,
+        get: () => currentTime,
+        set: vi.fn(),
+      });
+      fireEvent.loadedMetadata(video);
+      return video;
+    }
+
+    it("a picked video shows the scrubber; Use this frame lands poster_time_s on the publish PATCH", async () => {
+      api.createDraft.mockResolvedValue({
+        id: "v-poster",
+        status: "draft",
+        type: "video",
+        watermarked: false,
+        uploadUrl: "https://storage.mux.com/one-time-upload",
+        muxUploadId: "mux-poster",
+      });
+      api.uploadVideoToMux.mockResolvedValue(undefined);
+      api.patchPost.mockResolvedValue(undefined);
+      api.publishPost.mockResolvedValue(undefined);
+
+      renderScreen();
+      pickHorse("horse-opt-h1");
+      pickVideo();
+
+      await waitFor(() => expect(api.createDraft).toHaveBeenCalledTimes(1));
+      // createDraft runs on pick, before the operator can scrub — so no time yet.
+      expect(api.createDraft).toHaveBeenCalledWith({
+        horseId: "h1",
+        type: "video",
+        sourceTrainerId: "t1",
+      });
+      await screen.findByTestId("upload-done");
+
+      expect(screen.getByTestId("poster-scrubber")).toBeTruthy();
+      readyScrubber(3.5);
+      fireEvent.click(screen.getByTestId("poster-use-frame"));
+
+      // Persist as soon as a frame is chosen so the Mux webhook can bake it
+      // before publish (asset.ready can race the operator).
+      await waitFor(() =>
+        expect(api.patchPost).toHaveBeenCalledWith("v-poster", { poster_time_s: 3.5 }),
+      );
+
+      fireEvent.change(screen.getByTestId("caption"), { target: { value: "Frame picked." } });
+      fireEvent.click(screen.getByTestId("primary-action"));
+
+      await waitFor(() => expect(api.publishPost).toHaveBeenCalledWith("v-poster"));
+      expect(api.patchPost).toHaveBeenCalledWith(
+        "v-poster",
+        expect.objectContaining({
+          body: "Frame picked.",
+          poster_time_s: 3.5,
+        }),
+      );
+    });
+
+    it("omits poster_time_s from the publish PATCH when no frame was picked", async () => {
+      api.createDraft.mockResolvedValue({
+        id: "v-nof",
+        status: "draft",
+        type: "video",
+        watermarked: false,
+        uploadUrl: "https://storage.mux.com/one-time-upload",
+        muxUploadId: "mux-nof",
+      });
+      api.uploadVideoToMux.mockResolvedValue(undefined);
+      api.patchPost.mockResolvedValue(undefined);
+      api.publishPost.mockResolvedValue(undefined);
+
+      renderScreen();
+      pickHorse("horse-opt-h1");
+      pickVideo();
+      await screen.findByTestId("upload-done");
+
+      fireEvent.click(screen.getByTestId("primary-action"));
+      await waitFor(() => expect(api.publishPost).toHaveBeenCalledWith("v-nof"));
+      const patch = api.patchPost.mock.calls.find(
+        (c: unknown[]) => c[0] === "v-nof" && (c[1] as { body?: string }).body !== undefined,
+      );
+      expect(patch?.[1]).not.toHaveProperty("poster_time_s");
+    });
+
+    it("photo, text and voice posts never show the scrubber", async () => {
+      api.createDraft.mockResolvedValue({
+        id: "p1",
+        status: "draft",
+        type: "photo",
+        watermarked: false,
+        uploadUrl: "https://storage.example/signed",
+        path: "p1/original",
+        token: "tok",
+        bucket: "post-media",
+        uploads: [
+          {
+            sortOrder: 0,
+            path: "p1/original",
+            token: "tok",
+            uploadUrl: "https://storage.example/signed",
+            bucket: "post-media",
+          },
+        ],
+      });
+      api.uploadPhotoToStorage.mockResolvedValue(undefined);
+      api.discardDraft.mockResolvedValue(undefined);
+
+      renderScreen();
+      pickHorse("horse-opt-h1");
+      selectType("photo");
+      fireEvent.change(screen.getByTestId("media-input"), {
+        target: {
+          files: [new File([new Uint8Array([1])], "a.jpg", { type: "image/jpeg" })],
+        },
+      });
+      await screen.findByTestId("upload-done");
+      expect(screen.queryByTestId("poster-scrubber")).toBeNull();
+
+      selectType("voice");
+      expect(screen.queryByTestId("poster-scrubber")).toBeNull();
+
+      selectType("text");
+      expect(screen.queryByTestId("poster-scrubber")).toBeNull();
+      expect(screen.queryByTestId("media-input")).toBeNull();
+    });
+
+    it("an undecodable video shows unavailable and still lets the operator publish", async () => {
+      api.createDraft.mockResolvedValue({
+        id: "v-bad",
+        status: "draft",
+        type: "video",
+        watermarked: false,
+        uploadUrl: "https://storage.mux.com/one-time-upload",
+        muxUploadId: "mux-bad",
+      });
+      api.uploadVideoToMux.mockResolvedValue(undefined);
+      api.patchPost.mockResolvedValue(undefined);
+      api.publishPost.mockResolvedValue(undefined);
+
+      renderScreen();
+      pickHorse("horse-opt-h1");
+      pickVideo();
+      await screen.findByTestId("upload-done");
+
+      fireEvent.error(screen.getByTestId("poster-scrubber-video"));
+      expect(screen.getByTestId("poster-scrubber-unavailable")).toBeTruthy();
+      expect(screen.queryByTestId("poster-use-frame")).toBeNull();
+
+      fireEvent.click(screen.getByTestId("primary-action"));
+      await waitFor(() => expect(api.publishPost).toHaveBeenCalledWith("v-bad"));
+      const patch = api.patchPost.mock.calls.find(
+        (c: unknown[]) => c[0] === "v-bad" && (c[1] as { body?: string }).body !== undefined,
+      );
+      expect(patch?.[1]).not.toHaveProperty("poster_time_s");
+    });
+  });
 });

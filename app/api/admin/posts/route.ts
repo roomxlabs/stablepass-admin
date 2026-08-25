@@ -91,7 +91,8 @@ export async function POST(req: Request) {
   const { sb } = g;
 
   const payload = await req.json().catch(() => ({}));
-  const { horseId, type, title, body, sourceTrainerId, expiresAt, label, photoCount } = payload ?? {};
+  const { horseId, type, title, body, sourceTrainerId, expiresAt, label, photoCount, poster_time_s } =
+    payload ?? {};
 
   // A horse is required for EVERY type, text included: post.horse_id is NOT
   // NULL and it is what the member app renders in the byline.
@@ -145,6 +146,17 @@ export async function POST(req: Request) {
   const { data: horse } = await sb.from("horse").select("id").eq("id", horseId).maybeSingle();
   if (!horse) return fail("horse_not_found", "Horse not found.", 404);
 
+  // ENG-824 — optional poster frame time (seconds). Video only; ignore for
+  // other types so a mis-sent key cannot land on a photo/text/voice row.
+  // Absent / null → leave column null (Mux default bake). Non-finite rejected.
+  let posterTime: number | null = null;
+  if (poster_time_s !== undefined && poster_time_s !== null) {
+    if (typeof poster_time_s !== "number" || !Number.isFinite(poster_time_s) || poster_time_s < 0) {
+      return fail("validation_failed", "poster_time_s must be a non-negative finite number.", 400);
+    }
+    if (type === "video") posterTime = poster_time_s;
+  }
+
   const { data: draft, error } = await sb
     .from("post")
     .insert({
@@ -157,6 +169,7 @@ export async function POST(req: Request) {
       watermarked: false,
       expires_at: expiresAt ?? null,
       label: labelValue,
+      ...(posterTime !== null ? { poster_time_s: posterTime } : {}),
     })
     .select("id,status,type,horse_id,created_at,label")
     .single();

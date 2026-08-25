@@ -152,6 +152,13 @@ export type EditInitial = {
   horse: HorseOption;
 };
 
+/**
+ * ENG-824 — optional poster frame time (seconds) on create/patch payloads.
+ * Absent means "leave alone / use Mux default"; a number is the operator's
+ * scrub pick. Snake_case matches the `post.poster_time_s` column on the wire.
+ */
+export type PosterTimePatch = { poster_time_s?: number | null };
+
 // ---------------------------------------------------------------------------
 // Media geometry (ENG-558)
 //

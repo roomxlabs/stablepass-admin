@@ -1030,6 +1030,18 @@
   padding-top: 0;
 }
 
+/* AND the same again for the sidebar rail, which is the surface the operator
+   actually composes against.
+ 
+   `.previewCompact .postCard` is specificity (0,2,0) and `.postCardReel` is
+   (0,1,0), so the compact rule WINS on the same element no matter what order
+   they appear in — the rail kept a 14px white band above every reel while the
+   modal was correct. Found in review; the four screenshot proofs are all modal
+   shots, which is exactly why they did not show it. */
+.previewCompact .postCardReel {
+  padding-top: 0;
+}
+
 .reelScrim {
   position: absolute;
   top: 0;
@@ -1063,7 +1075,7 @@
   font-size: 15px;
   font-weight: 600;
   line-height: 20px;
-  color: #fff;
+  color: var(--white);
   margin: 0;
   white-space: nowrap;
   overflow: hidden;

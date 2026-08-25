@@ -546,7 +546,11 @@ describe("reel chrome, across the whole portrait range (ENG-769)", () => {
 
   for (const c of CASES) {
     it(`${c.name} -> ${c.reel ? "REEL" : "CLASSIC"} chrome`, () => {
-      const card = renderMeasured(c.w, c.h, c.type, { label: "Trackwork" });
+      // racesToday TRUE on purpose: BASE has it false, so asserting the badge
+      // is absent on a reel proved nothing — it was absent in every case and
+      // would have stayed green with the badge moved out of the header and
+      // rendered unconditionally. Found in review.
+      const card = renderMeasured(c.w, c.h, c.type, { label: "Trackwork", racesToday: true });
 
       expect(card.dataset.chrome).toBe(c.reel ? "reel" : "classic");
 
@@ -561,6 +565,9 @@ describe("reel chrome, across the whole portrait range (ENG-769)", () => {
       } else {
         expect(screen.getByTestId("preview-label").textContent).toBe("Trackwork");
         expect(screen.queryByTestId("preview-reel-head")).toBeNull();
+        // The positive half: the badge DOES render on a classic card, which is
+        // what makes its absence on a reel meaningful.
+        expect(screen.getByTestId("preview-race-badge").textContent).toBe("Race day");
       }
     });
   }

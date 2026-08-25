@@ -218,14 +218,22 @@ describe("reel chrome fidelity (ENG-769)", () => {
   });
 
   it("sets the overlaid identity light-on-dark", () => {
-    expect(rule(".reelHorse")).toMatch(/color:\s*#fff/i);
+    expect(rule(".reelHorse")).toMatch(/color:\s*var\(--white\)/);
     expect(rule(".reelHorse")).toMatch(/font-family:\s*var\(--font-sans\)/);
     expect(rule(".reelByline")).toMatch(/color:\s*rgba\(255,\s*255,\s*255,\s*0\.85\)/);
   });
 
-  it("drops the card's top padding, since no header row sits above the frame", () => {
+  it("drops the card's top padding in BOTH scales, since no header row sits above the frame", () => {
     // Mobile's `reelCard: { paddingTop: 0 }`.
     expect(rule(".postCardReel")).toMatch(/padding-top:\s*0/);
+
+    // AND the compact rail, which needs its own rule to win the cascade:
+    // `.previewCompact .postCard` is (0,2,0) against `.postCardReel`'s (0,1,0),
+    // so without this the rail draws a 14px white band above every reel while
+    // the modal is correct. Asserting only the single-class rule above proved
+    // the DECLARATION existed, not that it APPLIED — which is how this shipped
+    // green the first time.
+    expect(rule(".previewCompact .postCardReel")).toMatch(/padding-top:\s*0/);
   });
 
   it("draws the label pill in brand green with cream type", () => {

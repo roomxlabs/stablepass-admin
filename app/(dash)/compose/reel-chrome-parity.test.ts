@@ -126,6 +126,27 @@ function readMemberCard(): { source: string; origin: string } | null {
 
 const CARD = readMemberCard();
 
+/** `src/theme/tokens.ts` from the SAME revision the card was read from. */
+function readMemberTokens(): string | null {
+  if (!MOBILE_REPO || !CARD) return null;
+  const rel = "src/theme/tokens.ts";
+  const ref = CARD.origin.split(" @ ")[1];
+  if (ref) {
+    try {
+      return execFileSync("git", ["-C", MOBILE_REPO, "show", `${ref}:${rel}`], {
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"],
+      });
+    } catch {
+      /* fall through to the working tree */
+    }
+  }
+  const path = join(MOBILE_REPO, rel);
+  return existsSync(path) ? readFileSync(path, "utf8") : null;
+}
+
+const TOKENS = readMemberTokens();
+
 // ---------------------------------------------------------------------------
 // Extracting rules — every helper THROWS rather than returning a default
 // ---------------------------------------------------------------------------
@@ -333,6 +354,27 @@ describe("the reel PREDICATE matches the member card's isReel", () => {
     );
     const cmp = decl.match(/rawAspect\s*(<=?)\s*([0-9.]+)/);
     expect(cmp, `no ratio comparison found in isReel: ${decl}`).not.toBeNull();
+    // ONE UPPER BOUND, and no lower bound other than positivity.
+    //
+    // The match above reads the FIRST comparison, so mobile adding a real lower
+    // bound (`rawAspect < 1 && rawAspect > 0.5`) would leave the upper bound
+    // still reading `1`, both probes passing, and a 0.4 video a reel in admin
+    // while it is a classic card on mobile. Found in review.
+    //
+    // `rawAspect > 0` is expected and allowed: it is a validity guard, which
+    // admin spells as `dims.width > 0 && dims.height > 0`. Anything else is a
+    // real bound this preview does not implement.
+    const bounds = [...decl.matchAll(/rawAspect\s*(<=?|>=?)\s*([0-9.]+)/g)].map(
+      (m) => [m[1], Number(m[2])] as const,
+    );
+    expect(bounds.filter(([op]) => op.startsWith("<")).length, `upper bounds: ${decl}`).toBe(1);
+    for (const [op, bound] of bounds) {
+      if (op.startsWith("<")) continue;
+      expect(
+        bound,
+        `mobile's isReel gained a lower bound (${op} ${bound}) that this preview does not model`,
+      ).toBe(0);
+    }
     const [, operator, bound] = cmp!;
     const threshold = Number(bound);
 
@@ -389,6 +431,14 @@ describe("the reel CHROME rules match the member card", () => {
     // reel starts showing one and admin's preview becomes wrong again — red.
     const [open, close] = classicHeadSpan();
     const pill = codeIndexRe(/styles\.labelPill(?![A-Za-z])/, "mobile's label pill");
+    // EXACTLY ONE reference. Position alone only proves that *a* pill is inside
+    // the head; mobile could add a SECOND pill inside the reel scrim and this
+    // would stay green while admin hid the pill and told the operator it never
+    // renders — the same lie, inverted. Found in review.
+    expect(
+      (CODE.match(/styles\.labelPill(?![A-Za-z])/g) ?? []).length,
+      "mobile now references its label pill more than once — a reel may have gained one",
+    ).toBe(1);
     expect(
       pill > open && pill < close,
       "mobile's label pill is no longer inside the head row that a reel suppresses — " +
@@ -423,9 +473,157 @@ describe("what admin deliberately does NOT mirror", () => {
     const [open, close] = blockSpan(at, "the classic head block");
     const badge = codeIndexRe(/styles\.raceBadge(?![A-Za-z])/, "mobile's race badge");
     expect(
+      (CODE.match(/styles\.raceBadge(?![A-Za-z])/g) ?? []).length,
+      "mobile now references its race badge more than once — a reel may have gained one",
+    ).toBe(1);
+    expect(
       badge > open && badge < close,
       "mobile's race badge left the head row — admin's preview drops it on reels " +
         "because it was inside. Re-check both.",
     ).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// THE REEL CHROME'S VALUES (decision 2, second half)
+//
+// The rules above pin a BOOLEAN — which branch is taken. The reel treatment is
+// also a set of NUMBERS (scrim alpha, type sizes, paddings), and those were
+// hand-copied into compose.module.css with only a "mirrors mobile" comment for
+// provenance. That is precisely the copied-constant-plus-pointer pattern this
+// ticket exists to replace, so the values are read out of mobile too: mobile
+// re-tuning its reel header now turns this red instead of leaving admin a
+// silent redesign behind. (Added after review found M4/M5/M6.)
+// ---------------------------------------------------------------------------
+
+/** `Spacing` / `Colors` from mobile's tokens.ts, at the card's own revision. */
+function memberTokens(): { spacing: Record<string, number>; colors: Record<string, string> } {
+  if (!TOKENS) {
+    throw new Error(
+      "THE GUARD HAS GONE BLIND: found the member card but not its tokens.ts, " +
+        "so Spacing/Colors cannot be resolved. Re-point readMemberTokens().",
+    );
+  }
+  const grab = (name: string) => {
+    const m = TOKENS.match(new RegExp(`export const ${name}\\s*=\\s*\\{([\\s\\S]*?)\\}`));
+    if (!m) throw new Error(`THE GUARD HAS GONE BLIND: no ${name} in mobile's tokens.ts`);
+    return m[1];
+  };
+  const spacing: Record<string, number> = {};
+  for (const m of grab("Spacing").matchAll(/(\w+)\s*:\s*([0-9.]+)/g)) spacing[m[1]] = Number(m[2]);
+  const colors: Record<string, string> = {};
+  for (const m of grab("Colors").matchAll(/(\w+)\s*:\s*'(#[0-9a-fA-F]{3,8})'/g)) colors[m[1]] = m[2];
+  return { spacing, colors };
+}
+
+/** The body of one entry in the card's StyleSheet.create({...}) object. */
+function memberStyle(name: string): string {
+  const at = codeIndexRe(new RegExp(`\\n  ${name}:\\s*\\{`), `mobile's ${name} style`);
+  const open = CODE.indexOf("{", at);
+  let depth = 0;
+  for (let i = open; i < CODE.length; i++) {
+    if (CODE[i] === "{") depth += 1;
+    else if (CODE[i] === "}") {
+      depth -= 1;
+      if (depth === 0) return CODE.slice(open + 1, i);
+    }
+  }
+  throw new Error(`THE GUARD HAS GONE BLIND: unbalanced braces in mobile's ${name}`);
+}
+
+/** A numeric style property, resolving `Spacing.*` to its token value. */
+function styleNumber(block: string, prop: string, what: string): number {
+  const m = block.match(new RegExp(`${prop}\\s*:\\s*([A-Za-z0-9_.]+)`));
+  if (!m) throw new Error(`THE GUARD HAS GONE BLIND: no ${prop} in ${what}`);
+  const raw = m[1];
+  if (/^[0-9.]+$/.test(raw)) return Number(raw);
+  const spacingKey = raw.match(/^Spacing\.(\w+)$/);
+  if (spacingKey) {
+    const value = memberTokens().spacing[spacingKey[1]];
+    if (value === undefined) throw new Error(`THE GUARD HAS GONE BLIND: no Spacing.${spacingKey[1]}`);
+    return value;
+  }
+  throw new Error(`THE GUARD HAS GONE BLIND: cannot resolve ${prop}: ${raw} in ${what}`);
+}
+
+const ADMIN_CSS = readFileSync(join(process.cwd(), "app/(dash)/compose/compose.module.css"), "utf8");
+
+/** One top-level rule body out of admin's stylesheet. */
+function adminRule(selector: string): string {
+  const marker = `${selector} {`;
+  const at = ADMIN_CSS.indexOf(`\n${marker}`);
+  expect(at, `${selector} should exist in compose.module.css`).toBeGreaterThan(-1);
+  return ADMIN_CSS.slice(at, ADMIN_CSS.indexOf("}", at));
+}
+
+/** `#RRGGBB` -> `r, g, b`, so an alpha colour can be compared to mobile's. */
+function rgbOf(hex: string): string {
+  const h = hex.replace("#", "");
+  const full = h.length === 3 ? [...h].map((c) => c + c).join("") : h.slice(0, 6);
+  const n = parseInt(full, 16);
+  return `${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}`;
+}
+
+describe("the reel chrome's VALUES are mobile's, not ours", () => {
+  it("scrims the header with mobile's ink and alpha", () => {
+    // `colors={[withAlpha(Colors.ink, 0.55), 'transparent']}` — read the alpha
+    // and the token out of the card rather than trusting the CSS comment.
+    const alpha = extract(
+      /colors=\{\[withAlpha\(Colors\.ink,\s*([0-9.]+)\)/,
+      "mobile's reel scrim gradient",
+    );
+    const ink = memberTokens().colors.ink;
+    expect(ink, "mobile has no Colors.ink").toBeTruthy();
+    const scrim = adminRule(".reelScrim");
+    expect(scrim.replace(/\s+/g, " ")).toContain(`rgba(${rgbOf(ink)}, ${alpha})`);
+  });
+
+  it("uses mobile's scrim geometry", () => {
+    const block = memberStyle("reelTopScrim");
+    const top = styleNumber(block, "paddingTop", "reelTopScrim");
+    const side = styleNumber(block, "paddingHorizontal", "reelTopScrim");
+    const bottom = styleNumber(block, "paddingBottom", "reelTopScrim");
+    const gap = styleNumber(block, "gap", "reelTopScrim");
+    const scrim = adminRule(".reelScrim").replace(/\s+/g, " ");
+    expect(scrim).toContain(`padding: ${top}px ${side}px ${bottom}px`);
+    expect(scrim).toContain(`gap: ${gap}px`);
+  });
+
+  it("sets the overlaid name and byline at mobile's sizes and colours", () => {
+    const horse = memberStyle("reelHorse");
+    const byline = memberStyle("reelByline");
+    const { colors } = memberTokens();
+
+    const adminHorse = adminRule(".reelHorse").replace(/\s+/g, " ");
+    expect(adminHorse).toContain(`font-size: ${styleNumber(horse, "fontSize", "reelHorse")}px`);
+    expect(adminHorse).toContain(`line-height: ${styleNumber(horse, "lineHeight", "reelHorse")}px`);
+    // Colors.white on mobile; admin spells the same value as its own token.
+    expect(horse).toMatch(/color:\s*Colors\.white/);
+    expect(adminHorse).toContain("color: var(--white)");
+
+    const adminByline = adminRule(".reelByline").replace(/\s+/g, " ");
+    expect(adminByline).toContain(`font-size: ${styleNumber(byline, "fontSize", "reelByline")}px`);
+    expect(adminByline).toContain(
+      `line-height: ${styleNumber(byline, "lineHeight", "reelByline")}px`,
+    );
+    const bylineAlpha = byline.match(/color:\s*withAlpha\(Colors\.white,\s*([0-9.]+)\)/);
+    expect(bylineAlpha, `no alpha colour in reelByline: ${byline}`).not.toBeNull();
+    expect(adminByline).toContain(`rgba(${rgbOf(colors.white)}, ${bylineAlpha![1]})`);
+  });
+
+  it("drops the card's top padding by mobile's amount, in BOTH admin scales", () => {
+    const top = styleNumber(memberStyle("reelCard"), "paddingTop", "reelCard");
+    for (const selector of [".postCardReel", ".previewCompact .postCardReel"]) {
+      expect(adminRule(selector)).toMatch(new RegExp(`padding-top:\\s*${top}(px)?`));
+    }
+  });
+
+  it("still draws the overlaid identity at all — mobile has not dropped it", () => {
+    // M4: every rule above is about SUPPRESSION. If mobile deleted the reel
+    // scrim entirely, admin would keep drawing a header the member card no
+    // longer has, and nothing else here would notice.
+    expect(CODE).toContain("styles.reelTopScrim");
+    expect(CODE).toMatch(/styles\.reelHorse/);
+    expect(CODE).toMatch(/styles\.reelByline/);
   });
 });

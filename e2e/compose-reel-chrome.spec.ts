@@ -263,6 +263,16 @@ test("reel chrome: a 9:16 video shows the overlaid head and the Trackwork reel n
   await expect(page.getByTestId("upload-done")).toBeVisible({ timeout: 30000 });
   await settle(page);
 
+  // THE RAIL FIRST, before the modal duplicates every testid. This is the
+  // surface the operator actually composes against, and it is where
+  // `.previewCompact .postCard` (0,2,0) out-specified `.postCardReel` (0,1,0)
+  // and left a 14px white band above the frame — a bug all four modal shots
+  // were structurally blind to. Found in review; this is its proof.
+  await expect(page.getByTestId("post-preview")).toHaveAttribute("data-chrome", "reel");
+  await page.getByTestId("post-preview").screenshot({
+    path: "e2e/__screenshots__/eng769/05-reel-compact-rail.png",
+  });
+
   const panel = await shootPreviewPanel(page, "e2e/__screenshots__/eng769/01-reel-9x16.png");
 
   await expect(panel.getByTestId("post-preview")).toHaveAttribute("data-chrome", "reel");

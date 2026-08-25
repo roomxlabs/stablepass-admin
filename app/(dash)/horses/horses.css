@@ -212,7 +212,10 @@ textarea.adm-input { min-height: 110px; resize: vertical; font-family: var(--fon
 }
 .horse-empty p { color: var(--muted); font-size: 14px; margin: 0 0 18px; }
 
-/* Grid footer (count + pagination) ---------------------------------- */
+/* Grid footer (row count) ------------------------------------------- */
+/* The `.pager` pill rules that lived here were removed with the horses
+   pager (hotfix, 25 Aug 2026). Posts keeps its own `.posts-foot .pager`
+   block in posts.css — the two were never shared. */
 .horse-grid-foot {
   padding: 16px 22px;
   display: flex;
@@ -222,18 +225,6 @@ textarea.adm-input { min-height: 110px; resize: vertical; font-family: var(--fon
   color: var(--muted);
   border-top: 1px solid var(--line);
 }
-.horse-grid-foot .pager { display: flex; gap: 8px; }
-.horse-grid-foot .pager a,
-.horse-grid-foot .pager span {
-  padding: 6px 14px;
-  font-size: 12.5px;
-  border-radius: var(--radius-pill);
-  border: 1px solid var(--line);
-  background: var(--white);
-  color: var(--ink);
-  text-decoration: none;
-}
-.horse-grid-foot .pager span.disabled { opacity: 0.45; }
 
 /* Form field grids used on the add / edit page ---------------------- */
 .field-grid { display: grid; gap: 16px; }

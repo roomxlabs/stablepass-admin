@@ -51,6 +51,7 @@ export default async function EditHorsePage({
     photoUrl: horse.photo_url ?? "",
     status: horse.status ?? "active",
     trainingStatus: horse.training_status ?? "spelling",
+    sharesForSale: horse.shares_for_sale === true,
   };
 
   const blockedReason = blockedMessage("horse", [

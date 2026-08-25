@@ -1,6 +1,11 @@
 import { requireAdmin } from "@/lib/auth/admin";
 import { ok, fail, noContent } from "@/lib/api/envelope";
 import { blockedMessage, foreignKeyMessage, isForeignKeyViolation } from "@/lib/api/references";
+import {
+  parseSharesForSale,
+  rejectSharesWithoutTrainerWebsite,
+  trainerIdForHorse,
+} from "@/lib/horses/shares-for-sale";
 import { sexColumns } from "../sex";
 
 // PATCH /api/admin/horses/:id — edit horse attributes (training status incl.
@@ -10,6 +15,7 @@ import { sexColumns } from "../sex";
 // `sex` and `isGelded` are NOT in this allowlist: they are validated as a pair
 // by sexColumns() before being merged in, because gelded-implies-male cannot be
 // checked one field at a time.
+// ENG-829: sharesForSale maps to shares_for_sale (boolean only — no price/PII).
 const MAP: Record<string, string> = {
   trainingStatus: "training_status",
   status: "status",
@@ -39,6 +45,20 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
     });
   }
   Object.assign(patch, sexRes.columns);
+
+  const sharesRes = parseSharesForSale(b.sharesForSale);
+  if (!sharesRes.ok) return fail("validation_failed", sharesRes.message, 400, { sharesForSale: "invalid" });
+  if (sharesRes.value !== undefined) {
+    // Turning ON requires the horse's trainer to have a website. Turning OFF
+    // is always allowed (BE feed effect already shipped in ENG-828).
+    if (sharesRes.value === true) {
+      const trainer = await trainerIdForHorse(sb, id);
+      if (!trainer.ok) return trainer.res;
+      const blocked = await rejectSharesWithoutTrainerWebsite(sb, trainer.trainerId);
+      if (blocked) return blocked;
+    }
+    patch.shares_for_sale = sharesRes.value;
+  }
 
   if (Object.keys(patch).length === 0) {
     return fail("validation_failed", "No editable fields provided.", 400);

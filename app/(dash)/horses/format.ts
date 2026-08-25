@@ -1,7 +1,10 @@
 // Presentation helpers for the Horses DB screens.
-// Age is COMPUTED here and never stored (guardrail): a horse turns a year
-// older on 1 August, so before August it is one year younger than the raw
-// calendar-year difference.
+//
+// Age and the race-day description are NOT computed here (ENG-616). They are
+// derived in Postgres — `horse_age()` and `horse_description()`, added by
+// ENG-615 and read as PostgREST computed columns — so the 1-August rollover
+// rule exists in exactly one place instead of three. This module only COMPOSES
+// values it is handed; it never derives them.
 
 export const TRAINING_STATUSES = [
   "spelling",
@@ -12,6 +15,21 @@ export const TRAINING_STATUSES = [
   "retired",
 ] as const;
 export type TrainingStatus = (typeof TRAINING_STATUSES)[number];
+
+// Biological sex, male|female — matching the `horse_sex_check` CHECK. The
+// race-day description (colt/filly/mare/horse/gelding) is derived, never
+// picked: choosing it by hand is what left a filly a filly at eight.
+export const HORSE_SEXES = ["male", "female"] as const;
+export type HorseSex = (typeof HORSE_SEXES)[number];
+
+const SEX_LABELS: Record<HorseSex, string> = {
+  male: "Male",
+  female: "Female",
+};
+
+export function horseSexLabel(sex: HorseSex): string {
+  return SEX_LABELS[sex];
+}
 
 const TRAINING_LABELS: Record<string, string> = {
   spelling: "Spelling",
@@ -33,27 +51,29 @@ export function statusPillClass(trainingStatus: string | null | undefined): stri
   return trainingStatus === "racing" ? "pill green dot" : "pill";
 }
 
-// Age in years from foaling_year (turns over on 1 August). Returns null when
-// there is no foaling year on record.
-export function computeAge(foalingYear: number | null | undefined, now: Date = new Date()): number | null {
-  if (!foalingYear) return null;
-  const augustPassed = now.getMonth() >= 7; // 0-indexed: 7 = August
-  const age = now.getFullYear() - foalingYear - (augustPassed ? 0 : 1);
-  return age >= 0 ? age : null;
-}
-
-// "by Chris Waller · 5yo gelding" — or "· retired" for a retired horse (matches
-// the mockup, which drops age for retired horses).
-export function horseMeta(opts: {
+// "by Chris Waller · 5yo gelding" — composed from the values the database
+// supplies, never from a local formula.
+//
+// `retired` keeps its special case: the mockup drops the age for a retired
+// horse and shows the training status instead. That comes from
+// `training_status`, not from sex, so the database derivation does not cover it
+// and it must not be lost.
+//
+// Degrades honestly when the database has nothing to say: no foaling year means
+// `age` is null and, for a non-gelding, `description` is null too, so the line
+// falls back to "by <Trainer>" alone rather than inventing an adult default.
+export function horseSubtitle(opts: {
   trainerName: string | null | undefined;
-  foalingYear: number | null | undefined;
-  sex: string | null | undefined;
+  age: number | null | undefined;
+  description: string | null | undefined;
   trainingStatus: string | null | undefined;
 }): string {
   const by = opts.trainerName ? `by ${opts.trainerName}` : "Unassigned trainer";
   if (opts.trainingStatus === "retired") return `${by} · retired`;
-  const age = computeAge(opts.foalingYear);
-  const bits = [age != null ? `${age}yo` : null, opts.sex ? opts.sex.toLowerCase() : null].filter(Boolean);
+  const bits = [
+    opts.age != null ? `${opts.age}yo` : null,
+    opts.description ? opts.description.toLowerCase() : null,
+  ].filter(Boolean);
   return bits.length ? `${by} · ${bits.join(" ")}` : by;
 }
 

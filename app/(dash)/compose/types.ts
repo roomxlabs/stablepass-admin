@@ -341,12 +341,22 @@ export function describeOrientation(dims: MediaDimensions, mediaType: MediaType 
     // printed label can round to 1:1 there, which would put "Square … as a
     // reel" on one line.
     //
-    // What that costs, honestly: the member card flips to full reel CHROME at
-    // `ratio < 1` (overlaid header on ink scrims, no white header row), so a
-    // 0.9 portrait video is a reel for members while this line still says only
-    // "Members see it at 9:10". This preview does not model the reel chrome at
-    // all — the ratio matches, the chrome does not. Out of ENG-747's scope;
-    // see the follow-up on that ticket before extending this copy.
+    // What that used to cost: the member card flips to full reel CHROME at
+    // `ratio < 1`, so a 0.9 portrait video was a reel for members while this
+    // preview drew a classic card around the right-shaped box.
+    //
+    // ENG-769 CLOSED THAT — PostPreview now models the reel chrome itself
+    // (`isReelPreview`, the same `ratio < 1` predicate). So this line is no
+    // longer carrying the whole story on its own: between 4:5 and square the
+    // OPERATOR SEES the reel treatment even though this sentence does not name
+    // it, which is the split these two thresholds were always meant to have.
+    // The sentence is about FRAMING — what gets cropped — and at 0.9 nothing
+    // is, so "Members see it at 9:10" stays the honest answer.
+    //
+    // The chrome is pinned against the member card by
+    // reel-chrome-parity.test.ts. Do not "fix" this threshold to match the
+    // chrome's: they answer different questions, deliberately (ENG-769
+    // decision 3).
     membersSee =
       ratio < REEL_ASPECT_MIN
         ? "Members see it as a reel, cropped to 9:16"

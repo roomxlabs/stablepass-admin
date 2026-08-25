@@ -1,5 +1,6 @@
 import { requireAdmin } from "@/lib/auth/admin";
-import { ok, fail } from "@/lib/api/envelope";
+import { ok, fail, noContent } from "@/lib/api/envelope";
+import { blockedMessage, foreignKeyMessage, isForeignKeyViolation } from "@/lib/api/references";
 import { parseWebsiteUrl } from "@/lib/trainers/website-url";
 
 // PATCH /api/admin/trainers/:id — update trainer profile / roster status.
@@ -68,4 +69,43 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
     return fail("update_failed", error.message, 400);
   }
   return ok(data);
+}
+
+// DELETE /api/admin/trainers/:id — remove a trainer (operator data cleanup).
+//
+// REFUSED, NOT CASCADED, on TWO paths. Both `horse.trainer_id` and
+// `post.source_trainer_id` are `not null references trainer(id)` with no
+// ON DELETE, so a trainer is the LAST thing that can go: its posts must be
+// deleted, then its horses, and only then the trainer itself. `trainer_contact`
+// and `trainer_website_click` cascade and never block.
+//
+// Both counts are taken up front, so a trainer that is blocked twice says so
+// once ("Cannot delete: 4 posts and 2 horses reference this trainer") rather
+// than making the operator discover the second blocker after clearing the
+// first. The 23503 catch is the backstop for the gap between count and delete.
+export async function DELETE(_req: Request, { params }: { params: Promise<{ id: string }> }) {
+  const g = await requireAdmin();
+  if ("res" in g) return g.res;
+  const { sb } = g;
+  const { id } = await params;
+
+  const [postRes, horseRes] = await Promise.all([
+    sb.from("post").select("id", { count: "exact", head: true }).eq("source_trainer_id", id),
+    sb.from("horse").select("id", { count: "exact", head: true }).eq("trainer_id", id),
+  ]);
+  // Refuse rather than guess — "we could not check" is not "nothing blocks it".
+  if (postRes.error || horseRes.error)
+    return fail("delete_failed", "Could not check what references this trainer.", 400);
+
+  const blocked = blockedMessage("trainer", [
+    { count: postRes.count ?? 0, singular: "post", plural: "posts" },
+    { count: horseRes.count ?? 0, singular: "horse", plural: "horses" },
+  ]);
+  if (blocked) return fail("has_references", blocked, 409);
+
+  const { data, error } = await sb.from("trainer").delete().eq("id", id).select("id").maybeSingle();
+  if (isForeignKeyViolation(error)) return fail("has_references", foreignKeyMessage("trainer"), 409);
+  if (error) return fail("delete_failed", error.message, 400);
+  if (!data) return fail("not_found", "Trainer not found.", 404);
+  return noContent();
 }

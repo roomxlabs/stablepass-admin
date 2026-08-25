@@ -26,3 +26,17 @@ export const publishNow = (id: string): Promise<void> =>
 /** Discard a DRAFT (hard delete, draft-only per guardrail §2). DELETE → 204 */
 export const discardDraft = (id: string): Promise<void> =>
   call(`/api/admin/posts/${id}`, "DELETE", "Discard");
+
+/**
+ * HARD delete a post of ANY status — the operator data-cleanup path, and a
+ * DELIBERATE SCOPED EXCEPTION to guardrail §2 (see the route's own note).
+ *
+ * A SEPARATE URL from `discardDraft` on purpose: `DELETE /api/admin/posts/:id`
+ * stays draft-only and still 409s a published post, so §2's test is untouched
+ * and nothing about `unpublish` changes. This is not "unpublish, harder" — it
+ * removes the row, and the confirmation says so.
+ *
+ * DELETE /api/admin/posts/:id/delete → 204
+ */
+export const deletePost = (id: string): Promise<void> =>
+  call(`/api/admin/posts/${id}/delete`, "DELETE", "Delete");

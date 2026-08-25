@@ -2,7 +2,14 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { supabaseServer } from "@/lib/supabase/server";
 import TrainerForm, { type ContactInput, type TrainerData } from "../../TrainerForm";
-import { toTrainerFormSeed, TRAINER_DETAIL_COLUMNS, type TrainerDetailRow } from "../../data";
+import DangerDelete from "../../../DangerDelete";
+import { blockedMessage } from "@/lib/api/references";
+import {
+  countTrainerReferences,
+  toTrainerFormSeed,
+  TRAINER_DETAIL_COLUMNS,
+  type TrainerDetailRow,
+} from "../../data";
 import "../../trainers.css";
 
 // Edit trainer — reuses the add-trainer form (mockup 08), pre-filled. Loads the
@@ -34,6 +41,14 @@ export default async function EditTrainerPage({
   // ENG-766: the mapping lives in ./data so it is unit-testable — it seeds the
   // "Show on marketing site" checkbox and tells the form which public object it
   // is already responsible for.
+  // Pre-count both blocking paths for the Danger zone, so a refused delete is a
+  // disabled button with a reason rather than an opaque 23503 after the click.
+  const refs = await countTrainerReferences(sb, id);
+  const blockedReason = blockedMessage("trainer", [
+    { count: refs.posts, singular: "post", plural: "posts" },
+    { count: refs.horses, singular: "horse", plural: "horses" },
+  ]);
+
   const trainer: TrainerData = toTrainerFormSeed(t as TrainerDetailRow);
   const contacts: ContactInput[] = ((cRows ?? []) as Record<string, string>[]).map((c) => ({
     id: c.id,
@@ -57,6 +72,20 @@ export default async function EditTrainerPage({
       </div>
       <div className="admin-content">
         <TrainerForm mode="edit" trainer={trainer} contacts={contacts} />
+        {/* Outside TrainerForm — that component is one <form>, and a delete
+            must never be reachable by submitting it. */}
+        <DangerDelete
+          testId="delete-trainer"
+          endpoint={`/api/admin/trainers/${id}`}
+          redirectTo="/trainers"
+          heading="Delete trainer"
+          description="Removes the trainer from the database, with their internal contacts. Delete their posts first, then their horses."
+          confirmText={
+            `Permanently delete ${trainer.displayName || trainer.name}?\n\n` +
+            "This removes the trainer and their internal contacts from the database. It CANNOT be undone."
+          }
+          blockedReason={blockedReason}
+        />
       </div>
     </>
   );

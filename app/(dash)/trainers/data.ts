@@ -241,3 +241,26 @@ export async function listTrainers(
 
   return { rows, counts };
 }
+
+// The two counts that can refuse a trainer delete: `horse.trainer_id` and
+// `post.source_trainer_id` are BOTH not-null with no ON DELETE, so a trainer is
+// the last thing that can go. `head: true` fetches no rows — these are count
+// queries only, and they run in parallel.
+//
+// Throws on error rather than returning 0: reporting "nothing references this
+// trainer" because the count failed would offer a delete Postgres is certain to
+// reject, which is exactly the opaque 23503 this screen exists to prevent.
+export async function countTrainerReferences(
+  sb: SupabaseClient,
+  trainerId: string,
+): Promise<{ posts: number; horses: number }> {
+  const [postRes, horseRes] = await Promise.all([
+    sb.from("post").select("id", { count: "exact", head: true }).eq("source_trainer_id", trainerId),
+    sb.from("horse").select("id", { count: "exact", head: true }).eq("trainer_id", trainerId),
+  ]);
+  if (postRes.error || horseRes.error)
+    throw new Error(
+      `trainer reference count failed (${postRes.error?.code ?? horseRes.error?.code ?? "unknown"})`,
+    );
+  return { posts: postRes.count ?? 0, horses: horseRes.count ?? 0 };
+}

@@ -6,6 +6,7 @@ import {
   ASPECT_MAX,
   ASPECT_MIN,
   REEL_ASPECT_MIN,
+  isReelPreview,
   aestToday,
   describeOrientation,
   displayHorseName,
@@ -213,5 +214,59 @@ describe("aestToday", () => {
     expect(aestToday(new Date("2026-11-01T13:30:00Z"))).toBe("2026-11-02");
     // ...and the hour before the same instant is still the previous day.
     expect(aestToday(new Date("2026-11-01T12:30:00Z"))).toBe("2026-11-01");
+  });
+});
+
+describe("isReelPreview — the ONE reel predicate (ENG-769)", () => {
+  // Extracted so the BOX and the CHROME cannot take different branches. These
+  // pin the predicate itself; reel-chrome-parity.test.ts pins it against the
+  // member card, and PostPreview.test.tsx pins the furniture it drives.
+
+  it("is true only for a portrait VIDEO", () => {
+    const portrait = { width: 1080, height: 1920 };
+    expect(isReelPreview(portrait, "video")).toBe(true);
+    // A portrait photo stays a classic card (Instagram convention).
+    expect(isReelPreview(portrait, "photo")).toBe(false);
+    // Voice has no frame; text has no media box at all. `null` is a TEXT post,
+    // which is why the guard is `=== "video"` and not `!== "photo"`.
+    expect(isReelPreview(portrait, "voice")).toBe(false);
+    expect(isReelPreview(portrait, "text")).toBe(false);
+    expect(isReelPreview(portrait, null)).toBe(false);
+  });
+
+  it("switches STRICTLY below square — a square video is not a reel", () => {
+    expect(isReelPreview({ width: 999, height: 1000 }, "video")).toBe(true);
+    expect(isReelPreview({ width: 1000, height: 1000 }, "video")).toBe(false);
+    expect(isReelPreview({ width: 1001, height: 1000 }, "video")).toBe(false);
+  });
+
+  it("covers the whole portrait range, not just below 4:5", () => {
+    // The readout switches at 0.8 (deliberately — see describeOrientation),
+    // but the CHROME switches at 1. A 0.9 portrait video is the case that
+    // motivated this ticket: a reel for members, a classic card in the preview.
+    for (const [w, h] of [[9, 16], [900, 1000], [990, 1000], [1080, 1350]]) {
+      expect(isReelPreview({ width: w, height: h }, "video")).toBe(true);
+    }
+  });
+
+  it("is false for unmeasured or degenerate dimensions", () => {
+    // Never a reel before we know the size: the box would jump.
+    expect(isReelPreview(null, "video")).toBe(false);
+    expect(isReelPreview({ width: 0, height: 1000 }, "video")).toBe(false);
+    expect(isReelPreview({ width: 1080, height: 0 }, "video")).toBe(false);
+    expect(isReelPreview({ width: -1080, height: 1920 }, "video")).toBe(false);
+  });
+
+  it("agrees with the box resolveAspect draws", () => {
+    // The invariant the extraction exists to protect: reel <=> the reel box.
+    for (const [w, h] of [[1080, 1920], [900, 1000], [1000, 1000], [1400, 1000]]) {
+      const dims = { width: w, height: h };
+      const reel = isReelPreview(dims, "video");
+      const aspect = resolveAspect(dims, "video");
+      const classic = Math.min(ASPECT_MAX, Math.max(ASPECT_MIN, w / h));
+      expect(aspect === Math.max(REEL_ASPECT_MIN, w / h)).toBe(reel || aspect === classic);
+      if (reel) expect(aspect).toBeCloseTo(Math.max(REEL_ASPECT_MIN, w / h), 10);
+      else expect(aspect).toBeCloseTo(classic, 10);
+    }
   });
 });

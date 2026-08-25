@@ -194,3 +194,53 @@ describe("the caption counter has no over-limit state (ENG-745)", () => {
     expect(counter).toMatch(/flex-shrink:\s*0/);
   });
 });
+
+// ENG-769. The reel treatment is ENTIRELY CSS — an overlaid header on an ink
+// scrim, with the white header row gone. A render test can prove `data-chrome`
+// flips (PostPreview.test.tsx does), but not that the scrim, the light-on-dark
+// type or the removed padding actually exist. Without these the whole visual
+// half of this ticket could be reverted with every other suite green.
+//
+// The values are the member card's own (stablepass-mobile
+// `src/components/post-card.tsx`: reelTopScrim / reelHorse / reelByline,
+// Spacing.lg/xl = 16/20px, Colors.ink #1A1A1A at 55%), so this is a fidelity
+// guard rather than a restatement of arbitrary numbers.
+describe("reel chrome fidelity (ENG-769)", () => {
+  it("overlays the header on an ink scrim at the top of the frame", () => {
+    const scrim = rule(".reelScrim");
+    expect(scrim).toMatch(/position:\s*absolute/);
+    expect(scrim).toMatch(/top:\s*0/);
+    // Ink at 55%, fading to transparent — mobile's LinearGradient.
+    expect(scrim).toMatch(/linear-gradient\(\s*to bottom,\s*rgba\(26,\s*26,\s*26,\s*0\.55\)/);
+    expect(scrim).toMatch(/transparent/);
+    // The video underneath is click-to-play in the modal.
+    expect(scrim).toMatch(/pointer-events:\s*none/);
+  });
+
+  it("sets the overlaid identity light-on-dark", () => {
+    expect(rule(".reelHorse")).toMatch(/color:\s*#fff/i);
+    expect(rule(".reelHorse")).toMatch(/font-family:\s*var\(--font-sans\)/);
+    expect(rule(".reelByline")).toMatch(/color:\s*rgba\(255,\s*255,\s*255,\s*0\.85\)/);
+  });
+
+  it("drops the card's top padding, since no header row sits above the frame", () => {
+    // Mobile's `reelCard: { paddingTop: 0 }`.
+    expect(rule(".postCardReel")).toMatch(/padding-top:\s*0/);
+  });
+
+  it("draws the label pill in brand green with cream type", () => {
+    const pill = rule(".labelPill");
+    expect(pill).toMatch(/background:\s*var\(--brand-green\)/);
+    expect(pill).toMatch(/color:\s*var\(--cream\)/);
+    expect(pill).toMatch(/text-transform:\s*uppercase/);
+    // Tokens, never eyeballed hex.
+    expect(pill).not.toMatch(/#[0-9a-f]{3,6}/i);
+  });
+
+  it("styles the note that explains a dropped label as a note, not an error", () => {
+    const note = rule(".previewReelNote");
+    expect(note).toMatch(/color:\s*var\(--muted\)/);
+    // Never red: the label is not a mistake, it just will not render here.
+    expect(note).not.toMatch(/var\(--danger\)|#c0392b|red/i);
+  });
+});

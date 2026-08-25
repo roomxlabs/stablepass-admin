@@ -5,6 +5,8 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { supabaseBrowser } from "@/lib/supabase/client";
 import { signPhoto } from "@/lib/storage/photos";
+import { SHARES_WEBSITE_REQUIRED } from "@/lib/horses/shares-for-sale";
+import { trainerHasWebsite } from "@/lib/trainers/website-url";
 import PhotoCropField, { type PickedPhoto } from "../components/PhotoCropField";
 import { HORSE_SEXES, TRAINING_STATUSES, dollarsToCents, horseSexLabel, humanizeTrainingStatus } from "./format";
 
@@ -23,10 +25,21 @@ import { HORSE_SEXES, TRAINING_STATUSES, dollarsToCents, horseSexLabel, humanize
 //   gelding a gelded male, ANY age
 //
 // `Stallion` is dropped — it is not a race-day description in Australia.
+//
+// ENG-829: "Shares for sale" is a boolean toggle gated on the selected
+// trainer's website_url (the public Shares CTA target). No price / owner /
+// vendor fields. Mockup 07-add-horse.html has no toggle — needs-design-check;
+// control matches the existing Gelded / Status form patterns.
 
 const PHOTO_BUCKET = "horse-photos";
 
-export type Trainer = { id: string; display_name: string | null; stable_name: string | null };
+export type Trainer = {
+  id: string;
+  display_name: string | null;
+  stable_name: string | null;
+  /** Public CTA target for Shares; null/absent → for-sale toggle disabled. */
+  website_url?: string | null;
+};
 
 export type HorseInitial = {
   trainerId?: string;
@@ -49,6 +62,8 @@ export type HorseInitial = {
   photoUrl?: string;
   status?: string; // horse_status: active | disabled
   trainingStatus?: string;
+  /** ENG-829 — horse.shares_for_sale */
+  sharesForSale?: boolean;
 };
 
 type Props = {
@@ -66,7 +81,7 @@ export default function HorseForm({ mode, trainers, horseId, initial = {} }: Pro
   const router = useRouter();
   const fileRef = useRef<HTMLInputElement>(null);
 
-  const [form, setForm] = useState<Required<HorseInitial>>({
+  const [form, setForm] = useState({
     trainerId: initial.trainerId ?? "",
     stableName: initial.stableName ?? "",
     racingName: initial.racingName ?? "",
@@ -86,6 +101,7 @@ export default function HorseForm({ mode, trainers, horseId, initial = {} }: Pro
     photoUrl: initial.photoUrl ?? "",
     status: initial.status ?? "active",
     trainingStatus: initial.trainingStatus ?? "spelling",
+    sharesForSale: initial.sharesForSale ?? false,
   });
   const [submitting, setSubmitting] = useState(false);
   const [uploading, setUploading] = useState(false);
@@ -106,8 +122,7 @@ export default function HorseForm({ mode, trainers, horseId, initial = {} }: Pro
     };
   }, [initial.photoUrl]);
 
-  // Only the free-text/select fields; `isGelded` is boolean and has its own
-  // handlers below.
+  // Only the free-text/select fields; booleans have their own handlers below.
   type StringField = {
     [K in keyof HorseInitial]-?: HorseInitial[K] extends string | undefined ? K : never;
   }[keyof HorseInitial];
@@ -122,6 +137,27 @@ export default function HorseForm({ mode, trainers, horseId, initial = {} }: Pro
     setForm((f) => ({ ...f, sex: value, isGelded: value === "male" ? f.isGelded : false }));
 
   const setGelded = (value: boolean) => setForm((f) => ({ ...f, isGelded: value }));
+
+  const selectedTrainer = trainers.find((t) => t.id === form.trainerId);
+  const canSellShares = trainerHasWebsite(selectedTrainer?.website_url);
+
+  // Create mode: switching trainers must drop a stale for-sale flag when the
+  // new trainer has no website (the toggle alone being disabled is not enough —
+  // a checked+disabled checkbox would still submit true).
+  const setTrainerId = (value: string) => {
+    const next = trainers.find((t) => t.id === value);
+    const ok = trainerHasWebsite(next?.website_url);
+    setForm((f) => ({
+      ...f,
+      trainerId: value,
+      sharesForSale: ok ? f.sharesForSale : false,
+    }));
+  };
+
+  const setSharesForSale = (value: boolean) => {
+    if (value && !canSellShares) return;
+    setForm((f) => ({ ...f, sharesForSale: value }));
+  };
 
   // ENG-749. Picking opens the crop step rather than uploading; the input is
   // reset so re-picking the same file after a cancel still fires a change.
@@ -165,6 +201,10 @@ export default function HorseForm({ mode, trainers, horseId, initial = {} }: Pro
       setError("Please assign a trainer.");
       return;
     }
+    if (form.sharesForSale && !canSellShares) {
+      setError(SHARES_WEBSITE_REQUIRED);
+      return;
+    }
     setSubmitting(true);
     try {
       const foalingYear = form.foalingYear ? Number(form.foalingYear) : undefined;
@@ -189,6 +229,7 @@ export default function HorseForm({ mode, trainers, horseId, initial = {} }: Pro
         photoUrl: form.photoUrl || undefined,
         status: form.status,
         trainingStatus: form.trainingStatus,
+        sharesForSale: form.sharesForSale,
       };
 
       if (mode === "create") {
@@ -428,7 +469,7 @@ export default function HorseForm({ mode, trainers, horseId, initial = {} }: Pro
                 <select
                   className="adm-input"
                   value={form.trainerId}
-                  onChange={(e) => set("trainerId", e.target.value)}
+                  onChange={(e) => setTrainerId(e.target.value)}
                   disabled={mode === "edit"}
                 >
                   <option value="">Select a trainer</option>
@@ -553,6 +594,31 @@ export default function HorseForm({ mode, trainers, horseId, initial = {} }: Pro
                 </select>
                 <div className="adm-help">Hidden horses don&apos;t appear in browse or search. Useful for setting up before announcing.</div>
               </div>
+              <label
+                className="adm-check"
+                htmlFor="shares-for-sale"
+                style={{ cursor: canSellShares ? "pointer" : "not-allowed", opacity: canSellShares ? 1 : 0.75 }}
+              >
+                <input
+                  id="shares-for-sale"
+                  type="checkbox"
+                  checked={form.sharesForSale}
+                  disabled={!canSellShares}
+                  onChange={(e) => setSharesForSale(e.target.checked)}
+                  data-testid="shares-for-sale"
+                />
+                <span>
+                  <span className="adm-check-title">Shares for sale</span>
+                  <span className="adm-help">
+                    Lists this horse on the member Shares tab. Contact goes to the trainer&apos;s website.
+                  </span>
+                </span>
+              </label>
+              {!canSellShares && form.trainerId ? (
+                <div className="adm-help adm-check-note" data-testid="shares-website-required">
+                  {SHARES_WEBSITE_REQUIRED}
+                </div>
+              ) : null}
             </div>
           </div>
 

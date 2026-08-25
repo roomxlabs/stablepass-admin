@@ -77,6 +77,49 @@ describe("POST /api/admin/posts — create draft", () => {
     expect(createMuxDirectUpload).toHaveBeenCalledWith(expect.objectContaining({ passthrough: "p2" }));
   });
 
+  // ENG-824 — optional poster_time_s on create (video only).
+  it("inserts poster_time_s when provided on a video draft", async () => {
+    asAdmin();
+    state.tables.horse = { select: { single: { id: "h1" } } };
+    state.tables.post = { mutate: { single: { id: "p2", status: "draft", type: "video", horse_id: "h1" } } };
+    const r = await POST(
+      postReq({ horseId: "h1", type: "video", sourceTrainerId: "t1", poster_time_s: 3.5 }),
+    );
+    expect(r.status).toBe(202);
+    expect(state.calls.mutations).toContainEqual(
+      expect.objectContaining({
+        table: "post",
+        op: "insert",
+        payload: expect.objectContaining({ poster_time_s: 3.5, type: "video" }),
+      }),
+    );
+  });
+
+  it("omits poster_time_s from the insert when absent", async () => {
+    asAdmin();
+    state.tables.horse = { select: { single: { id: "h1" } } };
+    state.tables.post = { mutate: { single: { id: "p2", status: "draft", type: "video", horse_id: "h1" } } };
+    await POST(postReq({ horseId: "h1", type: "video", sourceTrainerId: "t1" }));
+    const insert = state.calls.mutations.find(
+      (m: { table: string; op: string }) => m.table === "post" && m.op === "insert",
+    );
+    expect(insert?.payload).not.toHaveProperty("poster_time_s");
+  });
+
+  it("rejects a non-finite poster_time_s → 400", async () => {
+    asAdmin();
+    state.tables.horse = { select: { single: { id: "h1" } } };
+    // JSON.stringify turns NaN/Infinity into null (allowed = omit), so probe
+    // with a negative number and a non-number — both must 400 before insert.
+    for (const poster_time_s of [-1, "3.5"]) {
+      const r = await POST(
+        postReq({ horseId: "h1", type: "video", sourceTrainerId: "t1", poster_time_s }),
+      );
+      expect(r.status).toBe(400);
+    }
+    expect(state.calls.mutations).toHaveLength(0);
+  });
+
   it("rejects 'news' → 400", async () => {
     asAdmin();
     const r = await POST(postReq({ horseId: "h1", type: "news", sourceTrainerId: "t1" }));

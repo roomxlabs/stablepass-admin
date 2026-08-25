@@ -20,6 +20,9 @@ const FIELD_MAP: Record<string, string> = {
   // is on the row untouched — which is what keeps an old unlabelled post
   // unlabelled when the operator saves an edit without opening the picker.
   label: "label",
+  // ENG-824 — poster frame time (seconds). Same snake_case on the wire as the
+  // column. Absent leaves the row alone; a number sets it.
+  poster_time_s: "poster_time_s",
 };
 
 // PATCH /api/admin/posts/:id — edit post fields (editable byline included).
@@ -44,6 +47,14 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
     if (labelValue === undefined)
       return fail("validation_failed", LABEL_ERROR_MESSAGE, 400);
     patch.label = labelValue;
+  }
+
+  // ENG-824 — reject non-finite / negative poster times (same rule as POST).
+  if ("poster_time_s" in b) {
+    const t = b.poster_time_s;
+    if (t !== null && (typeof t !== "number" || !Number.isFinite(t) || t < 0)) {
+      return fail("validation_failed", "poster_time_s must be a non-negative finite number.", 400);
+    }
   }
 
   // ENG-748 — the ordered photo set, and the `post.media_url` mirror that keeps

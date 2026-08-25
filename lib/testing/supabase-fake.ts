@@ -201,6 +201,26 @@ export function makeFakeClient(state: FakeState) {
             }
           );
         },
+        // ENG-825 — BFF poster route signs the new poster_url for display.
+        createSignedUrl: async (path: string) => {
+          state.calls.storage.push({ bucket, path });
+          return (
+            state.storage.signed ?? {
+              data: { signedUrl: `https://storage.local/${bucket}/${path}` },
+              error: null,
+            }
+          );
+        },
+        createSignedUrls: async (paths: string[]) => {
+          for (const path of paths) state.calls.storage.push({ bucket, path });
+          return {
+            data: paths.map((path) => ({
+              path,
+              signedUrl: `https://storage.local/${bucket}/${path}`,
+            })),
+            error: null,
+          };
+        },
       }),
     },
   };

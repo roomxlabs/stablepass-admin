@@ -162,3 +162,46 @@ describe("POST /api/admin/horses — sex + gelded (ENG-616)", () => {
     expect(Object.keys(payload).filter((k) => k.includes("owner"))).toEqual([]);
   });
 });
+
+describe("POST /api/admin/horses — shares_for_sale (ENG-829)", () => {
+  beforeEach(() => {
+    asAdmin();
+    state.tables.horse = { mutate: { single: { id: "h1", shares_for_sale: true } } };
+  });
+
+  it("persists shares_for_sale=true when the trainer has a website_url", async () => {
+    state.tables.trainer = {
+      select: { single: { id: "t1", website_url: "https://wallerracing.com.au" } },
+    };
+    const r = await POST(postReq({ trainerId: "t1", stableName: "Mahogany", sharesForSale: true }));
+    expect(r.status).toBe(201);
+    expect(rec.writes[0].payload).toMatchObject({ shares_for_sale: true });
+    // Boolean only — no price / vendor / share-count (guardrails 4/6).
+    const keys = Object.keys(rec.writes[0].payload as object);
+    expect(keys.filter((k) => /price|owner|vendor|share_count/i.test(k))).toEqual([]);
+  });
+
+  it("persists shares_for_sale=false", async () => {
+    const r = await POST(postReq({ trainerId: "t1", stableName: "Mahogany", sharesForSale: false }));
+    expect(r.status).toBe(201);
+    expect(rec.writes[0].payload).toMatchObject({ shares_for_sale: false });
+    // Turning off must not require a trainer website lookup.
+    expect(rec.selects.filter((s) => s.startsWith("trainer:"))).toEqual([]);
+  });
+
+  it("400s with the form copy when sharesForSale=true and website_url is null", async () => {
+    state.tables.trainer = { select: { single: { id: "t1", website_url: null } } };
+    const r = await POST(postReq({ trainerId: "t1", stableName: "Mahogany", sharesForSale: true }));
+    expect(r.status).toBe(400);
+    const j = await r.json();
+    expect(j.error.code).toBe("validation_failed");
+    expect(j.error.message).toMatch(/Set this trainer's website first/);
+    expect(rec.writes).toEqual([]);
+  });
+
+  it("400s when sharesForSale is not a boolean", async () => {
+    const r = await POST(postReq({ trainerId: "t1", sharesForSale: "yes" }));
+    expect(r.status).toBe(400);
+    expect(rec.writes).toEqual([]);
+  });
+});

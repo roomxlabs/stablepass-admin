@@ -40,3 +40,31 @@ export const discardDraft = (id: string): Promise<void> =>
  */
 export const deletePost = (id: string): Promise<void> =>
   call(`/api/admin/posts/${id}/delete`, "DELETE", "Delete");
+
+/** Response from POST /api/admin/posts/:id/poster (ENG-825). */
+export type PosterRebakeResult = {
+  posterUrl: string;
+  posterTimeS: number;
+  posterDisplayUrl: string | null;
+};
+
+/**
+ * Re-bake the video poster at `time` seconds. POSTs `{ time }` to the BFF,
+ * which invokes BE `rebake-poster` with the admin session (no Mux/service-role
+ * material client-side). On failure the previous poster_url is unchanged.
+ */
+export async function rebakePoster(id: string, time: number): Promise<PosterRebakeResult> {
+  const res = await fetch(`/api/admin/posts/${id}/poster`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ time }),
+  });
+  const json = (await res.json().catch(() => null)) as {
+    data?: PosterRebakeResult;
+    error?: { message?: string };
+  } | null;
+  if (!res.ok || !json?.data) {
+    throw new Error(json?.error?.message ?? `Poster re-bake failed (${res.status}).`);
+  }
+  return json.data;
+}

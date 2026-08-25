@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import { Icon } from "../icons";
 import LocalTime from "../LocalTime";
 import HlsVideo from "./HlsVideo";
+import PosterScrubber from "./PosterScrubber";
 import PreviewModal from "./PreviewModal";
 import PostPreview, { type PostPreviewData } from "./PostPreview";
 import {
@@ -34,6 +35,7 @@ import type {
   MeasureState,
   MediaDimensions,
   MediaType,
+  PosterTimePatch,
   TrainerOption,
 } from "./types";
 import styles from "./compose.module.css";
@@ -174,6 +176,16 @@ export default function ComposeScreen({
    */
   const labelPatch: { label?: string | null } =
     label === initialLabel ? {} : { label: label === "" ? null : label };
+
+  /**
+   * ENG-824 — poster frame time. Mirror `labelPatch`: ABSENT unless the
+   * operator actually picked a frame. createDraft usually runs on file pick
+   * (before scrub), so the publish PATCH + the immediate patch on
+   * "Use this frame" are how the time reaches the row.
+   */
+  const [posterTimeS, setPosterTimeS] = useState<number | null>(null);
+  const posterTimePatch: PosterTimePatch =
+    posterTimeS === null ? {} : { poster_time_s: posterTimeS };
 
   const [file, setFile] = useState<File | null>(null);
   /**
@@ -396,6 +408,7 @@ export default function ComposeScreen({
     setMediaUrl(null);
     setDims(null);
     setMeasure("off");
+    setPosterTimeS(null);
     setDraft(null);
     setTypeError(null);
     setUpload({ state: "idle", pct: 0 });
@@ -427,6 +440,20 @@ export default function ComposeScreen({
     setDims((prev) =>
       prev && next && prev.width === next.width && prev.height === next.height ? prev : next,
     );
+  }
+
+  /**
+   * ENG-824 — operator confirmed a poster frame from the local scrubber.
+   * Persist immediately when a draft already exists so Mux `asset.ready` can
+   * bake the chosen time even if they publish later (or not yet).
+   */
+  function onPickPosterFrame(timeS: number) {
+    setPosterTimeS(timeS);
+    if (draft) {
+      void patchPost(draft.id, { poster_time_s: timeS }).catch(() => {
+        // Best-effort early write — the publish PATCH re-sends posterTimePatch.
+      });
+    }
   }
 
   async function onPickFile(picked: File) {
@@ -462,6 +489,8 @@ export default function ComposeScreen({
     setDraft(null);
     setFile(picked);
     setMediaUrl(objectUrl(picked));
+    // A replacement clip invalidates any previous poster pick.
+    setPosterTimeS(null);
     // Drop the previous file's measurement BEFORE the new one lands, so the
     // readout can never describe the file the operator just replaced.
     setDims(null);
@@ -477,7 +506,11 @@ export default function ComposeScreen({
     const stale = () => pickGeneration.current !== generation;
 
     try {
-      const created = await createDraft({ horseId: horse.id, type: kind, sourceTrainerId: bylineId });
+      const created = await createDraft({
+        horseId: horse.id,
+        type: kind,
+        sourceTrainerId: bylineId,
+      });
       if (stale()) {
         // The operator moved on mid-flight. This draft belongs to a post they
         // no longer want, so bin it server-side and touch NO state — writing
@@ -759,6 +792,7 @@ export default function ComposeScreen({
           title: title.trim() || undefined,
           body: caption,
           ...labelPatch,
+          ...posterTimePatch,
         });
         setDraft(current);
       }
@@ -770,6 +804,7 @@ export default function ComposeScreen({
         sourceTrainerId: bylineId,
         ...labelPatch,
         ...mediaPatch,
+        ...posterTimePatch,
       });
 
       if (next === "publish") {
@@ -1336,6 +1371,18 @@ export default function ComposeScreen({
                   ) : null}
                 </div>
               )}
+              {/* ENG-824 — local poster scrubber. Video create only; never edit
+                  mode (media is fixed there) and never photo/text/voice.
+                  needs-design-check: no mockup — matches Step 3 upload controls. */}
+              {!isEdit && postType === "video" && file && mediaUrl ? (
+                <PosterScrubber
+                  key={mediaUrl}
+                  file={file}
+                  src={mediaUrl}
+                  selectedTimeS={posterTimeS}
+                  onPick={onPickPosterFrame}
+                />
+              ) : null}
               {/* ENG-748 — the ordering strip. Present only for a photo post
                   that actually has photos, and only outside edit mode (media is
                   read-only there). Deliberately rendered for a ONE-photo set

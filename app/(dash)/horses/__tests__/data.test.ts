@@ -85,8 +85,16 @@ describe("fetchHorses", () => {
 
 describe("fetchTrainerOptions", () => {
   it("returns the rows", async () => {
-    state.tables.trainer = { select: { rows: [{ id: "t1", display_name: "Chris Waller", stable_name: null }] } };
+    state.tables.trainer = {
+      select: { rows: [{ id: "t1", display_name: "Chris Waller", stable_name: null, website_url: null }] },
+    };
     await expect(fetchTrainerOptions(sb())).resolves.toHaveLength(1);
+  });
+
+  it("selects website_url so the Shares toggle can gate without a second round-trip (ENG-829)", async () => {
+    state.tables.trainer = { select: { rows: [] } };
+    await fetchTrainerOptions(sb());
+    expect(selectFor(rec, "trainer")).toContain("website_url");
   });
 
   it("THROWS on a query error rather than rendering an empty trainer dropdown", async () => {
@@ -99,8 +107,14 @@ describe("fetchTrainerOptions", () => {
 
 describe("fetchHorseForEdit", () => {
   it("returns the row and scopes the read to the requested id", async () => {
-    state.tables.horse = { select: { single: { id: "h1", sex: "male", is_gelded: true } } };
-    await expect(fetchHorseForEdit(sb(), "h1")).resolves.toMatchObject({ sex: "male", is_gelded: true });
+    state.tables.horse = {
+      select: { single: { id: "h1", sex: "male", is_gelded: true, shares_for_sale: true } },
+    };
+    await expect(fetchHorseForEdit(sb(), "h1")).resolves.toMatchObject({
+      sex: "male",
+      is_gelded: true,
+      shares_for_sale: true,
+    });
     expect(rec.filters).toContain("horse.id=h1");
   });
 

@@ -73,15 +73,22 @@ export async function fetchHorses(sb: SupabaseClient, q: string): Promise<HorseR
   return (unwrap(await query, "horse") ?? []) as HorseRow[];
 }
 
-export type TrainerOption = { id: string; display_name: string | null; stable_name: string | null };
+export type TrainerOption = {
+  id: string;
+  display_name: string | null;
+  stable_name: string | null;
+  /** ENG-829 — gates the horse Shares for-sale toggle. */
+  website_url: string | null;
+};
 
 // The Add/Edit form's trainer dropdown. Same rule as the list: a failed read
 // must not render as "no trainers exist", which would quietly invite the
-// operator to create a duplicate trainer.
+// operator to create a duplicate trainer. website_url is required so the form
+// can gate shares_for_sale without a second round-trip.
 export async function fetchTrainerOptions(sb: SupabaseClient): Promise<TrainerOption[]> {
   const res = await sb
     .from("trainer")
-    .select("id, display_name, stable_name")
+    .select("id, display_name, stable_name, website_url")
     .order("display_name", { ascending: true });
   return (unwrap(res, "trainer") ?? []) as TrainerOption[];
 }
@@ -107,6 +114,8 @@ export type HorseEditRow = {
   photo_url: string | null;
   status: string | null;
   training_status: string | null;
+  /** ENG-829 */
+  shares_for_sale: boolean | null;
 };
 
 // One horse for the edit form. Returns null ONLY for a genuine not-found; a

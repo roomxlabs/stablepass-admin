@@ -87,3 +87,16 @@ export function parseWebsiteUrl(raw: unknown): WebsiteUrlResult {
 
   return { ok: true, value: trimmed };
 }
+
+/**
+ * Whether a trainer's stored website_url is usable as the Shares CTA target.
+ * ENG-829: a for-sale horse with no website has a dead-end contact button, so
+ * the admin toggle (and BFF) refuse `shares_for_sale=true` unless this is true.
+ *
+ * Reuses parseWebsiteUrl so "has a website" means the same thing the trainer
+ * form would accept and member web would render — not merely a non-null string.
+ */
+export function trainerHasWebsite(websiteUrl: string | null | undefined): boolean {
+  const parsed = parseWebsiteUrl(websiteUrl ?? null);
+  return parsed.ok && parsed.value !== null;
+}

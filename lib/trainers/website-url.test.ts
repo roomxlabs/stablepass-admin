@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { parseWebsiteUrl, WEBSITE_URL_MESSAGE } from "./website-url";
+import { parseWebsiteUrl, trainerHasWebsite, WEBSITE_URL_MESSAGE } from "./website-url";
 
 describe("parseWebsiteUrl", () => {
   it("treats null as no website", () => {
@@ -168,4 +168,22 @@ describe("parseWebsiteUrl - obfuscated schemes and control characters", () => {
       expect(parseWebsiteUrl(value)).toEqual({ ok: true, value });
     },
   );
+});
+
+describe("trainerHasWebsite (ENG-829)", () => {
+  it("is false for null / empty / whitespace", () => {
+    expect(trainerHasWebsite(null)).toBe(false);
+    expect(trainerHasWebsite(undefined)).toBe(false);
+    expect(trainerHasWebsite("")).toBe(false);
+    expect(trainerHasWebsite("   ")).toBe(false);
+  });
+
+  it("is true for a usable http(s) URL", () => {
+    expect(trainerHasWebsite("https://wallerracing.com.au")).toBe(true);
+    expect(trainerHasWebsite("http://example.com")).toBe(true);
+  });
+
+  it("is false for a bare domain the member CTA would refuse to render", () => {
+    expect(trainerHasWebsite("wallerracing.com.au")).toBe(false);
+  });
 });

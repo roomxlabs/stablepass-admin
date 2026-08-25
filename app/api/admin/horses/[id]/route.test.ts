@@ -171,6 +171,46 @@ describe("PATCH /api/admin/horses/:id — sex + gelded (ENG-616)", () => {
   });
 });
 
+describe("PATCH /api/admin/horses/:id — shares_for_sale (ENG-829)", () => {
+  beforeEach(() => {
+    asAdmin();
+  });
+
+  it("persists shares_for_sale=true when the horse's trainer has a website_url", async () => {
+    state.tables.horse = {
+      select: { single: { id: "h1", trainer_id: "t1" } },
+      mutate: { single: { id: "h1", shares_for_sale: true } },
+    };
+    state.tables.trainer = {
+      select: { single: { id: "t1", website_url: "https://wallerracing.com.au" } },
+    };
+    const r = await PATCH(patchReq({ sharesForSale: true }), ctx());
+    expect(r.status).toBe(200);
+    expect(rec.writes[0].payload).toMatchObject({ shares_for_sale: true });
+    expect(rec.filters).toContain("horse.id=h1");
+    expect(rec.filters).toContain("trainer.id=t1");
+  });
+
+  it("persists shares_for_sale=false without requiring a website", async () => {
+    state.tables.horse = { mutate: { single: { id: "h1", shares_for_sale: false } } };
+    const r = await PATCH(patchReq({ sharesForSale: false }), ctx());
+    expect(r.status).toBe(200);
+    expect(rec.writes[0].payload).toMatchObject({ shares_for_sale: false });
+    expect(rec.selects.filter((s) => s.startsWith("trainer:"))).toEqual([]);
+  });
+
+  it("400s when sharesForSale=true and the trainer's website_url is null", async () => {
+    state.tables.horse = { select: { single: { id: "h1", trainer_id: "t1" } } };
+    state.tables.trainer = { select: { single: { id: "t1", website_url: null } } };
+    const r = await PATCH(patchReq({ sharesForSale: true }), ctx());
+    expect(r.status).toBe(400);
+    const j = await r.json();
+    expect(j.error.code).toBe("validation_failed");
+    expect(j.error.message).toMatch(/Set this trainer's website first/);
+    expect(rec.writes).toEqual([]);
+  });
+});
+
 describe("DELETE /api/admin/horses/:id — refused, not cascaded", () => {
   const delReq = () => new Request("http://t/api/admin/horses/h1", { method: "DELETE" });
 

@@ -18,6 +18,8 @@ vi.mock("./api", () => ({
   republishPost: vi.fn(),
   publishNow: vi.fn(),
   discardDraft: vi.fn(),
+  deletePost: vi.fn(),
+  rebakePoster: vi.fn(),
 }));
 
 // Run `fn` with process.env.TZ pinned — Node re-reads TZ on assignment (tzset +
@@ -55,6 +57,7 @@ function view(over: Partial<PostView>): PostView {
     horseName: "Mahogany",
     trainerName: "Chris Waller",
     thumbUrl: null,
+    type: "video",
     typeLabel: "Video",
     status: "published",
     statusLabel: "Published",
@@ -62,6 +65,8 @@ function view(over: Partial<PostView>): PostView {
     publishedAt: "2026-07-13T00:00:00Z",
     scheduledFor: null,
     likeCount: 42,
+    playbackUrl: null,
+    posterTimeS: null,
     ...over,
   };
 }

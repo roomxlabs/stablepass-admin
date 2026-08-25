@@ -4,7 +4,7 @@ import PostsLibrary from "./PostsLibrary";
 import { mapPostRow, parseStatusFilter } from "./format";
 import type { PostRow, StatusCounts, StatusFilter } from "./types";
 import { HORSE_PHOTO_BUCKET, POST_MEDIA_BUCKET, signPhotoMap } from "@/lib/storage/photos";
-import { muxSignedThumbnailUrl } from "@/lib/mux-playback";
+import { muxSignedStreamUrl, muxSignedThumbnailUrl } from "@/lib/mux-playback";
 import "./posts.css";
 
 // Posts library — screens/04-posts.html. Data-bearing (dash) page: it
@@ -16,7 +16,7 @@ import "./posts.css";
 
 const PAGE_SIZE = 20;
 const POST_FIELDS =
-  "id,horse_id,type,status,title,body,media_url,mux_playback_id,like_count,published_at,scheduled_for,created_at," +
+  "id,horse_id,type,status,title,body,media_url,mux_playback_id,poster_url,poster_time_s,like_count,published_at,scheduled_for,created_at," +
   "horse:horse_id(display_name,racing_name,photo_url),trainer:source_trainer_id(name)";
 
 // Resolve free-text `q` into a PostgREST OR clause across post title/body plus
@@ -90,22 +90,36 @@ export default async function PostsPage({
   );
 
   // Row thumbnail = the post's own media (photo → signed Storage URL, video →
-  // signed Mux frame), falling back to the horse profile photo. Both buckets
-  // are private, so everything is signed server-side.
+  // baked poster_url when set else signed Mux frame), falling back to the horse
+  // profile photo. Both buckets are private, so everything is signed server-side.
+  // Video rows also get a signed HLS playbackUrl for the poster scrubber (ENG-825).
   const items = rows.map(mapPostRow);
-  const [horseThumbs, mediaThumbs] = await Promise.all([
+  const [horseThumbs, mediaThumbs, posterThumbs] = await Promise.all([
     signPhotoMap(sb, HORSE_PHOTO_BUCKET, items.map((p) => p.thumbUrl)),
     signPhotoMap(sb, POST_MEDIA_BUCKET, rows.map((r) => (r.type === "photo" ? r.media_url : null))),
+    signPhotoMap(
+      sb,
+      POST_MEDIA_BUCKET,
+      rows.map((r) => (r.type === "video" ? r.poster_url : null)),
+    ),
   ]);
   const posts = items.map((p, i) => {
     const r = rows[i];
     const mediaThumb =
       r.type === "photo" && r.media_url
         ? mediaThumbs.get(r.media_url) ?? null
-        : r.type === "video" && r.mux_playback_id
-          ? muxSignedThumbnailUrl(r.mux_playback_id)
-          : null;
-    return { ...p, thumbUrl: mediaThumb ?? (p.thumbUrl ? horseThumbs.get(p.thumbUrl) ?? null : null) };
+        : r.type === "video" && r.poster_url && posterThumbs.get(r.poster_url)
+          ? posterThumbs.get(r.poster_url)!
+          : r.type === "video" && r.mux_playback_id
+            ? muxSignedThumbnailUrl(r.mux_playback_id)
+            : null;
+    const playbackUrl =
+      r.type === "video" && r.mux_playback_id ? muxSignedStreamUrl(r.mux_playback_id) : null;
+    return {
+      ...p,
+      thumbUrl: mediaThumb ?? (p.thumbUrl ? horseThumbs.get(p.thumbUrl) ?? null : null),
+      playbackUrl,
+    };
   });
 
   return (

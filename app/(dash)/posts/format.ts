@@ -79,6 +79,7 @@ export function mapPostRow(row: PostRow): PostView {
     horseName: horse?.display_name || horse?.racing_name || "Unassigned",
     trainerName: trainer?.name ?? null,
     thumbUrl: horse?.photo_url ?? null,
+    type: row.type,
     typeLabel: typeLabel(row.type),
     status: row.status,
     statusLabel: meta.label,
@@ -89,6 +90,13 @@ export function mapPostRow(row: PostRow): PostView {
     likeCount: engaged ? row.like_count ?? 0 : null,
     // Editing a post happens in Compose (T6); the PATCH endpoint is T5's.
     editHref: `/compose?id=${row.id}`,
+    // Filled by the page after signing (playback + poster) — mapPostRow leaves
+    // these null so unit tests of the pure mapper stay DB-free.
+    playbackUrl: null,
+    posterTimeS:
+      typeof row.poster_time_s === "number" && Number.isFinite(row.poster_time_s)
+        ? row.poster_time_s
+        : null,
   };
 }
 

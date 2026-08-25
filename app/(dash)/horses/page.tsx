@@ -23,8 +23,16 @@ import "./horses.css";
 // indistinguishable from "not allowed" — requireAdminPage() redirects before
 // any read happens, and fetchHorses() throws on a query error rather than
 // returning [], so reaching `.horse-empty` means the library really is empty.
-
-const PAGE_SIZE = 12;
+//
+// NO PAGINATION. The list renders every horse the operator can read, on one
+// scrollable page, at Justin's request (hotfix, 25 Aug 2026). This only ever
+// removed a CLIENT-SIDE `.slice()`: `fetchHorses()` already returned the whole
+// table and the 12-per-page cut was applied afterwards, so nothing about the
+// query changed and no round-trip was added. `signPhotoMap()` is still ONE
+// batched `createSignedUrls` call, now over every row instead of twelve.
+//
+// A stale bookmark carrying `?page=2` is simply ignored — the param is no
+// longer read, and an unknown search param is inert on a Server Component.
 
 type Filter = "all" | "active" | "racing" | "retired";
 const FILTERS: { key: Filter; label: string }[] = [
@@ -44,11 +52,11 @@ function embedCount(e: CountEmbed | null): number {
   return e?.[0]?.count ?? 0;
 }
 
-function buildHref(p: { filter?: Filter; q?: string; page?: number }): string {
+// `filter` and `q` still compose exactly as before; only `page` is gone.
+function buildHref(p: { filter?: Filter; q?: string }): string {
   const params = new URLSearchParams();
   if (p.filter && p.filter !== "all") params.set("filter", p.filter);
   if (p.q) params.set("q", p.q);
-  if (p.page && p.page > 1) params.set("page", String(p.page));
   const s = params.toString();
   return s ? `/horses?${s}` : "/horses";
 }
@@ -66,7 +74,6 @@ export default async function HorsesPage({
     ? (sp.filter as Filter)
     : "all";
   const q = typeof sp.q === "string" ? sp.q.trim() : "";
-  const requestedPage = Math.max(1, parseInt(typeof sp.page === "string" ? sp.page : "1", 10) || 1);
 
   const all: HorseRow[] = await fetchHorses(sb, q);
 
@@ -85,12 +92,9 @@ export default async function HorsesPage({
   });
 
   const total = filtered.length;
-  const pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE));
-  const current = Math.min(requestedPage, pageCount);
-  const start = (current - 1) * PAGE_SIZE;
-  const shown = filtered.slice(start, start + PAGE_SIZE);
   // Private bucket: turn each stored photo path into a signed URL for display.
-  const covers = await signPhotoMap(sb, HORSE_PHOTO_BUCKET, shown.map((h) => h.photo_url));
+  // One batched call regardless of how many rows the filter left.
+  const covers = await signPhotoMap(sb, HORSE_PHOTO_BUCKET, filtered.map((h) => h.photo_url));
 
   return (
     <>
@@ -135,7 +139,7 @@ export default async function HorsesPage({
             />
           </div>
 
-          {shown.length === 0 ? (
+          {total === 0 ? (
             <div className="horse-empty">
               <h2>{q || filter !== "all" ? "No horses match" : "No horses yet"}</h2>
               <p>
@@ -151,7 +155,7 @@ export default async function HorsesPage({
             <>
               <div style={{ padding: 20 }}>
                 <div className="horse-grid-adm">
-                  {shown.map((h) => {
+                  {filtered.map((h) => {
                     const cover = h.photo_url ? covers.get(h.photo_url) ?? null : null;
                     return (
                     <Link key={h.id} href={`/horses/${h.id}/edit`} className="horse-card-adm">
@@ -197,19 +201,7 @@ export default async function HorsesPage({
 
               <div className="horse-grid-foot">
                 <div>
-                  Showing {shown.length} of {total} horses
-                </div>
-                <div className="pager">
-                  {current > 1 ? (
-                    <Link href={buildHref({ filter, q, page: current - 1 })}>‹ Prev</Link>
-                  ) : (
-                    <span className="disabled">‹ Prev</span>
-                  )}
-                  {current < pageCount ? (
-                    <Link href={buildHref({ filter, q, page: current + 1 })}>Next ›</Link>
-                  ) : (
-                    <span className="disabled">Next ›</span>
-                  )}
+                  {total} {total === 1 ? "horse" : "horses"}
                 </div>
               </div>
             </>

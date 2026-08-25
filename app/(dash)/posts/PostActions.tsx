@@ -3,7 +3,7 @@
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import type { PostStatus } from "./types";
-import { discardDraft, publishNow, republishPost, unpublishPost } from "./api";
+import { deletePost, discardDraft, publishNow, republishPost, unpublishPost } from "./api";
 
 // The per-row action affordances. Which action shows is a pure function of the
 // post's status (guardrail §2): Discard appears only on a draft; a published
@@ -11,6 +11,19 @@ import { discardDraft, publishNow, republishPost, unpublishPost } from "./api";
 // Republished; a scheduled or draft post can be Published now (the publish
 // endpoint accepts both). Opening the post detail (Compose in edit mode) is
 // the row click itself (PostRow), not an action here.
+//
+// DELETE is the one addition, and it is NOT a second unpublish. Unpublish stays
+// exactly as it was — the reversible soft hide §2 requires — and Delete removes
+// the row. They are kept apart three ways so no operator can confuse them: a
+// different word, a different treatment (a bordered red chip, not red text),
+// and a confirmation that says in full sentences that it cannot be undone.
+//
+// It shows on every status EXCEPT draft, where Discard already is this action
+// under §2's own name; showing both there would be two buttons doing one thing.
+const DELETE_CONFIRM =
+  "Permanently delete this post?\n\n" +
+  "This removes the post from the database. It CANNOT be undone.\n\n" +
+  "To hide a published post from members without deleting it, cancel and use Unpublish instead.";
 export default function PostActions({ id, status }: { id: string; status: PostStatus }) {
   const router = useRouter();
   const [pending, startTransition] = useTransition();
@@ -58,6 +71,17 @@ export default function PostActions({ id, status }: { id: string; status: PostSt
           onClick={() => act(discardDraft, "Discard this draft? This can't be undone.")}
         >
           Discard
+        </button>
+      )}
+      {status !== "draft" && (
+        <button
+          type="button"
+          className="destructive"
+          disabled={working}
+          title="Permanently delete this post"
+          onClick={() => act(deletePost, DELETE_CONFIRM)}
+        >
+          Delete
         </button>
       )}
       {error && (

@@ -115,3 +115,19 @@ export async function fetchHorseForEdit(sb: SupabaseClient, id: string): Promise
   const res = await sb.from("horse").select("*").eq("id", id).maybeSingle();
   return (unwrap(res, "horse") ?? null) as HorseEditRow | null;
 }
+
+// How many posts point at this horse — the ONE thing that can refuse its
+// delete (`post.horse_id` is not-null with no ON DELETE). `head: true` fetches
+// no rows, so this is a count query and nothing more.
+//
+// Throws on error like every other read here, deliberately: a swallowed error
+// would return 0 and present a delete that Postgres is certain to reject as
+// one that is safe to offer.
+export async function countPostsForHorse(sb: SupabaseClient, horseId: string): Promise<number> {
+  const { count, error } = await sb
+    .from("post")
+    .select("id", { count: "exact", head: true })
+    .eq("horse_id", horseId);
+  if (error) throw new Error(`post count read failed (${error.code ?? "unknown"})`);
+  return count ?? 0;
+}

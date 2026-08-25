@@ -7,7 +7,7 @@ vi.mock("@/lib/supabase/server", () => ({
   supabaseServer: async () => makeFakeClient(state),
 }));
 
-import { PATCH } from "./route";
+import { PATCH, DELETE } from "./route";
 
 function asAdmin() {
   state.user = { id: "u1" };
@@ -200,5 +200,77 @@ describe("PATCH /api/admin/trainers/:id — update trainer", () => {
     const src = readFileSync(new URL("./route.ts", import.meta.url), "utf8");
     const selectCall = src.match(/\.select\("([^"]+)"\)/);
     expect(selectCall?.[1]).toContain("website_url");
+  });
+});
+
+describe("DELETE /api/admin/trainers/:id — refused on TWO paths", () => {
+  const delReq = () => new Request("http://t/api/admin/trainers/t1", { method: "DELETE" });
+
+  it("403s for a non-admin (guardrail §1)", async () => {
+    asNonAdmin();
+    const r = await DELETE(delReq(), ctx);
+    expect(r.status).toBe(403);
+  });
+
+  it("names BOTH blockers in one message rather than one at a time", async () => {
+    asAdmin();
+    state.tables.post = { select: { count: 4 } };
+    state.tables.horse = { select: { count: 2 } };
+    const r = await DELETE(delReq(), ctx);
+    expect(r.status).toBe(409);
+    const j = await r.json();
+    expect(j.error.code).toBe("has_references");
+    expect(j.error.message).toContain("4 posts");
+    expect(j.error.message).toContain("2 horses");
+    expect(state.calls.mutations.some((m) => m.table === "trainer")).toBe(false);
+  });
+
+  it("409s on horses alone", async () => {
+    asAdmin();
+    state.tables.post = { select: { count: 0 } };
+    state.tables.horse = { select: { count: 1 } };
+    const j = await (await DELETE(delReq(), ctx)).json();
+    expect(j.error.message).toContain("1 horse reference");
+    // The order hint always names posts; what must be absent is a post COUNT.
+    expect(j.error.message).not.toContain("0 post");
+  });
+
+  it("204s and deletes exactly the addressed row when nothing references it", async () => {
+    asAdmin();
+    state.tables.post = { select: { count: 0 } };
+    state.tables.horse = { select: { count: 0 } };
+    state.tables.trainer = { mutate: { single: { id: "t1" } } };
+    const r = await DELETE(delReq(), ctx);
+    expect(r.status).toBe(204);
+    const del = state.calls.mutations.find((m) => m.table === "trainer" && m.op === "delete");
+    expect(del?.filters).toEqual([{ column: "id", value: "t1" }]);
+  });
+
+  it("404s a missing trainer", async () => {
+    asAdmin();
+    state.tables.post = { select: { count: 0 } };
+    state.tables.horse = { select: { count: 0 } };
+    state.tables.trainer = { mutate: { single: null } };
+    const r = await DELETE(delReq(), ctx);
+    expect(r.status).toBe(404);
+  });
+
+  it("refuses rather than guesses when a count fails", async () => {
+    asAdmin();
+    state.tables.post = { select: { error: { code: "42501" } } };
+    state.tables.horse = { select: { count: 0 } };
+    const r = await DELETE(delReq(), ctx);
+    expect(r.status).toBe(400);
+    expect(state.calls.mutations.some((m) => m.table === "trainer")).toBe(false);
+  });
+
+  it("maps a raced 23503 to the same readable refusal", async () => {
+    asAdmin();
+    state.tables.post = { select: { count: 0 } };
+    state.tables.horse = { select: { count: 0 } };
+    state.tables.trainer = { mutate: { error: { code: "23503" } } };
+    const r = await DELETE(delReq(), ctx);
+    expect(r.status).toBe(409);
+    expect((await r.json()).error.message).not.toContain("23503");
   });
 });

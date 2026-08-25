@@ -167,6 +167,22 @@
 .adm-table td.actions button:hover:not(:disabled) { text-decoration: underline; }
 .adm-table td.actions a.danger,
 .adm-table td.actions button.danger { color: var(--red); }
+/* The HARD-delete affordance. Deliberately NOT the same treatment as Unpublish
+   (which is `.danger` — plain red text for a reversible soft hide): Delete is a
+   bordered chip, so on an unpublished row that carries both Republish and
+   Delete the destructive one cannot be misread as the reversible one. */
+.adm-table td.actions button.destructive {
+  color: var(--red);
+  border: 1px solid var(--red);
+  border-radius: 6px;
+  padding: 3px 9px;
+  font-weight: 600;
+}
+.adm-table td.actions button.destructive:hover:not(:disabled) {
+  background: var(--red);
+  color: var(--white);
+  text-decoration: none;
+}
 .adm-table td.actions button:disabled { opacity: 0.5; cursor: default; }
 .adm-table td.actions .row-err { color: var(--red); font-size: 11px; margin-left: 10px; }
 

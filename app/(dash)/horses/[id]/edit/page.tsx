@@ -1,7 +1,9 @@
 import { notFound } from "next/navigation";
 import { requireAdminPage } from "@/lib/auth/admin";
 import HorseForm, { type Trainer, type HorseInitial } from "../../HorseForm";
-import { fetchHorseForEdit, fetchTrainerOptions } from "../../data";
+import DangerDelete from "../../../DangerDelete";
+import { blockedMessage } from "@/lib/api/references";
+import { fetchHorseForEdit, fetchTrainerOptions, countPostsForHorse } from "../../data";
 import "../../horses.css";
 
 // Edit horse — reuses the add-horse form (there is no separate edit mockup),
@@ -16,9 +18,12 @@ export default async function EditHorsePage({
 
   // Both helpers THROW on a query error rather than returning empty, so an RLS
   // regression cannot present itself as "this horse doesn't exist".
-  const [horseRow, trainerRows] = await Promise.all([
+  const [horseRow, trainerRows, postCount] = await Promise.all([
     fetchHorseForEdit(sb, id),
     fetchTrainerOptions(sb),
+    // Pre-count for the Danger zone below: `post.horse_id` is not-null with no
+    // ON DELETE, so this decides whether the delete can be offered at all.
+    countPostsForHorse(sb, id),
   ]);
 
   if (!horseRow) notFound();
@@ -48,5 +53,29 @@ export default async function EditHorsePage({
     trainingStatus: horse.training_status ?? "spelling",
   };
 
-  return <HorseForm mode="edit" horseId={id} trainers={trainers} initial={initial} />;
+  const blockedReason = blockedMessage("horse", [
+    { count: postCount, singular: "post", plural: "posts" },
+  ]);
+
+  return (
+    <>
+      <HorseForm mode="edit" horseId={id} trainers={trainers} initial={initial} />
+      {/* Sits OUTSIDE HorseForm because that component is one big <form> and a
+          delete must never be reachable by submitting it. */}
+      <div className="admin-content" style={{ paddingTop: 0 }}>
+        <DangerDelete
+          testId="delete-horse"
+          endpoint={`/api/admin/horses/${id}`}
+          redirectTo="/horses"
+          heading="Delete horse"
+          description="Removes the horse from the database. Its followers, notification opt-ins and race entries go with it. Delete its posts first."
+          confirmText={
+            `Permanently delete ${initial.stableName || "this horse"}?\n\n` +
+            "This removes the horse, its followers, its notification opt-ins and its race entries from the database. It CANNOT be undone."
+          }
+          blockedReason={blockedReason}
+        />
+      </div>
+    </>
+  );
 }

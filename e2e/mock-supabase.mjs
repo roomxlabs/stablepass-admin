@@ -36,16 +36,59 @@ const AUDIT_LOG = [];
 // empty toggle applies uniformly and a second trainer source can't drift out of
 // sync with the first (that duplication is what made the horse reads ambiguous).
 
-const HORSE_FIXTURES = [
-  { id: "h1", trainer_id: "t1", display_name: "Mahogany", racing_name: "MAHOGANY (AUS)", stable_name: "Mahogany", sire: "Snitzel", dam: "Polar Success", sex: "gelding", colour: "Bay", foaling_year: 2020, status: "active", training_status: "racing", starts: 24, wins: 6, places: 9, prize_money_cents: 1200000, story: "A consistent city performer with a bright staying future.", photo_url: null, created_at: "2026-01-08T00:00:00Z", trainer: { display_name: "Chris Waller" }, follows: [{ count: 3400 }], posts: [{ count: 28 }] },
-  { id: "h2", trainer_id: "t1", display_name: "Verry Elleegant", racing_name: "VERRY ELLEEGANT (NZ)", stable_name: "Verry Elleegant", sire: "Zed", dam: "Opulence", sex: "mare", colour: "Chestnut", foaling_year: 2018, status: "active", training_status: "racing", starts: 44, wins: 11, places: 14, prize_money_cents: 1400000000, story: "", photo_url: null, created_at: "2026-01-07T00:00:00Z", trainer: { display_name: "Chris Waller" }, follows: [{ count: 5100 }], posts: [{ count: 62 }] },
-  { id: "h3", trainer_id: "t2", display_name: "Black Caviar", racing_name: "BLACK CAVIAR (AUS)", stable_name: "Black Caviar", sire: "Bel Esprit", dam: "Helsinge", sex: "mare", colour: "Bay", foaling_year: 2019, status: "active", training_status: "city_training", starts: 25, wins: 25, places: 0, prize_money_cents: 780000000, story: "", photo_url: null, created_at: "2026-01-06T00:00:00Z", trainer: { display_name: "Peter Moody" }, follows: [{ count: 8900 }], posts: [{ count: 104 }] },
-  { id: "h4", trainer_id: "t2", display_name: "Northern Star", racing_name: null, stable_name: "Northern Star", sire: "Snitzel", dam: "Aurora", sex: "gelding", colour: "Brown", foaling_year: 2022, status: "active", training_status: "racing", starts: 6, wins: 2, places: 3, prize_money_cents: 32000000, story: "", photo_url: null, created_at: "2026-01-05T00:00:00Z", trainer: { display_name: "Peter Moody" }, follows: [{ count: 1200 }], posts: [{ count: 11 }] },
-  { id: "h5", trainer_id: "t3", display_name: "Anamoe", racing_name: "ANAMOE (AUS)", stable_name: "Anamoe", sire: "Street Boss", dam: "Anamato", sex: "colt", colour: "Bay", foaling_year: 2021, status: "active", training_status: "spelling", starts: 20, wins: 12, places: 5, prize_money_cents: 1600000000, story: "", photo_url: null, created_at: "2026-01-04T00:00:00Z", trainer: { display_name: "James Cummings" }, follows: [{ count: 4200 }], posts: [{ count: 48 }] },
-  { id: "h6", trainer_id: "t1", display_name: "Winx", racing_name: "WINX (AUS)", stable_name: "Winx", sire: "Street Cry", dam: "Vegas Showgirl", sex: "mare", colour: "Bay", foaling_year: 2011, status: "active", training_status: "retired", starts: 43, wins: 37, places: 3, prize_money_cents: 2600000000, story: "", photo_url: null, created_at: "2026-01-03T00:00:00Z", trainer: { display_name: "Chris Waller" }, follows: [{ count: 12400 }], posts: [{ count: 211 }] },
-  { id: "h7", trainer_id: "t2", display_name: "Magic Time", racing_name: null, stable_name: "Magic Time", sire: "Fastnet Rock", dam: "Illusion", sex: "mare", colour: "Grey", foaling_year: 2021, status: "active", training_status: "farm_training", starts: 4, wins: 1, places: 1, prize_money_cents: 4500000, story: "", photo_url: null, created_at: "2026-01-02T00:00:00Z", trainer: { display_name: "Peter Moody" }, follows: [{ count: 820 }], posts: [{ count: 9 }] },
-  { id: "h8", trainer_id: "t3", display_name: "Saxon Warrior", racing_name: "SAXON WARRIOR (JPN)", stable_name: "Saxon Warrior", sire: "Deep Impact", dam: "Maybe", sex: "gelding", colour: "Bay", foaling_year: 2020, status: "active", training_status: "racing", starts: 12, wins: 3, places: 4, prize_money_cents: 210000000, story: "", photo_url: null, created_at: "2026-01-01T00:00:00Z", trainer: { display_name: "James Cummings" }, follows: [{ count: 2100 }], posts: [{ count: 23 }] },
+// ENG-616: `sex` is now male|female plus `is_gelded`, and the race-day
+// description is a PostgREST COMPUTED COLUMN. This mock stands in for Postgres,
+// so it has to derive `horse_age` / `horse_description` the same way ENG-615's
+// SQL functions do. THIS IS A THIRD COPY OF THAT RULE and it must track the SQL
+// in supabase/migrations/20260818120000_horse_sex_gelded.sql — it exists only
+// because a harness has no Postgres to ask — otherwise the screenshots would show values no database
+// would ever produce. Southern-hemisphere thoroughbreds age on 1 AUGUST,
+// Australian local, so the rollover is computed in Australia/Sydney.
+function sydneyNow() {
+  const parts = new Intl.DateTimeFormat("en-AU", {
+    timeZone: "Australia/Sydney",
+    year: "numeric",
+    month: "numeric",
+  }).formatToParts(new Date());
+  const get = (t) => Number(parts.find((p) => p.type === t).value);
+  return { year: get("year"), month: get("month") };
+}
+
+function horseAge(h) {
+  if (!h.foaling_year || h.foaling_year <= 0) return null;
+  const { year, month } = sydneyNow();
+  const age = year - h.foaling_year - (month < 8 ? 1 : 0);
+  return age > 0 ? age : null;
+}
+
+function horseDescription(h) {
+  if (h.is_gelded) return "gelding"; // a gelding at ANY age
+  const age = horseAge(h);
+  if (!h.sex || age === null) return null; // no honest answer without both
+  if (h.sex === "female") return age < 4 ? "filly" : "mare";
+  return age < 4 ? "colt" : "horse";
+}
+
+// h9 is deliberately unmappable: NULL sex (a legacy value the migration could
+// not honestly convert) and no foaling year, so both computed columns come back
+// null and the card degrades to "by <Trainer>" alone.
+const HORSE_SEED = [
+  { id: "h1", trainer_id: "t1", display_name: "Mahogany", racing_name: "MAHOGANY (AUS)", stable_name: "Mahogany", sire: "Snitzel", dam: "Polar Success", sex: "male", is_gelded: true, colour: "Bay", foaling_year: 2020, status: "active", training_status: "racing", starts: 24, wins: 6, places: 9, prize_money_cents: 1200000, story: "A consistent city performer with a bright staying future.", photo_url: null, created_at: "2026-01-08T00:00:00Z", trainer: { display_name: "Chris Waller" }, follows: [{ count: 3400 }], posts: [{ count: 28 }] },
+  { id: "h2", trainer_id: "t1", display_name: "Verry Elleegant", racing_name: "VERRY ELLEEGANT (NZ)", stable_name: "Verry Elleegant", sire: "Zed", dam: "Opulence", sex: "female", is_gelded: false, colour: "Chestnut", foaling_year: 2018, status: "active", training_status: "racing", starts: 44, wins: 11, places: 14, prize_money_cents: 1400000000, story: "", photo_url: null, created_at: "2026-01-07T00:00:00Z", trainer: { display_name: "Chris Waller" }, follows: [{ count: 5100 }], posts: [{ count: 62 }] },
+  { id: "h3", trainer_id: "t2", display_name: "Black Caviar", racing_name: "BLACK CAVIAR (AUS)", stable_name: "Black Caviar", sire: "Bel Esprit", dam: "Helsinge", sex: "female", is_gelded: false, colour: "Bay", foaling_year: 2019, status: "active", training_status: "city_training", starts: 25, wins: 25, places: 0, prize_money_cents: 780000000, story: "", photo_url: null, created_at: "2026-01-06T00:00:00Z", trainer: { display_name: "Peter Moody" }, follows: [{ count: 8900 }], posts: [{ count: 104 }] },
+  { id: "h4", trainer_id: "t2", display_name: "Northern Star", racing_name: null, stable_name: "Northern Star", sire: "Snitzel", dam: "Aurora", sex: "male", is_gelded: true, colour: "Brown", foaling_year: 2022, status: "active", training_status: "racing", starts: 6, wins: 2, places: 3, prize_money_cents: 32000000, story: "", photo_url: null, created_at: "2026-01-05T00:00:00Z", trainer: { display_name: "Peter Moody" }, follows: [{ count: 1200 }], posts: [{ count: 11 }] },
+  { id: "h5", trainer_id: "t3", display_name: "Anamoe", racing_name: "ANAMOE (AUS)", stable_name: "Anamoe", sire: "Street Boss", dam: "Anamato", sex: "male", is_gelded: false, colour: "Bay", foaling_year: 2021, status: "active", training_status: "spelling", starts: 20, wins: 12, places: 5, prize_money_cents: 1600000000, story: "", photo_url: null, created_at: "2026-01-04T00:00:00Z", trainer: { display_name: "James Cummings" }, follows: [{ count: 4200 }], posts: [{ count: 48 }] },
+  { id: "h6", trainer_id: "t1", display_name: "Winx", racing_name: "WINX (AUS)", stable_name: "Winx", sire: "Street Cry", dam: "Vegas Showgirl", sex: "female", is_gelded: false, colour: "Bay", foaling_year: 2011, status: "active", training_status: "retired", starts: 43, wins: 37, places: 3, prize_money_cents: 2600000000, story: "", photo_url: null, created_at: "2026-01-03T00:00:00Z", trainer: { display_name: "Chris Waller" }, follows: [{ count: 12400 }], posts: [{ count: 211 }] },
+  { id: "h7", trainer_id: "t2", display_name: "Magic Time", racing_name: null, stable_name: "Magic Time", sire: "Fastnet Rock", dam: "Illusion", sex: "female", is_gelded: false, colour: "Grey", foaling_year: 2021, status: "active", training_status: "farm_training", starts: 4, wins: 1, places: 1, prize_money_cents: 4500000, story: "", photo_url: null, created_at: "2026-01-02T00:00:00Z", trainer: { display_name: "Peter Moody" }, follows: [{ count: 820 }], posts: [{ count: 9 }] },
+  { id: "h8", trainer_id: "t3", display_name: "Saxon Warrior", racing_name: "SAXON WARRIOR (JPN)", stable_name: "Saxon Warrior", sire: "Deep Impact", dam: "Maybe", sex: "male", is_gelded: true, colour: "Bay", foaling_year: 2020, status: "active", training_status: "racing", starts: 12, wins: 3, places: 4, prize_money_cents: 210000000, story: "", photo_url: null, created_at: "2026-01-01T00:00:00Z", trainer: { display_name: "James Cummings" }, follows: [{ count: 2100 }], posts: [{ count: 23 }] },
+  { id: "h9", trainer_id: "t3", display_name: "Barrier Trial", racing_name: null, stable_name: "Barrier Trial", sire: "Unknown", dam: "Unknown", sex: null, is_gelded: false, colour: "Bay", foaling_year: null, status: "active", training_status: "pre_training", starts: 0, wins: 0, places: 0, prize_money_cents: 0, story: "", photo_url: null, created_at: "2025-12-31T00:00:00Z", trainer: { display_name: "James Cummings" }, follows: [{ count: 60 }], posts: [{ count: 1 }] },
 ];
+
+const HORSE_FIXTURES = HORSE_SEED.map((h) => ({
+  ...h,
+  horse_age: horseAge(h),
+  horse_description: horseDescription(h),
+}));
 
 // Posts library (T7 / ENG-177). Rows mirror the shape T5's GET /api/admin/posts
 // returns: post columns + embedded horse (with photo) + source trainer. A mix of

@@ -1,9 +1,11 @@
 import { requireAdmin } from "@/lib/auth/admin";
 import { created, fail } from "@/lib/api/envelope";
+import { sexColumns } from "./sex";
 
 // POST /api/admin/horses — create a horse (screens/07-add-horse.html).
 // Guardrails: requireAdmin (403 non-admin); NO owner field ever; age is never
-// stored (only foaling_year). display_name is derived when the horse is unnamed.
+// stored (only foaling_year) and neither is the race-day description — both are
+// derived in Postgres. display_name is derived when the horse is unnamed.
 const TRAINING_STATUSES = ["spelling", "pre_training", "farm_training", "city_training", "racing", "retired"];
 const HORSE_STATUSES = ["active", "disabled"];
 
@@ -14,6 +16,13 @@ export async function POST(req: Request) {
 
   const b = await req.json().catch(() => ({}));
   if (!b.trainerId) return fail("validation_failed", "trainerId required", 400, { trainerId: "required" });
+
+  const sexRes = sexColumns(b);
+  if (!sexRes.ok) {
+    return fail("validation_failed", sexRes.error.message, 400, {
+      [sexRes.error.field]: sexRes.error.message,
+    });
+  }
 
   const displayName =
     b.displayName ??
@@ -28,7 +37,7 @@ export async function POST(req: Request) {
     display_name: displayName,
     stable_name: b.stableName ?? null,
     racing_name: b.racingName ?? null,
-    sex: b.sex ?? null,
+    ...sexRes.columns,
     colour: b.colour ?? null,
     foaling_year: b.foalingYear ?? null,
     story: b.story ?? null,
@@ -44,6 +53,13 @@ export async function POST(req: Request) {
   if (b.prizeMoneyCents != null) insert.prize_money_cents = Number(b.prizeMoneyCents) || 0;
 
   const { data, error } = await sb.from("horse").insert(insert).select("*").single();
-  if (error) return fail("insert_failed", error.message, 400);
+  if (error) {
+    // Never `error.message`: a Postgres error carries table, column and
+    // constraint names (e.g. a 23514 naming `horse_gelded_implies_male`), and
+    // the form renders this string straight to the operator. Detail to the
+    // server log, a generic message to the caller.
+    console.error("[horses] insert failed", { code: error.code });
+    return fail("insert_failed", "Could not create the horse.", 400);
+  }
   return created(data);
 }

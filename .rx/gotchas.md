@@ -472,6 +472,46 @@ readings (one observed `signOutCalls === 2` because the other's identical mutati
 recovered, but serialize them — or give each a private copy — or a crash mid-mutation leaves the
 tree dirty.
 
+## A 2-option `<select value="">` does NOT render unselected — HTML re-selects the first option (ENG-616)
+Requirement: a horse whose `sex` is NULL must show NO selection, never default to Male. The obvious
+build — two `<option>`s and `value=""` — silently displays **Male**, because HTML's "ask for a reset"
+algorithm says that when no option is selected, the first non-disabled one becomes selected. React
+setting `value=""` matches no option, so the reset fires. Do-this: add
+`<option value="" disabled hidden>` as the placeholder. It is selectable by the controlled `value`,
+so the reset never runs, and `disabled` keeps it out of the operator's reach afterwards. A jsdom
+`expect(select.value).toBe("")` catches this; asserting `selectedIndex === -1` does NOT (it is -1 only
+in theory). Verified in real Chromium via `e2e/horses.spec.ts`.
+
+## `lib/testing/supabase-fake.ts` swallows builder args — wrap it in `call-recorder` (ENG-616)
+The fake's builder returns itself from `select`/`insert`/`update`/`eq` and DISCARDS the arguments, so
+a test can only assert "no error came back". It cannot see a wrong insert, a too-narrow projection or
+an IDOR. `lib/testing/call-recorder.ts` proxies the fake and records projections, mutation payloads
+and `.eq()` filters; keep write-trace and filter arrays separate so `expect(rec.writes).toEqual([])`
+still means "no write happened". Use it for any route ticket that writes.
+
+## Validate a paired constraint in BOTH directions, or the CHECK fires anyway (ENG-616)
+`horse_gelded_implies_male` is `check (not is_gelded or sex is not distinct from 'male')` — note
+`is not distinct from`, NOT `=` (with `=`, `is_gelded=true, sex=NULL` evaluates to NULL and a CHECK
+ACCEPTS NULL). Guarding only "isGelded true requires male" leaves the reverse hole: `PATCH
+{sex:"female"}` on a stored gelding leaves `is_gelded=true` and Postgres 23514s. Whenever two columns
+share a CHECK, the request that moves EITHER one must reconcile the other.
+
+## Never return `error.message` from a Supabase failure (reinforced, ENG-616)
+`fail("update_failed", error.message, 400)` puts the table, column and constraint names in front of
+the operator — `HorseForm.tsx` renders `error.message` verbatim. Log `error.code` server-side, return
+a generic sentence. Both horses routes now do this.
+
+## `e2e/signin-mfa.spec.ts:29` is PRE-EXISTING red — do not chase it
+"wrong code keeps the admin on /signin/mfa to retry" fails a Playwright strict-mode check:
+`getByRole("alert")` matches both the error div and Next's `__next-route-announcer__`. Confirmed by
+running it on a clean worktree at the base commit. Its serial group also skips 4 downstream tests, so
+`npx playwright test` is NOT a green gate right now. Baseline before blaming your diff.
+
+## The 07-add-horse mockup cannot express "no selection" — code deliberately deviates (ENG-616)
+`06-stage1-design/mockups/web/admin/screens/07-add-horse.html` renders
+`<option>Male</option><option>Female</option>`, i.e. a form preselected to Male, which is what
+ENG-304 set out to remove. The build adds a disabled placeholder and is correct; the mockup is stale
+on this one point. Do not "restore fidelity" by deleting the placeholder.
 ## A preview component that claims parity WILL drift — pin it, don't trust it (ENG-558)
 `PostPreview.tsx` has said "duplicated in the admin repo so Compose can preview exactly what a
 subscriber will see" since it was written. By Aug 2026 it was wrong in five independent ways at once:

@@ -4,36 +4,27 @@ import { Icon } from "../icons";
 import SearchField from "../SearchField";
 import {
   formatCount,
-  horseMeta,
+  horseSubtitle,
   humanizeTrainingStatus,
   statusPillClass,
 } from "./format";
+import { fetchHorses, type CountEmbed, type HorseRow } from "./data";
 import { HORSE_PHOTO_BUCKET, signPhotoMap } from "@/lib/storage/photos";
 import "./horses.css";
 
 // Horses DB — screens/05-horses.html. Data-bearing (dash) page: it re-asserts
 // requireAdminPage() rather than trusting the layout gate (Next renders layout
 // + page in parallel and caches the layout across soft nav). Follower/post
-// counts are derived via PostgREST embedded counts; age is computed, not stored.
+// counts are derived via PostgREST embedded counts; age and the race-day
+// description are computed in Postgres and read as computed columns (ENG-616).
+//
+// The empty state below is NEVER an inference about permissions. An AAL1 admin
+// reads 0 rows from Postgres with no error, so "no rows" would otherwise be
+// indistinguishable from "not allowed" — requireAdminPage() redirects before
+// any read happens, and fetchHorses() throws on a query error rather than
+// returning [], so reaching `.horse-empty` means the library really is empty.
 
 const PAGE_SIZE = 12;
-
-type CountEmbed = { count: number }[];
-type HorseRow = {
-  id: string;
-  display_name: string;
-  racing_name: string | null;
-  stable_name: string | null;
-  sex: string | null;
-  colour: string | null;
-  foaling_year: number | null;
-  status: string | null;
-  training_status: string | null;
-  photo_url: string | null;
-  trainer: { display_name: string | null } | { display_name: string | null }[] | null;
-  follows: CountEmbed | null;
-  posts: CountEmbed | null;
-};
 
 type Filter = "all" | "active" | "racing" | "retired";
 const FILTERS: { key: Filter; label: string }[] = [
@@ -77,30 +68,7 @@ export default async function HorsesPage({
   const q = typeof sp.q === "string" ? sp.q.trim() : "";
   const requestedPage = Math.max(1, parseInt(typeof sp.page === "string" ? sp.page : "1", 10) || 1);
 
-  let query = sb
-    .from("horse")
-    .select(
-      "id, display_name, racing_name, stable_name, sex, colour, foaling_year, status, training_status, photo_url, created_at, trainer:trainer_id(display_name), follows:follow(count), posts:post(count)",
-    )
-    .order("created_at", { ascending: false });
-
-  if (q) {
-    const { data: trainers } = await sb.from("trainer").select("id").ilike("display_name", `%${q}%`);
-    const trainerIds = ((trainers ?? []) as { id: string }[]).map((t) => t.id);
-    // Strip PostgREST logical-tree separators so a comma/paren in `q` cannot
-    // splice extra OR terms. (`.ilike()` above is parameterized and safe.)
-    const safeQ = q.replace(/[,()]/g, " ");
-    const ors = [
-      `display_name.ilike.%${safeQ}%`,
-      `racing_name.ilike.%${safeQ}%`,
-      `stable_name.ilike.%${safeQ}%`,
-    ];
-    if (trainerIds.length) ors.push(`trainer_id.in.(${trainerIds.join(",")})`);
-    query = query.or(ors.join(","));
-  }
-
-  const { data } = await query;
-  const all = (data ?? []) as HorseRow[];
+  const all: HorseRow[] = await fetchHorses(sb, q);
 
   const counts = {
     all: all.length,
@@ -200,10 +168,10 @@ export default async function HorsesPage({
                       <div className="body">
                         <p className="name">{h.display_name}</p>
                         <div className="meta">
-                          {horseMeta({
+                          {horseSubtitle({
                             trainerName: trainerName(h.trainer),
-                            foalingYear: h.foaling_year,
-                            sex: h.sex,
+                            age: h.horse_age,
+                            description: h.horse_description,
                             trainingStatus: h.training_status,
                           })}
                         </div>

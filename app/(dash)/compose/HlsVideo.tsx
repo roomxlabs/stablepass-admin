@@ -4,7 +4,10 @@
 // as plain sources (local object URLs during compose). Safari plays HLS
 // natively; other browsers get hls.js, loaded lazily so it never lands in the
 // bundle for photo-only sessions.
-import { useEffect, useRef } from "react";
+//
+// forwardRef: PosterScrubber (ENG-825 library re-bake) needs the underlying
+// <video> for currentTime scrub/pick. Playback behaviour is unchanged.
+import { forwardRef, useEffect, useRef } from "react";
 import type Hls from "hls.js";
 
 type Props = Omit<React.VideoHTMLAttributes<HTMLVideoElement>, "src"> & { src: string };
@@ -13,11 +16,22 @@ function isHlsSrc(src: string): boolean {
   return src.split("?")[0].endsWith(".m3u8");
 }
 
-export default function HlsVideo({ src, ...rest }: Props) {
-  const ref = useRef<HTMLVideoElement>(null);
+function assignRef<T>(ref: React.Ref<T> | undefined, value: T | null) {
+  if (!ref) return;
+  if (typeof ref === "function") ref(value);
+  else (ref as React.MutableRefObject<T | null>).current = value;
+}
+
+const HlsVideo = forwardRef<HTMLVideoElement, Props>(function HlsVideo({ src, ...rest }, ref) {
+  const innerRef = useRef<HTMLVideoElement>(null);
 
   useEffect(() => {
-    const video = ref.current;
+    assignRef(ref, innerRef.current);
+    return () => assignRef(ref, null);
+  }, [ref]);
+
+  useEffect(() => {
+    const video = innerRef.current;
     if (!video) return;
 
     if (!isHlsSrc(src) || video.canPlayType("application/vnd.apple.mpegurl")) {
@@ -44,5 +58,7 @@ export default function HlsVideo({ src, ...rest }: Props) {
     };
   }, [src]);
 
-  return <video ref={ref} {...rest} />;
-}
+  return <video ref={innerRef} {...rest} />;
+});
+
+export default HlsVideo;

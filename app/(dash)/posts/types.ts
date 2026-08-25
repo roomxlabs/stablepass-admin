@@ -23,6 +23,10 @@ export type PostRow = {
   body: string | null;
   media_url: string | null;
   mux_playback_id: string | null;
+  /** Private post-media object path for the baked poster (ENG-823/825). */
+  poster_url: string | null;
+  /** Seconds of the chosen poster frame, or null when default/unset (ENG-823). */
+  poster_time_s: number | null;
   like_count: number | null;
   published_at: string | null;
   scheduled_for: string | null;
@@ -41,6 +45,8 @@ export type PostView = {
   horseName: string;
   trainerName: string | null;
   thumbUrl: string | null;
+  /** Raw post.type — used to gate video-only poster edit (ENG-825). */
+  type: string;
   typeLabel: string;
   status: PostStatus;
   statusLabel: string;
@@ -54,6 +60,13 @@ export type PostView = {
   /** null → no engagement to show (draft / scheduled). */
   likeCount: number | null;
   editHref: string;
+  /**
+   * Signed Mux HLS URL for video posts with a ready asset (ENG-825). Null when
+   * not video, asset not ready, or signing is off. Minted server-side only.
+   */
+  playbackUrl: string | null;
+  /** Current poster frame seconds, or null. */
+  posterTimeS: number | null;
 };
 
 export type StatusCounts = Record<StatusFilter, number>;

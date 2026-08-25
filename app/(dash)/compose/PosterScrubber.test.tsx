@@ -75,4 +75,38 @@ describe("PosterScrubber", () => {
 
     expect(screen.getByTestId("poster-time-picked").textContent).toMatch(/4\.2/);
   });
+
+  it("preselects selectedTimeS on the video when metadata loads (library path)", () => {
+    const setCurrentTime = vi.fn();
+    render(
+      <PosterScrubber
+        src="https://stream.mux.com/pb.m3u8?token=abc"
+        selectedTimeS={2.75}
+        onPick={vi.fn()}
+      />,
+    );
+    const video = screen.getByTestId("poster-scrubber-video") as HTMLVideoElement;
+    Object.defineProperty(video, "duration", { configurable: true, value: 20 });
+    Object.defineProperty(video, "currentTime", {
+      configurable: true,
+      get: () => 0,
+      set: setCurrentTime,
+    });
+    fireEvent.loadedMetadata(video);
+
+    expect(setCurrentTime).toHaveBeenCalledWith(2.75);
+    expect(screen.getByTestId("poster-scrub-meta").textContent).toMatch(/2\.75/);
+  });
+
+  it("accepts an HLS src without a local file (file prop optional)", () => {
+    render(
+      <PosterScrubber
+        src="https://stream.mux.com/pb.m3u8?token=abc"
+        selectedTimeS={null}
+        onPick={vi.fn()}
+      />,
+    );
+    expect(screen.getByTestId("poster-scrubber")).toBeTruthy();
+    expect(screen.getByTestId("poster-scrubber-video")).toBeTruthy();
+  });
 });

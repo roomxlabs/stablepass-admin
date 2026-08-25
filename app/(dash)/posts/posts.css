@@ -186,6 +186,34 @@
 .adm-table td.actions button:disabled { opacity: 0.5; cursor: default; }
 .adm-table td.actions .row-err { color: var(--red); font-size: 11px; margin-left: 10px; }
 
+/* ENG-825 — poster frame editor (reuses compose PosterScrubber styling) --- */
+.poster-frame-editor {
+  margin-top: 6px;
+}
+.poster-frame-editor > button {
+  color: var(--brand-green);
+  font-weight: 500;
+  font-size: 12px;
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  font-family: var(--font-sans);
+}
+.poster-frame-editor > button:hover:not(:disabled) { text-decoration: underline; }
+.poster-frame-editor > button:disabled { opacity: 0.5; cursor: default; }
+.poster-frame-panel {
+  margin-top: 10px;
+  max-width: 360px;
+}
+.poster-frame-status {
+  font-size: 12px;
+  color: var(--muted);
+  margin-top: 8px;
+}
+.poster-frame-status.ok { color: var(--brand-green-dark); }
+.poster-frame-status.err { color: var(--red); }
+
 /* Soft-hide help note ---------------------------------------------- */
 .adm-help { font-size: 12px; color: var(--muted); margin: 0; }
 

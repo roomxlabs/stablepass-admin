@@ -19,8 +19,8 @@
  *     the routes also validate against this array up front.
  *
  * Guardrail 6 (no betting / bookmaker anything): the closed list is what makes
- * that true at the database, not the admin UI. Adding a 14th preset is a
- * migration in stablepass-be that alters the CHECK, then an update here.
+ * that true at the database, not the admin UI. Adding a preset is a migration in
+ * stablepass-be that alters the CHECK, then an update here.
  */
 export const POST_LABEL_PRESETS = [
   "Stable Update",
@@ -36,6 +36,9 @@ export const POST_LABEL_PRESETS = [
   "Breaking In Update",
   "Race Preview",
   "Jockey Comments",
+  // 14th preset (Justin, 26 Aug 2026): stablepass-be migration
+  // 20260826120300_post_label_trainer_comments alters the CHECK to match.
+  "Trainer Comments",
 ] as const;
 
 export type PostLabel = (typeof POST_LABEL_PRESETS)[number];

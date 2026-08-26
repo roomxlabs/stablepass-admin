@@ -114,16 +114,21 @@ describe("post label presets — drift guard against stablepass-be", () => {
   it("matches docs/specs/api-contract.md exactly, in order", () => {
     const doc = readBeFile("docs/specs/api-contract.md", (t) => t.includes("`Stable Update`"));
     const documented = presetsFromContractDoc(doc);
-    expect(documented).toHaveLength(13);
+    expect(documented).toHaveLength(14);
     expect([...POST_LABEL_PRESETS]).toEqual(documented);
   });
 
   it("matches the post_label_preset CHECK in the migration exactly, in order", () => {
-    const sql = readBeFile("supabase/migrations/20260819120001_post_label.sql", (t) =>
-      t.includes("post_label_preset"),
+    // Read the migration that CURRENTLY defines the CHECK — the latest one that
+    // re-states it. 20260826120300 (Justin, 26 Aug) added "Trainer Comments";
+    // the original 20260819120001 still lists only the first 13, so pointing at
+    // it here would make the guard forever see the pre-Trainer-Comments list.
+    const sql = readBeFile(
+      "supabase/migrations/20260826120300_post_label_trainer_comments.sql",
+      (t) => t.includes("post_label_preset") && t.includes("Trainer Comments"),
     );
     const constrained = presetsFromMigration(sql);
-    expect(constrained).toHaveLength(13);
+    expect(constrained).toHaveLength(14);
     expect([...POST_LABEL_PRESETS]).toEqual(constrained);
   });
 

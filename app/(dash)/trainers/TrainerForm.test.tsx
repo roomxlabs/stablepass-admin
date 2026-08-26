@@ -787,16 +787,31 @@ describe("TrainerForm — profile photo crop (ENG-749)", () => {
       expect(privateUpload()!.body).toBe(file);
     });
 
-    it("tells the admin what the circle will show and what gets saved", async () => {
+    it("tells the admin the whole square is saved and shown", async () => {
       const { container } = render(<TrainerForm mode="create" />);
       pick(container, jpeg());
       await screen.findByTestId("photo-crop-dialog");
 
-      expect(screen.getByText(/The circle is what shows on the/)).toBeTruthy();
+      // Justin, 26 Aug: the surfaces are squares, so the copy is about the
+      // square, not a circle.
+      expect(screen.getByText(/The whole square is saved/)).toBeTruthy();
       // A 4000x2000 source at zoom 1 crops a 2000px square, capped to 1200.
       expect(screen.getByTestId("photo-crop-meta").textContent).toBe(
         "Saving 1200×1200 from a 4000×2000 photo",
       );
+    });
+
+    // Justin, 26 Aug: reposition a photo that is ALREADY uploaded, without
+    // re-picking a file. The stored image is pulled back down (the signed-URL
+    // fetch the harness already stubs) and handed to the same crop dialog.
+    it("reopens the crop dialog to reposition an already-uploaded photo", async () => {
+      h.script.canvas = true;
+      render(<TrainerForm mode="edit" trainer={editTrainer()} contacts={[]} />);
+
+      const reposition = await screen.findByTestId("trainer-photo-reposition");
+      fireEvent.click(reposition);
+
+      await screen.findByTestId("photo-crop-dialog");
     });
 
     it("zooming keeps the crop centred and shrinks what is saved", async () => {

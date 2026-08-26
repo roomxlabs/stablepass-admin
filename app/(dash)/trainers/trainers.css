@@ -218,10 +218,12 @@ textarea.adm-input { min-height: 110px; resize: vertical; line-height: 1.55; }
 .upload-zone .link { color: var(--brand-green); text-decoration: none; cursor: pointer; }
 .upload-zone .zone-title { font-weight: 500; font-size: 14px; }
 .upload-zone.filled { padding: 0; border-style: solid; border-color: var(--line); }
-/* Justin, 26 Aug: the preview is a SQUARE so it matches what's saved and shown
-   (the surfaces are squares), not a wide strip of it. */
-.upload-zone .preview { width: 260px; height: 260px; margin: 18px auto; background: #1A1A1A; border-radius: 12px; overflow: hidden; }
-.upload-zone .preview img { width: 100%; height: 100%; object-fit: cover; display: block; }
+/* Justin, 26 Aug: the preview must be 1:1 with the mobile trainer thumbnail —
+   a SQUARE that letterboxes (contain) the photo on a cream ground, exactly like
+   the app's Avatar (fit="contain", ENG-754: don't crop a stable's logo). cover
+   here cropped the sides, so it lied about what mobile shows. */
+.upload-zone .preview { width: 260px; height: 260px; margin: 18px auto; background: var(--cream); border-radius: 12px; overflow: hidden; }
+.upload-zone .preview img { width: 100%; height: 100%; object-fit: contain; display: block; }
 .upload-zone .upload-tools {
   padding: 14px 18px;
   display: flex;

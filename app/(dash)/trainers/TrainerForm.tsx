@@ -101,6 +101,8 @@ export default function TrainerForm(props: Props) {
   // ENG-749. The picked file awaiting its crop. Non-null mounts the crop step;
   // nothing is uploaded until it resolves one way or the other.
   const [pendingPhoto, setPendingPhoto] = useState<File | null>(null);
+  // Justin, 26 Aug: reposition the already-uploaded photo without re-picking.
+  const [preparingReposition, setPreparingReposition] = useState(false);
 
   // Marketing-site publication (ENG-766). `marketingPhotoPath` is the object
   // currently living in the PUBLIC bucket; `publishWarning` carries a failed
@@ -260,6 +262,27 @@ export default function TrainerForm(props: Props) {
     if (await syncMarketingPhoto(savedId)) {
       router.push("/trainers");
       router.refresh();
+    }
+  }
+
+  // Justin, 26 Aug: reposition an already-uploaded photo through the same crop
+  // dialog. Re-crops what was saved (a "use as-is" upload re-crops fully; an
+  // already-cropped one can only be repositioned within the saved square).
+  async function repositionExisting() {
+    if (!previewUrl) return;
+    setError(null);
+    setPreparingReposition(true);
+    try {
+      const res = await fetch(previewUrl);
+      if (!res.ok) throw new Error(`fetch ${res.status}`);
+      const blob = await res.blob();
+      const type = blob.type || "image/jpeg";
+      const ext = type.includes("png") ? "png" : "jpg";
+      setPendingPhoto(new File([blob], `reposition.${ext}`, { type }));
+    } catch {
+      setError("Couldn't load the photo to reposition. Use Replace to pick it again.");
+    } finally {
+      setPreparingReposition(false);
     }
   }
 
@@ -542,6 +565,16 @@ export default function TrainerForm(props: Props) {
                 </div>
                 <div className="upload-tools">
                   <div className="upload-meta">{uploading ? "Uploading…" : "Photo added"}</div>
+                  <button
+                    type="button"
+                    className="btn btn-light"
+                    style={{ padding: "6px 12px", fontSize: "12.5px" }}
+                    onClick={repositionExisting}
+                    disabled={preparingReposition || uploading}
+                    data-testid="trainer-photo-reposition"
+                  >
+                    {preparingReposition ? "Loading…" : "Reposition"}
+                  </button>
                   <button
                     type="button"
                     className="btn btn-light"

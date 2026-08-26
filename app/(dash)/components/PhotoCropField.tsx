@@ -213,8 +213,9 @@ export default function PhotoCropField({ file, subject, onCancel, onApply }: Pro
       <div className={styles.panel}>
         <h2 className={styles.title}>Position the photo</h2>
         <div className={styles.sub}>
-          Drag the photo to move it and use the slider to zoom. The circle is what shows on the
-          {` ${subject}'s`} profile; the whole square is saved.
+          Drag the photo to move it and use the slider to zoom. The whole square is saved and is
+          what shows on lists and the {subject}&apos;s profile
+          {subject === "horse" ? " — the profile banner shows the middle strip of it" : ""}.
         </div>
 
         {image ? (
@@ -241,7 +242,7 @@ export default function PhotoCropField({ file, subject, onCancel, onApply }: Pro
                   top: -rect.y * displayScale,
                 }}
               />
-              <div className={styles.circleGuide} />
+              <div className={styles.squareGuide} />
             </div>
 
             <div className={styles.zoomRow}>

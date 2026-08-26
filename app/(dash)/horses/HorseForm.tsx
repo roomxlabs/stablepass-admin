@@ -110,6 +110,9 @@ export default function HorseForm({ mode, trainers, horseId, initial = {} }: Pro
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   // ENG-749. The picked file awaiting its crop; nothing uploads until it resolves.
   const [pendingPhoto, setPendingPhoto] = useState<File | null>(null);
+  // Justin, 26 Aug: re-open the crop dialog on the ALREADY-uploaded photo so the
+  // admin can reposition it without re-picking a file.
+  const [preparingReposition, setPreparingReposition] = useState(false);
 
   useEffect(() => {
     let active = true;
@@ -191,6 +194,28 @@ export default function HorseForm({ mode, trainers, horseId, initial = {} }: Pro
       setError("Photo upload failed. You can still save and add a photo later.");
     } finally {
       setUploading(false);
+    }
+  }
+
+  // Justin, 26 Aug: reposition an already-uploaded photo. Pull the stored image
+  // back down and feed it to the SAME crop dialog. Note it re-crops what was
+  // saved: a photo stored "use as-is" re-crops fully; one already cropped can
+  // only be repositioned within the saved square, not have trimmed edges back.
+  async function repositionExisting() {
+    if (!previewUrl) return;
+    setError(null);
+    setPreparingReposition(true);
+    try {
+      const res = await fetch(previewUrl);
+      if (!res.ok) throw new Error(`fetch ${res.status}`);
+      const blob = await res.blob();
+      const type = blob.type || "image/jpeg";
+      const ext = type.includes("png") ? "png" : "jpg";
+      setPendingPhoto(new File([blob], `reposition.${ext}`, { type }));
+    } catch {
+      setError("Couldn't load the photo to reposition. Use Replace to pick it again.");
+    } finally {
+      setPreparingReposition(false);
     }
   }
 
@@ -516,6 +541,16 @@ export default function HorseForm({ mode, trainers, horseId, initial = {} }: Pro
                     </div>
                     <div className="upload-tools">
                       <div className="upload-meta">Photo uploaded</div>
+                      <button
+                        type="button"
+                        className="btn btn-light"
+                        style={{ padding: "6px 12px", fontSize: "12.5px" }}
+                        onClick={repositionExisting}
+                        disabled={preparingReposition || uploading}
+                        data-testid="horse-photo-reposition"
+                      >
+                        {preparingReposition ? "Loading…" : "Reposition"}
+                      </button>
                       <button type="button" className="btn btn-light" style={{ padding: "6px 12px", fontSize: "12.5px" }} onClick={() => fileRef.current?.click()}>
                         Replace
                       </button>

@@ -525,19 +525,27 @@ export default function HorseForm({ mode, trainers, horseId, initial = {} }: Pro
             <div className="adm-card-head">
               <div>
                 <h2>Profile photo</h2>
-                {/* ENG-749: was "Cover image … (16:9 recommended)". The form now
-                    saves a SQUARE crop, so that line told the admin to supply a
-                    shape this screen no longer stores. */}
-                <div className="sub">Shown on the horse&apos;s profile and in horse lists (square crop).</div>
+                {/* Justin, 26 Aug: preview BOTH surfaces — the wide profile
+                    banner (mobile & web) and the square list thumbnail — so the
+                    admin sees exactly how the crop lands on each. */}
+                <div className="sub">Shown as the banner on the horse&apos;s profile (mobile &amp; web) and as a square in horse lists.</div>
               </div>
             </div>
             <div className="adm-card-body">
               <div className={form.photoUrl ? "upload-zone filled" : "upload-zone"} style={form.photoUrl ? undefined : { padding: 28 }}>
                 {form.photoUrl ? (
                   <>
-                    <div className="preview">
-                      {/* eslint-disable-next-line @next/next/no-img-element -- signed Storage preview */}
-                      <img src={previewUrl ?? undefined} alt="Horse cover preview" />
+                    <div className="preview-set">
+                      <figure className="preview-banner" data-testid="horse-preview-banner">
+                        {/* eslint-disable-next-line @next/next/no-img-element -- signed Storage preview */}
+                        <img src={previewUrl ?? undefined} alt="Horse profile banner preview" />
+                        <figcaption>Profile banner — mobile &amp; web</figcaption>
+                      </figure>
+                      <figure className="preview-square" data-testid="horse-preview-square">
+                        {/* eslint-disable-next-line @next/next/no-img-element -- signed Storage preview */}
+                        <img src={previewUrl ?? undefined} alt="Horse list thumbnail preview" />
+                        <figcaption>In lists</figcaption>
+                      </figure>
                     </div>
                     <div className="upload-tools">
                       <div className="upload-meta">Photo uploaded</div>

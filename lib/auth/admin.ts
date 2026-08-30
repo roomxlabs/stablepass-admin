@@ -1,3 +1,4 @@
+import { cache } from "react";
 import { redirect } from "next/navigation";
 import { supabaseServer } from "@/lib/supabase/server";
 import { fail, UNAUTH } from "@/lib/api/envelope";
@@ -61,7 +62,15 @@ export async function requireAdmin(): Promise<{ sb: SupabaseClient } | { res: Re
 //
 // All three checks run before the caller is handed `sb`, so no page-level table
 // read can happen on a session that would silently read 0 rows under aal2 RLS.
-export async function requireAdminPage(): Promise<{ sb: SupabaseClient; user: User }> {
+// Wrapped in React `cache()` so the (dash) layout and the page it renders share
+// ONE evaluation per request instead of two. Both call this deliberately (the page
+// re-asserts rather than trusting the layout gate), which cost two extra Supabase
+// round trips on every navigation: `getUser()` plus the `app_user` read, doubled.
+// `cache()` is per-request, so the re-assertion keeps its meaning (a page still
+// cannot render without the gate having passed), it just stops paying twice for
+// the same answer. Memoising a thrown `redirect()` is correct too, since both
+// callers would redirect identically.
+export const requireAdminPage = cache(async (): Promise<{ sb: SupabaseClient; user: User }> => {
   const sb = await supabaseServer();
   const { data: { user } } = await sb.auth.getUser();
   if (!user) redirect("/signin");
@@ -72,4 +81,4 @@ export async function requireAdminPage(): Promise<{ sb: SupabaseClient; user: Us
   // unknown (null) goes to the challenge screen, which checks for itself.
   if (!isAal2) redirect(hasFactor === false ? "/signin/mfa-setup" : "/signin/mfa");
   return { sb, user };
-}
+});

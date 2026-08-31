@@ -165,6 +165,53 @@ describe("PostsLibrary", () => {
   });
 });
 
+// ENG-245 — card mode. The <720px transform is CSS (posts-css.test.ts pins the
+// rules), so what is provable HERE is the half the CSS depends on: that there
+// is exactly one card element per post, that each one still carries its own
+// status action, and that acting on a card never navigates. Building the cards
+// as a second markup branch would have broken all three — hence one tree.
+describe("PostsLibrary — card mode (ENG-245)", () => {
+  it("renders exactly one card per post", () => {
+    renderLib();
+    expect(screen.getAllByTestId("post-card")).toHaveLength(posts.length);
+  });
+
+  it("gives every card its own status action, unchanged per status", () => {
+    renderLib();
+    const cards = screen.getAllByTestId("post-card");
+    // Guardrail §2: the per-status affordance set is a property of the card,
+    // not of the table layout. Discard is on the draft card and nowhere else.
+    const actionsOf = (card: HTMLElement) =>
+      [...card.querySelectorAll("button")].map((b) => b.textContent);
+    expect(actionsOf(cards[0])).toEqual(["Unpublish", "Delete"]); // published
+    expect(actionsOf(cards[1])).toEqual(["Publish now", "Delete"]); // scheduled
+    expect(actionsOf(cards[2])).toEqual(["Publish now", "Discard"]); // draft
+    expect(actionsOf(cards[3])).toEqual(["Republish", "Delete"]); // unpublished
+  });
+
+  it("keeps each card tappable and keyboard-reachable (tabIndex + Enter)", () => {
+    renderLib();
+    const card = screen.getAllByTestId("post-card")[0];
+    expect(card.getAttribute("tabindex")).toBe("0");
+    fireEvent.keyDown(card, { key: "Enter" });
+    expect(push).toHaveBeenCalledWith("/compose?id=pub");
+  });
+
+  it("clicking a card's action acts in place and does NOT navigate", () => {
+    renderLib();
+    const draftCard = screen.getAllByTestId("post-card")[2];
+    fireEvent.click(draftCard.querySelector("button")!);
+    expect(push).not.toHaveBeenCalled();
+  });
+
+  it("re-attaches the column headings the hidden <thead> would have carried", () => {
+    renderLib();
+    const card = screen.getAllByTestId("post-card")[0];
+    const labels = [...card.querySelectorAll(".cell-label")].map((el) => el.textContent);
+    expect(labels).toEqual(["Published", "Engagement"]);
+  });
+});
+
 // Render a single-row library so the Published cell's <time> is unambiguous.
 function renderOne(over: Partial<PostView>) {
   return render(

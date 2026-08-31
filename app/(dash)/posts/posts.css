@@ -249,3 +249,147 @@
   text-decoration: none;
 }
 .posts-foot .pager span.disabled { opacity: 0.45; }
+
+/* ====================================================================
+   R3 · mobile (ENG-245) — the 7-column table becomes stacked cards.
+
+   CSS-only transform, deliberately: `PostRow` keeps ONE markup tree, so
+   the card and the table render from the same `PostView` with the same
+   `PostActions`. A parallel card branch would have duplicated the
+   per-status affordances, which is exactly what guardrail §2 (Discard on
+   drafts only, unpublish = reversible soft hide) must not depend on.
+   Breakpoint 720px = the epic's content-stacking breakpoint (the shell's
+   own drawer breakpoint, 900px, is ENG-243's and is untouched here).
+   ==================================================================== */
+
+/* Column headings re-attached inline; card mode only (see PostRow). */
+.cell-label { display: none; }
+
+@media (max-width: 719px) {
+  /* Filter bar: chips wrap over as many lines as they need, and the
+     horse/trainer filter drops to its own full-width line beneath them.
+     (The topbar search is already full-width from ENG-243's shell rule.) */
+  .adm-filter-bar {
+    flex-wrap: wrap;
+    gap: 8px;
+    padding: 12px 14px;
+  }
+  .adm-filter-bar .spacer { display: none; }
+  .adm-filter-bar .chip {
+    display: inline-flex;
+    align-items: center;
+    min-height: 44px;
+  }
+  .adm-filter-bar .search-mini {
+    flex: 1 1 100%;
+    min-width: 0;
+    min-height: 44px;
+  }
+
+  /* Rows → cards. The table elements simply stop being table elements. */
+  .adm-table thead { display: none; }
+  .adm-table,
+  .adm-table tbody,
+  .adm-table tr,
+  .adm-table td { display: block; }
+  .adm-table tbody { padding: 12px; }
+  .adm-table tbody tr.row-link {
+    display: grid;
+    grid-template-columns: auto auto 1fr;
+    align-items: center;
+    gap: 8px 10px;
+    padding: 14px;
+    margin-bottom: 10px;
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    background: var(--white);
+  }
+  .adm-table tbody tr.row-link:last-child { margin-bottom: 0; }
+  .adm-table tbody tr.row-link:hover td { background: transparent; }
+
+  .adm-table td {
+    min-width: 0;
+    padding: 0;
+    border-bottom: none;
+  }
+  /* The nowrap the columns need is exactly wrong inside a 320px card. */
+  .adm-table td.nowrap { white-space: normal; }
+  .adm-table td:first-child { padding-left: 0; }
+  .adm-table td:last-child { padding-right: 0; }
+
+  /* 1 thumb + title/excerpt · 2 horse/trainer · 3+4 type & status pills ·
+     5 published · 6 engagement · 7 the status actions, on a ruled line. */
+  .adm-table td.with-thumb {
+    grid-column: 1 / -1;
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+  }
+  .adm-table td:nth-child(2) { grid-column: 1 / -1; }
+  .adm-table td:nth-child(3) { grid-column: 1; }
+  .adm-table td:nth-child(4) { grid-column: 2; }
+  .adm-table td:nth-child(5) {
+    grid-column: 3;
+    text-align: right;
+    font-size: 12px;
+    color: var(--muted);
+  }
+  .adm-table td:nth-child(6) {
+    grid-column: 1 / -1;
+    font-size: 12px;
+    color: var(--muted);
+  }
+  .adm-table td.actions {
+    grid-column: 1 / -1;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 4px 16px;
+    padding-top: 8px;
+    border-top: 1px solid var(--line);
+  }
+  .adm-table td.actions a,
+  .adm-table td.actions button {
+    margin-left: 0;
+    min-height: 44px;
+  }
+  .adm-table td.actions .row-err { flex: 1 1 100%; margin-left: 0; }
+
+  /* A bigger thumb reads as the post's media, not as a row bullet. */
+  .adm-table td .row-thumb { width: 56px; height: 56px; }
+  .adm-table td .row-thumb .thumb-fallback .ic { width: 26px; height: 26px; }
+
+  /* Long titles/captions clamp — never widen or overflow the card. */
+  .adm-table td .row-name,
+  .adm-table td .row-sub {
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    overflow: hidden;
+    overflow-wrap: anywhere;
+  }
+
+  .cell-label {
+    display: block;
+    font-size: 10.5px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--muted);
+  }
+
+  /* Footer + empty state fit the 320px floor. */
+  .posts-foot {
+    flex-wrap: wrap;
+    gap: 10px;
+    padding: 14px 16px;
+  }
+  .posts-foot .pager a,
+  .posts-foot .pager span {
+    display: inline-flex;
+    align-items: center;
+    min-height: 44px;
+  }
+  .posts-empty { padding: 40px 16px; }
+}

@@ -1095,3 +1095,51 @@ stale baselines from earlier tickets). That churn buries a shell/CSS diff and ma
 "zero desktop regression" claim unreviewable.
 Do-this: before committing, `git checkout -- e2e/__screenshots__/` and re-add only the PNGs your ticket
 owns.
+
+## `POST /__control {empty:true}` does NOT empty the dashboard (ENG-244)
+**Symptom:** the R2 empty-state spec flipped the mock to `empty` and still found zero `.adm-empty`
+nodes — the page rendered 3 race rows, 3 quiet horses, 4 recent posts and "Reactions 3,420".
+**Cause:** `setEmpty()` only clears `DB.{trainer,horse,post,trainer_contact}` and sets
+`ANALYTICS_EMPTY`. The dashboard's race-day races, its reaction/save counters and its
+recently-published read are served by handlers that never consult either. The only tile that
+actually zeroes is Members (the subscription read). The ENG-244 ticket body asserted "mock
+`__control {empty}` covers this" — it does not, and that claim is now three tickets old.
+**Do this:** an empty-dashboard proof needs `e2e/mock-supabase.mjs` taught the empty branch for
+those handlers — but that file is Do-NOT-touch on every screen slice of the responsive epic (it is
+shared with R3–R6), so ENG-244 instead swapped the rendered rows for the page's own `.adm-empty`
+markup in the DOM before screenshotting. Real CSS, synthetic data; see the comment above
+`EMPTY_COPY` in `e2e/dashboard.spec.ts`. If a later ticket owns the mock, fix it there properly.
+
+## A plain `.css` import in the App Router is a GLOBAL sheet — scope every responsive block (ENG-244)
+**Symptom / risk:** `.adm-table`, `.adm-card` and `.pill` are declared with identical values in
+`dashboard.css`, `analytics.css`, `posts.css` and `trainers.css`. Each is imported by its own page,
+but a plain (non-module) `.css` import is global once loaded, and the client keeps loaded sheets
+across soft navigation. An unscoped `@media (max-width: 719px) { .adm-table { display: block } }`
+in `dashboard.css` therefore restyles the posts, trainers and analytics tables too — silently, and
+only after you have visited the dashboard first, which is exactly the path a human tester takes.
+**Do this:** give the screen's own `.admin-content` a screen-specific class (`dash-content`) and
+scope every new responsive rule under it. Costs one class, removes the whole class of cross-screen
+leak — and it is what keeps the parallel R-slices of the responsive epic from colliding on shared
+primitive names they do not own.
+
+## Follow R1's `r<N>-*` screenshot naming, not the numeric prefix (ENG-244)
+The `NN-` prefixes in `e2e/__screenshots__/` are one workspace-wide sequence that new tickets keep
+colliding on (see the ENG-748 note above). ENG-243 sidestepped it entirely with `r1-mobile-*.png`;
+ENG-244 followed with `r2-mobile-*.png`. Responsive-epic slices should keep doing this — the
+per-slice prefix sorts together, never collides, and needs no high-water-mark check.
+
+## The e2e harness binds FIXED ports — only ONE worktree can run Playwright at a time (ENG-244)
+**Symptom:** `npx playwright test` dies instantly with
+`Error: listen EADDRINUSE: address already in use 127.0.0.1:8787`, or with
+`http://127.0.0.1:3002/signin is already used`. Killing whatever holds the port makes your run
+start — and silently corrupts a sibling's run.
+**Cause:** `e2e/global-setup.ts` starts `mock-supabase.mjs` on a hard-coded **8787** and
+`playwright.config.ts` starts `next start` on a hard-coded **3002**, with
+`reuseExistingServer: false`. Those are process-wide, not worktree-scoped, so two loop workers in
+`.claude/worktrees/eng-244` and `.claude/worktrees/eng-246` fight over the same two ports. Observed
+live: ENG-244 and ENG-246 ran e2e concurrently and each killed the other's mock server.
+**Do this:** before running e2e, check for a sibling —
+`ps aux | grep "worktrees/eng-.*playwright" | grep -v <your ticket>` — and WAIT for it rather than
+killing the port holder. Serialize e2e across stablepass-admin worktrees the way the BE loop
+serializes on its shared Supabase stack. A crashed run also orphans the mock server; if the port is
+held with no playwright process alive, that orphan is yours to kill (`lsof -nP -iTCP:8787`).

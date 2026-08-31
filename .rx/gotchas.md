@@ -1143,3 +1143,15 @@ live: ENG-244 and ENG-246 ran e2e concurrently and each killed the other's mock 
 killing the port holder. Serialize e2e across stablepass-admin worktrees the way the BE loop
 serializes on its shared Supabase stack. A crashed run also orphans the mock server; if the port is
 held with no playwright process alive, that orphan is yours to kill (`lsof -nP -iTCP:8787`).
+
+## `r1-mobile-shell.png` captures the DASHBOARD — a screen slice invalidates it (ENG-244)
+**Symptom:** ENG-244 changed only dashboard CSS, yet `e2e/__screenshots__/r1-mobile-shell.png`
+(owned by `shell.spec.ts`, R1's file) came back 320x2436 instead of the committed 320x2018 — a 418px
+delta, i.e. exactly this ticket's stacking.
+**Cause:** `e2e/shell.spec.ts:78-98` sets 320x700, signs in, navigates to **`/`** and takes a
+`fullPage` shot. The shell spec's "mobile shell" evidence is therefore a picture of the dashboard
+with the shell around it, so ANY dashboard change re-renders it.
+**Do this:** don't blanket-revert `e2e/__screenshots__/` and call it clean — that leaves a knowingly
+wrong baseline on the branch. Diff the PNG **dimensions** (`struct.unpack('>II', png[16:24])`) to
+tell a real invalidation from the usual `Date.now()` fixture churn, then refresh just that file and
+declare the one-file widening in the PR. R3-R6 will each hit this too, for the same reason.

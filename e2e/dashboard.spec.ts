@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { test, expect, type Page } from "@playwright/test";
 
 // Dashboard screenshot proof (ENG-174 / T4). Backed by the mock Supabase server
@@ -10,6 +12,7 @@ test.describe.configure({ mode: "serial" });
 // workspace-wide counter that new files keep colliding on (.rx/gotchas.md).
 const MOBILE = { width: 320, height: 700 };
 const PHONE_LARGE = { width: 375, height: 812 };
+const DESKTOP = { width: 1280, height: 900 };
 
 const CONTROL = "http://127.0.0.1:8787/__control";
 async function setEmpty(empty: boolean) {
@@ -25,6 +28,38 @@ async function hasNoHorizontalScroll(page: Page) {
   return page.evaluate(
     () => document.documentElement.scrollWidth <= document.documentElement.clientWidth,
   );
+}
+
+// ...but that check ALONE is hollow on a (dash) screen, because two ancestors
+// swallow the overflow before the document ever sees it: `.admin-content` is
+// `overflow-x: auto` below 900px (globals.css, ENG-243) and `.adm-card` is
+// `overflow: hidden` (dashboard.css). A row wider than the phone is therefore
+// CLIPPED — invisible to the document gate and to a boundingBox width check,
+// since a grid container's own box stays at its containing block's width while
+// its tracks paint outside it. So assert the whole containment chain, down to
+// the individual rows. (Found by the ENG-245 worker on the sibling screen.)
+async function overflowingElements(page: Page) {
+  return page.evaluate(() => {
+    const sels = [
+      ".admin-content",
+      ".dash-content .adm-card",
+      ".dash-content .adm-stat",
+      ".dash-content .adm-race-row",
+      ".dash-content .adm-quiet-row",
+      ".dash-content .adm-table tr",
+      ".dash-content .adm-empty",
+    ];
+    const bad: string[] = [];
+    for (const sel of sels) {
+      document.querySelectorAll(sel).forEach((el, i) => {
+        // +1 absorbs sub-pixel layout rounding.
+        if (el.scrollWidth > el.clientWidth + 1) {
+          bad.push(`${sel}[${i}] scrollWidth=${el.scrollWidth} clientWidth=${el.clientWidth}`);
+        }
+      });
+    }
+    return bad;
+  });
 }
 
 async function signIn(page: Page) {
@@ -70,6 +105,7 @@ test("dashboard fits 320px — every section, no horizontal scroll", async ({ pa
   await expect(page.locator(".adm-table tbody tr").first()).toBeVisible();
 
   expect(await hasNoHorizontalScroll(page)).toBe(true);
+  expect(await overflowingElements(page)).toEqual([]);
 
   // `.admin-content` is overflow-x:auto below the shell breakpoint (ENG-243),
   // so the document-level check above would still pass with a too-wide child
@@ -104,6 +140,49 @@ test("dashboard fits 320px — every section, no horizontal scroll", async ({ pa
   });
 });
 
+// "Desktop screenshots unchanged" is an acceptance criterion that CANNOT be
+// proved by comparing `02-dashboard.png`: its fixtures are `Date.now()`-relative
+// (+2h/+4h/+6h), so that baseline re-renders different clock times on every
+// capture and is documented as churning (.rx/gotchas.md). Pin the desktop
+// layout invariants instead — deterministic, and it fails loudly if any of R2's
+// mobile rules ever leaks above the 720px breakpoint.
+test("desktop layout is untouched by the mobile rules", async ({ page }) => {
+  test.setTimeout(90000);
+  await setEmpty(false);
+  await page.setViewportSize(DESKTOP);
+  await signIn(page);
+  await page.goto("/");
+  await expect(page.locator(".adm-stats .adm-stat").first()).toBeVisible({ timeout: 30000 });
+
+  const cols = (sel: string) =>
+    page
+      .locator(sel)
+      .first()
+      .evaluate((el) => getComputedStyle(el).gridTemplateColumns.split(" ").length);
+
+  // Tiles stay 4-across and the two panels stay side by side.
+  expect(await cols(".adm-stats")).toBe(4);
+  expect(await cols(".adm-grid-2")).toBe(2);
+
+  // The recently-published table stays a real table with a visible header.
+  await expect(page.locator(".adm-table thead")).toBeVisible();
+  expect(await page.locator(".adm-table").evaluate((el) => getComputedStyle(el).display)).toBe(
+    "table",
+  );
+  // ...and the generated mobile column labels must NOT be painted.
+  const labelWidth = await page
+    .locator('.adm-table td[data-label]')
+    .first()
+    .evaluate((el) => getComputedStyle(el, "::before").width);
+  expect(["auto", "0px"]).toContain(labelWidth);
+
+  // Race rows keep the desktop 4-column shape (50px 1fr auto auto).
+  expect(await cols(".adm-race-row")).toBe(4);
+
+  expect(await hasNoHorizontalScroll(page)).toBe(true);
+  expect(await overflowingElements(page)).toEqual([]);
+});
+
 test("dashboard fits 375px", async ({ page }) => {
   test.setTimeout(90000);
   await setEmpty(false);
@@ -113,6 +192,7 @@ test("dashboard fits 375px", async ({ page }) => {
 
   await expect(page.locator(".adm-stats .adm-stat").first()).toBeVisible({ timeout: 30000 });
   expect(await hasNoHorizontalScroll(page)).toBe(true);
+  expect(await overflowingElements(page)).toEqual([]);
 
   await page.evaluate(() => window.scrollTo(0, 0));
   await page.screenshot({
@@ -132,14 +212,37 @@ test("dashboard fits 375px", async ({ page }) => {
 // swapping the rendered rows for the page's own empty-state markup in the DOM.
 // That is exactly the markup `page.tsx` server-renders when a section is
 // empty, so the CSS under test is the real thing; only the data is synthetic.
-const EMPTY_COPY = {
-  race: "No platform horses racing in the next 24 hours.",
-  quiet: "Every active horse has posted this week. 🎉",
-  recent: "No published posts yet.",
-};
+//
+// The three strings are READ OUT OF `page.tsx` at run time rather than copied
+// here. A hardcoded copy would desync silently the moment anyone rewords an
+// empty state, and the test would keep passing while screenshotting text the
+// app no longer renders. Reading the source is the same trick the repo already
+// uses for CSS (`compose-css.test.ts`) and for the BE contract doc. If the
+// markup shape changes, this throws instead of quietly proving nothing.
+function emptyCopyFromSource(): string[] {
+  // Playwright runs from the repo root (every screenshot path here is
+  // root-relative), so resolve the page off cwd rather than __dirname.
+  const src = readFileSync(join(process.cwd(), "app", "(dash)", "page.tsx"), "utf8");
+  const copy = [...src.matchAll(/<div className="adm-empty">([^<]+)<\/div>/g)].map((m) =>
+    m[1].trim(),
+  );
+  if (copy.length !== 3) {
+    throw new Error(
+      `expected 3 .adm-empty strings in page.tsx, found ${copy.length} — ` +
+        "the empty-state markup changed shape; update this spec.",
+    );
+  }
+  return copy;
+}
 
-test("dashboard zero/empty states fit 320px", async ({ page }) => {
+// Named to disclose what it is: the empty-state CHROME is real (the page's own
+// `.adm-empty` markup and CSS), the DATA behind it is synthetic.
+test("dashboard zero/empty chrome fits 320px (synthetic DOM — mock cannot empty this page)", async ({
+  page,
+}) => {
   test.setTimeout(90000);
+  // Kept only because it genuinely zeroes the Members tile; it does NOT empty
+  // any other section (see the note above). Restored in `finally` regardless.
   await setEmpty(true);
   try {
     await page.setViewportSize(MOBILE);
@@ -160,21 +263,48 @@ test("dashboard zero/empty states fit 320px", async ({ page }) => {
         return el;
       };
       const cards = document.querySelectorAll<HTMLElement>(".dash-content .adm-card");
-      const texts = [copy.race, copy.quiet, copy.recent];
       cards.forEach((card, i) => {
         card
           .querySelectorAll(".adm-race-row, .adm-quiet-row, .adm-table")
           .forEach((row) => row.remove());
-        card.appendChild(empty(texts[i]));
+        card.appendChild(empty(copy[i]));
       });
       // The quiet-horse count pill goes with the horses.
       document.querySelector(".adm-card-head.tight h2 .pill")?.remove();
-    }, EMPTY_COPY);
+    }, emptyCopyFromSource());
 
-    await expect(page.locator(".adm-empty")).toHaveCount(3);
-    await expect(page.locator(".adm-empty").first()).toBeVisible();
-    await expect(page.locator(".adm-race-row")).toHaveCount(0);
+    // Assert what the CSS actually has to get right, not what the script above
+    // just did. Each empty card must sit inside the 320px viewport and each
+    // message must be laid out at its full height with no clipping — that is
+    // the mobile padding scale and the card stacking doing their job.
+    const cards = page.locator(".dash-content .adm-card");
+    await expect(cards).toHaveCount(3);
+    for (let i = 0; i < 3; i++) {
+      const cardBox = (await cards.nth(i).boundingBox())!;
+      expect(cardBox.x).toBeGreaterThanOrEqual(0);
+      expect(cardBox.x + cardBox.width).toBeLessThanOrEqual(MOBILE.width);
+
+      const msg = cards.nth(i).locator(".adm-empty");
+      await expect(msg).toBeVisible();
+      const msgBox = (await msg.boundingBox())!;
+      expect(msgBox.x).toBeGreaterThanOrEqual(cardBox.x);
+      expect(msgBox.x + msgBox.width).toBeLessThanOrEqual(cardBox.x + cardBox.width);
+      // Not clipped: the rendered box covers the full wrapped text. `scrollHeight`
+      // is a rounded integer while `boundingBox().height` is fractional (84.5 vs
+      // 85 here), so compare the ceiling rather than the raw float.
+      const scrollH = await msg.evaluate((el) => el.scrollHeight);
+      expect(Math.ceil(msgBox.height)).toBeGreaterThanOrEqual(scrollH);
+    }
+
+    // Zeroed tiles still sit 2-across and inside the viewport.
+    const tiles = page.locator(".adm-stats .adm-stat");
+    const t0 = (await tiles.nth(0).boundingBox())!;
+    const t1 = (await tiles.nth(1).boundingBox())!;
+    expect(t1.y).toBe(t0.y);
+    expect(t1.x + t1.width).toBeLessThanOrEqual(MOBILE.width);
+
     expect(await hasNoHorizontalScroll(page)).toBe(true);
+    expect(await overflowingElements(page)).toEqual([]);
 
     const contentWell = page.locator(".dash-content");
     expect(await contentWell.evaluate((el) => el.scrollWidth - el.clientWidth)).toBeLessThanOrEqual(

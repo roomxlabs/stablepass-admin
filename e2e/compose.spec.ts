@@ -472,3 +472,214 @@ test("compose: a voice post uploads audio to post-media, exactly like a photo", 
   await page.setViewportSize({ width: 1280, height: 1400 });
   await page.screenshot({ path: "e2e/__screenshots__/17-compose-voice.png" });
 });
+
+// ---------------------------------------------------------------------------
+// R4 · compose on a phone (ENG-246)
+//
+// The screen was already single-column below 1080px, so the interesting claims
+// are the ones nothing else proves: that it actually FITS 320px, that the
+// preview really lands BELOW the form rather than beside it, and that the
+// primary action is reachable without scrolling back up past three steps.
+//
+// REVIVAL NOTE (31 Aug 2026): the ticket also asked for the PreviewModal's
+// Mobile and Web frames to stack vertically. That rule no longer maps — ENG-558
+// deleted the fake web frame and compose-css.test.ts asserts those device-frame
+// rules stay deleted, so there is exactly one pane and nothing to stack. The
+// modal test below asserts what the rule was actually protecting instead: at
+// 320px the single pane fits, scrolls, and its close button stays reachable.
+// ---------------------------------------------------------------------------
+
+const MOBILE = { width: 320, height: 700 };
+const PHONE_LARGE = { width: 375, height: 812 };
+
+// The document must not scroll sideways...
+async function noDocumentHScroll(page: Page) {
+  return page.evaluate(
+    () => document.documentElement.scrollWidth <= document.documentElement.clientWidth,
+  );
+}
+
+// ...and neither may the content well. This second check is the one that
+// matters here: R1's shell sets `.admin-content { overflow-x: auto }` below
+// 899px, so a compose column that is 100px too wide would scroll INSIDE the
+// well and the document-level assertion above would still pass. Asserting only
+// the document would have let this ticket ship having fixed nothing.
+async function noContentHScroll(page: Page) {
+  return page.evaluate(() => {
+    const el = document.querySelector(".admin-content");
+    // Fail as an assertion, not as "Cannot read properties of null", if the
+    // screen ever renders without the shell's content well.
+    if (!el) return false;
+    return el.scrollWidth <= el.clientWidth;
+  });
+}
+
+test("compose fits 320px: one column, preview below the form, sticky action bar", async ({
+  page,
+}) => {
+  test.setTimeout(90000);
+  await page.setViewportSize(MOBILE);
+  await signIn(page);
+  await page.goto("/compose");
+  await expect(page.getByRole("heading", { name: "Compose post" })).toBeVisible({
+    timeout: 30000,
+  });
+
+  expect(await noDocumentHScroll(page)).toBe(true);
+  expect(await noContentHScroll(page)).toBe(true);
+
+  // Single column, preview BELOW the form: the always-mounted rail preview must
+  // start below the bottom of the last form control, not beside it.
+  // NOTE: the single column itself predates this ticket (compose.module.css
+  // already collapses `.grid` to 1fr at <=1080px), so this is an acceptance-
+  // criterion regression guard, not proof that this diff did something.
+  const caption = (await page.getByTestId("caption").boundingBox())!;
+  const preview = (await page.getByTestId("post-preview").boundingBox())!;
+  expect(preview.y).toBeGreaterThan(caption.y + caption.height);
+  // ...and sit INSIDE the form's horizontal band rather than in a side rail.
+  // (Not "same left edge": the card is inset by the publish panel's padding
+  // plus the preview tray's, which is the desktop treatment reflowed, not a
+  // second column.)
+  expect(preview.x).toBeGreaterThanOrEqual(caption.x - 4);
+  expect(preview.x + preview.width).toBeLessThanOrEqual(caption.x + caption.width + 4);
+
+  // The sticky bar is pinned to the bottom of the VIEWPORT, so it is reachable
+  // from the top of a long form without scrolling.
+  const bar = page.getByTestId("compose-mobile-bar");
+  await expect(bar).toBeVisible();
+  const barBox = (await bar.boundingBox())!;
+  expect(Math.round(barBox.y + barBox.height)).toBeLessThanOrEqual(MOBILE.height + 1);
+  expect(barBox.x).toBeGreaterThanOrEqual(0);
+  expect(barBox.width).toBeLessThanOrEqual(MOBILE.width);
+
+  // Viewport shot, NOT fullPage: the sticky bar is `position: fixed`, and a
+  // fullPage capture of a scrolling page paints it (and the shell's sticky
+  // header) a second time part-way down — evidence that shows the bar
+  // somewhere it never actually appears.
+  await page.screenshot({ path: "e2e/__screenshots__/r4-mobile-compose-empty.png" });
+
+  // Filled: the bar's primary enables in step with the panel's, because both
+  // read the same disabled rule.
+  await expect(page.getByTestId("mobile-primary-action")).toBeDisabled();
+  await chooseType(page, "text");
+  await page.getByTestId("horse-search").fill("Mah");
+  await page.getByTestId("horse-opt-h1").click();
+  await page.getByTestId("caption").fill("He pulled up well and ate everything overnight.");
+  await expect(page.getByTestId("mobile-primary-action")).toBeEnabled();
+  await expect(page.getByTestId("primary-action")).toBeEnabled();
+
+  expect(await noDocumentHScroll(page)).toBe(true);
+  expect(await noContentHScroll(page)).toBe(true);
+  // The whole column in one frame: a TALL viewport at the same 320px width,
+  // for the reason above — one paint of the fixed bar, at the bottom, where it
+  // really is.
+  await page.setViewportSize({ width: MOBILE.width, height: 1600 });
+  await page.screenshot({ path: "e2e/__screenshots__/r4-mobile-compose-filled.png" });
+});
+
+test("compose: the preview modal fits 320px and Escape still closes it", async ({ page }) => {
+  test.setTimeout(90000);
+  await page.setViewportSize(MOBILE);
+  await signIn(page);
+  await page.goto("/compose");
+  await expect(page.getByRole("heading", { name: "Compose post" })).toBeVisible({
+    timeout: 30000,
+  });
+
+  await chooseType(page, "text");
+  await page.getByTestId("horse-search").fill("Mah");
+  await page.getByTestId("horse-opt-h1").click();
+  await page.getByTestId("caption").fill("Quiet morning, all good.");
+
+  await page.getByRole("button", { name: "Preview post" }).click();
+  const panel = page.getByTestId("preview-panel");
+  await expect(panel).toBeVisible();
+
+  // ONE pane (ENG-558), not two device frames — this is the ticket's stacked-
+  // frames rule re-derived against the merged screen. (`toBeVisible` above
+  // would already have thrown a strict-mode violation on a second panel, so
+  // there is no count assertion here.)
+  const panelBox = (await panel.boundingBox())!;
+
+  // These two are the DISCRIMINATING assertions — everything else about the
+  // modal already held before this ticket (base `.modalPanel` is
+  // `max-width: 420px; width: 100%`, so it was always narrower than 320px).
+  // What the new rules actually change is the gutter (32px -> 16px) and the
+  // alignment (centre -> flex-start). Revert either and one of these fails.
+  expect(panelBox.x).toBeCloseTo(16, 0);
+  expect(panelBox.width).toBeCloseTo(MOBILE.width - 32, 0);
+  // Top-aligned: a centred short card sits ~200px down a 700px viewport.
+  expect(panelBox.y).toBeLessThanOrEqual(24);
+
+  // The close button stays on screen: the PANEL owns the overflow, so the head
+  // never scrolls out of the viewport.
+  const close = page.getByRole("button", { name: "Close preview" });
+  await expect(close).toBeInViewport();
+  const closeBox = (await close.boundingBox())!;
+  expect(closeBox.y).toBeGreaterThanOrEqual(0);
+  expect(closeBox.x + closeBox.width).toBeLessThanOrEqual(MOBILE.width);
+
+  expect(await noDocumentHScroll(page)).toBe(true);
+  await page.screenshot({ path: "e2e/__screenshots__/r4-mobile-compose-modal.png" });
+
+  await page.keyboard.press("Escape");
+  await expect(panel).toBeHidden();
+});
+
+test("compose edit mode fits 375x812 with the sticky bar on Save changes", async ({ page }) => {
+  test.setTimeout(90000);
+  await page.setViewportSize(PHONE_LARGE);
+  await signIn(page);
+  await page.goto("/compose?id=ce1");
+  await expect(page.getByRole("heading", { name: "Edit post" })).toBeVisible({ timeout: 30000 });
+
+  expect(await noDocumentHScroll(page)).toBe(true);
+  expect(await noContentHScroll(page)).toBe(true);
+
+  const bar = page.getByTestId("compose-mobile-bar");
+  await expect(bar).toBeVisible();
+  await expect(page.getByTestId("mobile-primary-action")).toHaveText("Save changes");
+  // The topbar row is hidden here, so the bar must carry edit-draft's
+  // "Publish now" — it exists nowhere else on the screen, and without this a
+  // draft would be unpublishable on a phone.
+  await expect(page.getByTestId("publish-draft")).toBeHidden();
+  await expect(page.getByTestId("mobile-publish-draft")).toBeVisible();
+  // The remaining "Save changes" pair — the publish panel's button and the
+  // bar's mirror of it — is deliberate: a sticky bar IS a mirror of the panel
+  // control, exactly as the topbar mirrors it on desktop today. What this
+  // ticket removes is the THIRD copy in the topbar.
+  await expect(page.getByRole("button", { name: "Save changes" })).toHaveCount(2);
+  const barBox = (await bar.boundingBox())!;
+  expect(Math.round(barBox.y + barBox.height)).toBeLessThanOrEqual(PHONE_LARGE.height + 1);
+
+  // The edit-mode Schedule panel's date/time pair is the widest thing on the
+  // screen; it must stack rather than overflow.
+  await expect(page.getByTestId("edit-schedule")).toBeVisible();
+  const date = (await page.getByTestId("schedule-date").boundingBox())!;
+  const time = (await page.getByTestId("schedule-time").boundingBox())!;
+  expect(time.y).toBeGreaterThan(date.y + date.height - 1);
+
+  await page.setViewportSize({ width: PHONE_LARGE.width, height: 1600 });
+  await page.screenshot({ path: "e2e/__screenshots__/r4-mobile-compose-edit.png" });
+});
+
+test("desktop compose is unchanged: two columns, no sticky bar", async ({ page }) => {
+  test.setTimeout(90000);
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await signIn(page);
+  await page.goto("/compose");
+  await expect(page.getByRole("heading", { name: "Compose post" })).toBeVisible({
+    timeout: 30000,
+  });
+
+  await expect(page.getByTestId("compose-mobile-bar")).toBeHidden();
+  // ...and the topbar keeps its full action row on desktop.
+  // `exact` matters: without it "Publish" also matches the panel's
+  // "Publish now" and the locator is ambiguous.
+  await expect(page.getByRole("button", { name: "Publish", exact: true })).toBeVisible();
+  // Two columns: the rail preview sits BESIDE the caption, not under it.
+  const caption = (await page.getByTestId("caption").boundingBox())!;
+  const preview = (await page.getByTestId("post-preview").boundingBox())!;
+  expect(preview.x).toBeGreaterThan(caption.x + caption.width);
+  expect(await noDocumentHScroll(page)).toBe(true);
+});

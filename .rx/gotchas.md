@@ -1095,3 +1095,29 @@ stale baselines from earlier tickets). That churn buries a shell/CSS diff and ma
 "zero desktop regression" claim unreviewable.
 Do-this: before committing, `git checkout -- e2e/__screenshots__/` and re-add only the PNGs your ticket
 owns.
+
+## The committed desktop baselines are STALE — A/B two captures, never PNG-vs-HEAD (ENG-247)
+Extends the entry above. Reverting the churn is right, but do NOT then diff your capture against the
+committed PNG to decide whether you regressed the desktop: several baselines have not been retaken
+since feature work merged, so they differ from what the **base branch itself** renders — by image
+HEIGHT, not just pixels (`07-add-horse` 2052 committed vs 2139 from base; `08-edit-horse` 2052 vs
+2367). Measured that way a pixel-neutral change reads as a 13-17% regression.
+Do-this: capture the same baselines twice — once with your diff stashed, once with it applied — and
+compare those two. `magick identify -format '%wx%h'` first (a height delta is a real layout change),
+then `magick compare -metric AE base.png mine.png null:`. ENG-247's form baselines came back AE=0 that
+way while reading as a huge diff against the committed file. `05-horses-list` still shows its
+documented ~17k-px "Winx card" jitter in a 250x319 bbox — quantify the bbox before calling it real.
+
+## Playwright's `webServer` readiness probe false-positives here — start `next start` by hand (ENG-247)
+**Symptom, two flavours, both bogus:** `Error: http://127.0.0.1:3002/signin is already used` with
+nothing listening (`lsof`, `curl` and a `net.createServer()` bind all say the port is free), or the
+suite starts and the first `page.goto` dies on `ERR_CONNECTION_REFUSED` ~1s in because Playwright
+declared the server ready before `next start` had bound.
+**Do this:** `npm run build`, start the server yourself with the mock env
+(`NEXT_PUBLIC_SUPABASE_URL=http://127.0.0.1:8787 npx next start -p 3002`), poll `curl` until it really
+returns 200, then run `playwright test -c <temp config>` where the temp config spreads
+`playwright.config.ts` **minus `webServer`**. Keep it untracked and delete it before committing.
+Do NOT retarget the temp config at another port: `signIn()` in horses/shell/dashboard/... hard-codes
+`waitForURL("http://127.0.0.1:3002/")` and every spec then times out.
+Related: start the server and run the suite in ONE shell call — a server left running across calls
+gets reaped, and the next run fails as CONNECTION_REFUSED for no visible reason.

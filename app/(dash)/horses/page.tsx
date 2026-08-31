@@ -115,7 +115,11 @@ export default async function HorsesPage({
         </div>
       </div>
 
-      <div className="admin-content">
+      {/* `horses-screen` scopes this screen's responsive rules in horses.css —
+          the mockup classes it reflows (.adm-card-head, .adm-filter-bar) are
+          duplicated in posts.css / trainers.css, which this ticket must not
+          touch (ENG-247). */}
+      <div className="admin-content horses-screen">
         <div className="adm-card">
           <div className="adm-filter-bar">
             {FILTERS.map((f) => (
@@ -153,8 +157,11 @@ export default async function HorsesPage({
             </div>
           ) : (
             <>
-              <div style={{ padding: 20 }}>
-                <div className="horse-grid-adm">
+              {/* Was an inline `padding: 20` — moved into horses.css so the
+                  mobile breakpoint can shrink it (inline styles win over a
+                  media query). Desktop value is unchanged. */}
+              <div className="horse-grid-wrap">
+                <div className="horse-grid-adm" data-testid="horse-grid">
                   {filtered.map((h) => {
                     const cover = h.photo_url ? covers.get(h.photo_url) ?? null : null;
                     return (

@@ -139,6 +139,7 @@ textarea.adm-input { min-height: 110px; resize: vertical; font-family: var(--fon
 .admin-topbar .search input::placeholder { color: var(--muted); }
 
 /* Horse grid -------------------------------------------------------- */
+.horse-grid-wrap { padding: 20px; }
 .horse-grid-adm { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; }
 .horse-card-adm {
   display: block;
@@ -185,6 +186,10 @@ textarea.adm-input { min-height: 110px; resize: vertical; font-family: var(--fon
   overflow: hidden;
 }
 .upload-zone.filled { padding: 0; border-style: solid; border-color: var(--line); }
+/* Desktop padding for the EMPTY zone, moved off HorseForm's inline style so
+   the mobile breakpoint can shrink it. Scoped: `.upload-zone` is duplicated in
+   trainers.css and this sheet is global once imported. */
+.horse-form .upload-zone:not(.filled) { padding: 28px; }
 .upload-zone .browse { color: var(--brand-green); font-weight: 500; cursor: pointer; }
 .upload-zone input[type="file"] { display: none; }
 /* Justin, 26 Aug: preview BOTH horse surfaces from the same photo — the wide
@@ -240,6 +245,10 @@ textarea.adm-input { min-height: 110px; resize: vertical; font-family: var(--fon
 .field-grid.cols-3 { grid-template-columns: 1fr 1fr 1fr; }
 .field-grid.cols-4 { grid-template-columns: 1fr 1fr 1fr 1fr; }
 .form-actions { margin-top: 24px; display: flex; justify-content: flex-end; gap: 10px; align-items: center; }
+/* Desktop button sizing, moved off the two inline `style` props so the mobile
+   save-bar rule can resize them (an inline style beats any media query).
+   Scoped to the horses bar: `.form-actions` is duplicated in trainers.css. */
+.horse-form-actions .btn { padding: 10px 22px; }
 .form-error {
   background: rgba(200, 74, 62, 0.08);
   border: 1px solid rgba(200, 74, 62, 0.35);
@@ -267,4 +276,132 @@ textarea.adm-input { min-height: 110px; resize: vertical; font-family: var(--fon
 .adm-check-note {
   margin-top: 4px;
   grid-column: 1 / -1;
+}
+
+/* ====================================================================
+   ENG-247 / R5 — responsive pass (mobile parity down to 320px).
+
+   WHY EVERY RULE BELOW IS SCOPED to `.horses-screen` (the list) or
+   `.horse-form` / `.horse-form-tail` (add, edit): a stylesheet imported
+   from an App Router page is a GLOBAL stylesheet, and `.adm-card`,
+   `.adm-card-body`, `.adm-filter-bar`, `.upload-zone` and `.form-actions`
+   are each duplicated verbatim in posts.css / trainers.css (the repo's
+   "port the shared mockup classes into your own screen's sheet"
+   convention). An unscoped `@media` block here would therefore reflow
+   the trainers and posts screens too — which are ENG-245's and
+   ENG-248's surface, not this ticket's.
+
+   Breakpoints are the epic's: content stacking at < 720px, floor 320px.
+   Desktop >= 1080px is untouched, so the committed desktop baselines
+   stay byte-identical.
+   ==================================================================== */
+
+/* --- 720-1080px: the intermediate step ----------------------------- */
+/* Four cards across is unreadable well before the phone breakpoint, and
+   four number fields across (Starts/Wins/Places/Prize) are ~60px wide
+   each on a small laptop. Two columns is the natural fit here. */
+@media (max-width: 1079px) {
+  .horses-screen .horse-grid-adm { grid-template-columns: repeat(2, 1fr); }
+  .horse-form .field-grid.cols-4 { grid-template-columns: 1fr 1fr; }
+}
+
+/* --- Content stacking: < 720px ------------------------------------- */
+@media (max-width: 719px) {
+  /* Horses list ---------------------------------------------------- */
+  .horses-screen .horse-grid-adm { grid-template-columns: 1fr; }
+  .horses-screen .horse-grid-wrap { padding: 14px; }
+  .horses-screen .adm-card-head { padding: 14px 16px; }
+  .horses-screen .horse-grid-foot { padding: 14px 16px; }
+  .horses-screen .horse-empty { padding: 40px 16px; }
+
+  /* Filter bar: chips wrap, and the search drops to its own full-width
+     row (the flex `.spacer` that pushes it right on desktop would
+     otherwise force a 220px-min input onto the chip row). */
+  .horses-screen .adm-filter-bar { flex-wrap: wrap; padding: 12px 16px; }
+  .horses-screen .adm-filter-bar .spacer { display: none; }
+  .horses-screen .adm-filter-bar .search-mini {
+    flex: 1 1 100%;
+    min-width: 0;
+    min-height: 44px;
+  }
+  /* Tap targets (epic rule 8) — the desktop chip is ~31px tall. */
+  .horses-screen .adm-filter-bar .chip {
+    display: inline-flex;
+    align-items: center;
+    min-height: 44px;
+  }
+
+  /* Long racing names wrap inside the card instead of widening it, and
+     the stat row / status pill wrap rather than overflowing. */
+  .horses-screen .horse-card-adm .name,
+  .horses-screen .horse-card-adm .meta { overflow-wrap: anywhere; }
+  .horses-screen .horse-card-adm .stats { flex-wrap: wrap; row-gap: 4px; }
+  .horses-screen .pill { max-width: 100%; }
+
+  /* Add / edit form ------------------------------------------------ */
+  .horse-form .field-grid.cols-2,
+  .horse-form .field-grid.cols-3,
+  .horse-form .field-grid.cols-4 { grid-template-columns: 1fr; }
+  .horse-form .adm-card-head,
+  .horse-form-tail .adm-card-head { padding: 14px 16px; }
+  .horse-form .adm-card-body,
+  .horse-form-tail .adm-card-body { padding: 16px; }
+
+  /* Photo zone goes full-width; the tools row (caption + Reposition +
+     Replace) wraps instead of squeezing its two buttons off the edge. */
+  .horse-form .upload-zone:not(.filled) { padding: 22px 16px; }
+  .horse-form .upload-zone .preview-set { padding: 14px 0; gap: 12px; }
+  .horse-form .upload-zone .preview-banner { max-width: 100%; }
+  .horse-form .upload-zone .upload-tools {
+    flex-wrap: wrap;
+    justify-content: flex-start;
+    gap: 8px;
+    padding: 12px 14px;
+  }
+
+  /* Sticky bottom save bar (epic rule 7).
+     FIXED, not `position: sticky`: at the shell breakpoint globals.css
+     gives `.admin-content` `overflow-x: auto`, which computes
+     `overflow-y` to `auto` as well and makes it a scroll container — a
+     sticky child would then stick to the bottom of the CONTENT box, not
+     the viewport, and never be seen. Fixed is viewport-relative and has
+     no transformed ancestor here.
+     z-index sits above the page (mobile bar is 30) and below the nav
+     drawer + backdrop (100 / 90) so the drawer still covers it. */
+  .horse-form-actions {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 40;
+    margin-top: 0;
+    display: flex;
+    gap: 10px;
+    padding: 10px 16px calc(10px + env(safe-area-inset-bottom));
+    background: var(--white);
+    border-top: 1px solid var(--line);
+    box-shadow: 0 -2px 12px rgba(0, 0, 0, 0.06);
+  }
+  /* The full-bleed split comes from `flex: 1 1 0`; globals.css already
+     centres a `.btn`'s own content. */
+  .horse-form-actions .btn {
+    flex: 1 1 0;
+    min-height: 44px;
+    padding: 10px 12px;
+  }
+  /* Clearance so the bar never covers the last field — or, on the edit
+     page, the Danger zone that renders after the form. Validation errors
+     render at the TOP of the form body, so they are never behind it. */
+  .horse-form-body { padding-bottom: 88px; }
+  /* `.admin-content.horse-form-tail`, not `.horse-form-tail`: globals.css's
+     `@media (max-width: 899px) { .admin-content { padding: 20px 16px } }` sets
+     padding-bottom through the shorthand at the SAME (0,1,0) specificity, so a
+     single-class selector here would be decided by source order alone — i.e.
+     by the fact that layout.tsx imports globals.css before the page imports
+     this sheet. Two classes win outright and survive an import reshuffle. */
+  .admin-content.horse-form-tail { padding-bottom: 88px; }
+  /* On the EDIT page the Danger zone renders after the form, so the tail
+     carries the clearance and the form body must not double it up.
+     Degrades to a harmless extra gap where `:has()` is unsupported. */
+  form:has(+ .horse-form-tail) .horse-form-body { padding-bottom: 0; }
 }

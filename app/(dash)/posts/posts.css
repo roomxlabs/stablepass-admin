@@ -328,9 +328,12 @@
   .adm-table td:nth-child(2) { grid-column: 1 / -1; }
   .adm-table td:nth-child(3) { grid-column: 1; }
   .adm-table td:nth-child(4) { grid-column: 2; }
+  /* Its own line, not the third track of the pill row: "PUBLISHED" is a single
+     unbreakable word ~65px wide, and a Voice-note + Unpublished pill pair eats
+     nearly all of a 320px card — a shared row would collapse the 1fr track and
+     paint the label over the status pill. */
   .adm-table td:nth-child(5) {
-    grid-column: 3;
-    text-align: right;
+    grid-column: 1 / -1;
     font-size: 12px;
     color: var(--muted);
   }
@@ -349,12 +352,26 @@
     padding-top: 8px;
     border-top: 1px solid var(--line);
   }
+  /* inline-flex, not just min-height: as flex items these are blockified, and
+     the container's align-items only centres the BOX. Without this the bordered
+     `.destructive` Delete chip becomes a 44px red rectangle with its label
+     stuck to the top edge. */
   .adm-table td.actions a,
   .adm-table td.actions button {
+    display: inline-flex;
+    align-items: center;
     margin-left: 0;
     min-height: 44px;
   }
-  .adm-table td.actions .row-err { flex: 1 1 100%; margin-left: 0; }
+  /* td.actions is `white-space: nowrap` on desktop; a BFF error message is
+     arbitrary text and would run straight off a ~234px card and be clipped by
+     .adm-card's overflow:hidden, leaving an unreadable half-error. */
+  .adm-table td.actions .row-err {
+    flex: 1 1 100%;
+    margin-left: 0;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
 
   /* A bigger thumb reads as the post's media, not as a row bullet. */
   .adm-table td .row-thumb { width: 56px; height: 56px; }

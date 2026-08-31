@@ -28,25 +28,48 @@ function mobileBlock(): string {
 }
 const MOBILE = mobileBlock();
 
-/**
- * The declarations inside one rule block of the mobile media query.
- *
- * Rejects a DUPLICATE selector rather than reading the first and stopping: a
- * later redeclaration is what the cascade actually applies, so reading only the
- * first match would let a re-added `white-space: nowrap` pass this suite. Rules
- * inside the media block are indented, so anchor on the newline + indentation
- * instead of the line start — that also keeps a descendant selector such as
- * `.adm-table td.actions button {` from reading as a redeclaration of
- * `.adm-table td.actions {`.
- */
-function rule(selector: string, source = MOBILE): string {
+/** Byte offsets of every occurrence of `selector {` that STARTS a line. */
+function ownLineHits(selector: string, source: string): number[] {
   const marker = `${selector} {`;
   const hits: number[] = [];
   for (let i = source.indexOf(marker); i !== -1; i = source.indexOf(marker, i + 1)) {
-    const before = source.slice(0, i);
-    if (/(^|\n)[ \t]*$/.test(before)) hits.push(i);
+    // Anchor on newline + indentation, not the line start: rules inside the
+    // media block are indented. It also keeps a descendant selector such as
+    // `.adm-table td.actions button {` from reading as a redeclaration of
+    // `.adm-table td.actions {`.
+    if (/(^|\n)[ \t]*$/.test(source.slice(0, i))) hits.push(i);
   }
-  expect(hits.length, `${selector} should be declared exactly once`).toBe(1);
+  return hits;
+}
+
+/**
+ * The declarations inside one rule block.
+ *
+ * Rejects a duplicate WITHIN the scope, and — because a later redeclaration is
+ * what the cascade actually applies — also checks that the block being read is
+ * the LAST own-line declaration of that selector in the whole stylesheet. Most
+ * of these selectors legitimately appear twice (a desktop rule plus its mobile
+ * override), so "exactly once in the file" would be wrong; "nothing overrides
+ * it later" is the property that matters, and it catches an override appended
+ * after the media block. Pass `winsCascade: false` when deliberately reading an
+ * earlier declaration (the desktop half of `.cell-label`).
+ *
+ * Know its limits: this compares rule TEXT, so it cannot see a duplicate that
+ * arrives as one selector in a comma list (`.adm-table th, .adm-table td.nowrap {`)
+ * or under a different, higher-specificity selector (`.adm-table tbody td.nowrap`).
+ * Those still need the e2e layout assertions to catch them.
+ */
+function rule(selector: string, source = MOBILE, winsCascade = true): string {
+  const hits = ownLineHits(selector, source);
+  expect(hits.length, `${selector} should be declared exactly once in this scope`).toBe(1);
+  if (winsCascade) {
+    const all = ownLineHits(selector, CSS);
+    const offset = CSS.indexOf(source);
+    expect(
+      all[all.length - 1],
+      `nothing may redeclare ${selector} after the block under test`,
+    ).toBe(offset + hits[0]);
+  }
   return source.slice(hits[0], source.indexOf("}", hits[0]));
 }
 
@@ -102,10 +125,33 @@ describe("posts.css — the <720px card transform (ENG-245)", () => {
   });
 
   it("shows the re-attached column labels ONLY in card mode", () => {
-    // Hidden by default (desktop, where <thead> carries the headings)…
-    expect(rule(".cell-label", CSS.slice(0, CSS.indexOf(MEDIA_OPEN)))).toMatch(/display:\s*none/);
-    // …and shown inside the media block.
+    // The one selector that legitimately appears twice: hidden by default
+    // (desktop, where <thead> carries the headings)…
+    expect(rule(".cell-label", CSS.slice(0, CSS.indexOf(MEDIA_OPEN)), false)).toMatch(
+      /display:\s*none/,
+    );
+    // …and shown inside the media block, which is the declaration that wins.
     expect(rule(".cell-label")).toMatch(/display:\s*block/);
+  });
+
+  it("keeps the actions readable on a card: centred chips, a wrapping error", () => {
+    // As flex items these are blockified, so min-height alone leaves the
+    // bordered Delete chip's label pinned to the top of a 44px box.
+    const tap = rule(".adm-table td.actions a,\n  .adm-table td.actions button");
+    expect(tap).toMatch(/min-height:\s*44px/);
+    expect(tap).toMatch(/display:\s*inline-flex/);
+    expect(tap).toMatch(/align-items:\s*center/);
+    // td.actions is nowrap on desktop; an arbitrary BFF error string would run
+    // off the card and be clipped by .adm-card's overflow: hidden.
+    const err = rule(".adm-table td.actions .row-err");
+    expect(err).toMatch(/white-space:\s*normal/);
+    expect(err).toMatch(/overflow-wrap:\s*anywhere/);
+  });
+
+  it("gives the published cell its own line, so the label cannot overlap a pill", () => {
+    // "PUBLISHED" is one unbreakable ~65px word; sharing the pill row's 1fr
+    // track would collapse it under a Voice-note + Unpublished pair at 320px.
+    expect(rule(".adm-table td:nth-child(5)")).toMatch(/grid-column:\s*1 \/ -1/);
   });
 
   it("changes nothing above the breakpoint — every rule is inside the media query", () => {
@@ -115,5 +161,8 @@ describe("posts.css — the <720px card transform (ENG-245)", () => {
     expect(desktop).toMatch(/\.adm-table th\.nowrap \{ white-space: nowrap; \}/);
     expect(desktop).not.toContain("display: grid");
     expect(desktop).not.toContain("thead");
+    // …and nothing follows the media block that could override it unnoticed.
+    // Without this, an appended rule sits in a region no assertion here reads.
+    expect(CSS.slice(CSS.indexOf(MEDIA_OPEN) + MOBILE.length).trim()).toBe("");
   });
 });

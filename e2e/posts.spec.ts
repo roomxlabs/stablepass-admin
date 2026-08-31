@@ -23,11 +23,26 @@ const MOBILE = { width: 320, height: 700 };
 const PHONE_LARGE = { width: 375, height: 812 };
 const MIN_TAP = 44;
 
-// The acceptance check: the document itself must never scroll sideways.
+// The acceptance check. Testing `documentElement` ALONE is not enough on this
+// screen and would be a hollow gate: ENG-243's shell gives `.admin-content`
+// `overflow-x: auto` below 900px expressly so a too-wide child scrolls inside
+// the content well instead of moving the document, and `.adm-card` is
+// `overflow: hidden`, which clips whatever is left. A card overflowing its
+// 320px width would therefore be silently cropped with the document still
+// reporting scrollWidth 320. So assert on every element that can actually
+// report the overflow: the document, the scrollable content well, the card, and
+// each post card.
+const OVERFLOW_SCOPES = ["html", ".admin-content", ".adm-card", '[data-testid="post-card"]'];
 async function hasNoHorizontalScroll(page: Page) {
-  return page.evaluate(
-    () => document.documentElement.scrollWidth <= document.documentElement.clientWidth,
-  );
+  return page.evaluate((scopes) => {
+    for (const sel of scopes) {
+      for (const el of document.querySelectorAll(sel)) {
+        // +1px: sub-pixel layout rounding, not a real overflow.
+        if (el.scrollWidth > el.clientWidth + 1) return false;
+      }
+    }
+    return true;
+  }, OVERFLOW_SCOPES);
 }
 
 // The cards are client-interactive (row click → router.push), so a click before
@@ -101,6 +116,17 @@ test("posts library at 320px — cards, wrapped chips, no horizontal scroll", as
   // 240px min-width, which alone would overflow a 320px viewport).
   const searchBox = (await page.locator(".adm-filter-bar .search-mini").boundingBox())!;
   expect(searchBox.width).toBeGreaterThan(MOBILE.width * 0.8);
+
+  // The pagination footer wraps rather than squeezing the pager off the card:
+  // the "Showing N of M" line and the pager sit on different rows.
+  const foot = await page
+    .locator(".posts-foot")
+    .evaluate((el) => ({
+      count: el.firstElementChild!.getBoundingClientRect(),
+      pager: el.querySelector(".pager")!.getBoundingClientRect(),
+    }));
+  expect(Math.round(foot.pager.y)).toBeGreaterThan(Math.round(foot.count.y));
+  expect(foot.pager.x).toBeGreaterThanOrEqual(0);
 
   await page.screenshot({ path: "e2e/__screenshots__/r3-mobile-posts.png", fullPage: true });
 });

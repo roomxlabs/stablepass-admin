@@ -52,7 +52,7 @@ export default async function TrainersPage({
 
   return (
     <>
-      <div className="admin-topbar">
+      <div className="admin-topbar trainers-screen">
         <h1>Trainers</h1>
         <div className="actions">
           <SearchField
@@ -69,7 +69,7 @@ export default async function TrainersPage({
         </div>
       </div>
 
-      <div className="admin-content">
+      <div className="admin-content trainers-screen">
         <div className="adm-card">
           <div className="adm-filter-bar">
             <Link href={chipHref(undefined, q)} className={!status ? "chip active" : "chip"}>
@@ -128,15 +128,15 @@ export default async function TrainersPage({
                         {row.contactEmail ? <div className="row-sub">{row.contactEmail}</div> : null}
                       </div>
                     </td>
-                    <td>
+                    <td data-label="Stable">
                       {row.stableName ?? "—"}
                       {row.location ? <div className="row-sub">{row.location}</div> : null}
                     </td>
-                    <td className="nowrap">
+                    <td className="nowrap" data-label="Horses">
                       <strong>{row.horseCount}</strong> {row.horseCount === 1 ? "horse" : "horses"}
                     </td>
-                    <td className="nowrap">{timeAgo(row.lastPostAt)}</td>
-                    <td className="nowrap">
+                    <td className="nowrap" data-label="Last post">{timeAgo(row.lastPostAt)}</td>
+                    <td className="nowrap" data-label="Status">
                       {row.status === "active" ? (
                         <span className="pill green dot">Active</span>
                       ) : (

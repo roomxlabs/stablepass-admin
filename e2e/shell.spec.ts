@@ -15,7 +15,12 @@ async function signIn(page: Page) {
   await page.goto("/signin");
   await page.locator("#email").fill("ops@stablepass.co");
   await page.locator("#password").fill("correcthorse");
-  await page.getByRole("button", { name: "Sign in" }).click();
+  await page.getByRole("button", { name: "Continue" }).click();
+  // ENG-370: sign-in is two steps now — the password step lands on the TOTP
+  // challenge, and only a verified code reaches "/" (which requires aal2).
+  await page.waitForURL("**/signin/mfa", { timeout: 30000 });
+  await page.locator("#code").fill("123456");
+  await page.getByRole("button", { name: "Verify" }).click();
   await page.waitForURL("http://127.0.0.1:3002/", { timeout: 30000 });
 }
 
@@ -59,7 +64,8 @@ test("sign-in fits 320px with no horizontal scroll and 44px controls", async ({ 
   expect(cardBox!.width).toBeLessThanOrEqual(MOBILE.width);
   expect(cardBox!.x).toBeGreaterThanOrEqual(0);
 
-  const submit = page.getByRole("button", { name: "Sign in" });
+  // ENG-370 renamed the password-step submit to "Continue" (two-step sign-in).
+  const submit = page.getByRole("button", { name: "Continue" });
   const submitBox = await submit.boundingBox();
   expect(submitBox!.height).toBeGreaterThanOrEqual(MIN_TAP);
 

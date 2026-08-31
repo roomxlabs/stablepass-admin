@@ -92,10 +92,10 @@ describe("AdminMobileNav drawer", () => {
 
   it("renders the same nav items as the sidebar", () => {
     const { drawer } = renderDrawer();
-    for (const label of ["Dashboard", "Compose", "Posts", "Horses", "Trainers"]) {
+    for (const label of ["Dashboard", "Analytics", "Compose", "Posts", "Horses", "Trainers"]) {
       expect(screen.getByRole("link", { name: new RegExp(label) })).toBeTruthy();
     }
-    expect(drawer.querySelectorAll("a").length).toBe(5);
+    expect(drawer.querySelectorAll("a").length).toBe(6);
   });
 
   it("closes when a nav link is tapped, returning focus to the hamburger", () => {

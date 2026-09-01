@@ -18,8 +18,14 @@
 //   visible at zoom 1 (the viewport scales the square up for display, but the
 //   stored bytes are never upscaled — see outputEdge).
 //
-//   Because the rect is clamped inside the source, the crop can never include
-//   area the image does not cover, so the output never has empty edges.
+//   At zoom >= 1 the rect is clamped inside the source, so the crop includes
+//   no area the image does not cover. BELOW 1 (Justin, 1 Sep 2026: "It only
+//   lets me make them larger not smaller. Basically every horse photo like
+//   this doesn't fit in the square") the square is allowed to grow PAST the
+//   source on an axis: the photo letterboxes, centred on any axis it cannot
+//   fill, and the renderer paints the uncovered surround with a blurred cover
+//   pass of the same photo (photoCropCanvas.ts) so the stored square is always
+//   fully painted. `fitZoom` is the floor: the whole photo just fits.
 
 /**
  * Longest edge of the written image. Also the fix for oversized uploads: a
@@ -29,6 +35,12 @@ export const MAX_OUTPUT_EDGE = 1200;
 
 export const JPEG_QUALITY = 0.9;
 
+/**
+ * Zoom 1 = "fill the square" (the classic inside-the-source crop), and it is
+ * still the DEFAULT the dialog opens at. It is no longer the floor — see
+ * `fitZoom` — but the name is kept because the two form suites and the e2e
+ * byte-assertions are all written against the zoom-1 default.
+ */
 export const ZOOM_MIN = 1;
 
 /** Hard ceiling on magnification, independent of how large the source is. */
@@ -63,8 +75,19 @@ export function maxZoom(source: Size): number {
   return clamp(maxCropSide(source) / MIN_CROP_SIDE, ZOOM_MIN, ZOOM_CEILING);
 }
 
+/**
+ * The zoom at which the WHOLE photo just fits inside the square — the new
+ * floor. shorter/longer collapses to 1 for a square source (no zoom-out to
+ * offer), and 0.5 for a 2:1 landscape horse photo, which is exactly the case
+ * the client could never fit.
+ */
+export function fitZoom(source: Size): number {
+  const longest = Math.max(1, source.width, source.height);
+  return clamp(maxCropSide(source) / longest, 0, ZOOM_MIN);
+}
+
 export function clampZoom(source: Size, zoom: number): number {
-  return clamp(zoom, ZOOM_MIN, maxZoom(source));
+  return clamp(zoom, fitZoom(source), maxZoom(source));
 }
 
 /** Side of the crop square, in source pixels, at a given zoom. */
@@ -73,17 +96,61 @@ export function cropSideFor(source: Size, zoom: number): number {
 }
 
 /**
- * The crop square, clamped so it always lies wholly inside the source. Callers
- * hold an UNCLAMPED pan and let this clamp on read, so that dragging into a
- * corner and back out again does not lose the original position.
+ * The crop square. Callers hold an UNCLAMPED pan and let this clamp on read,
+ * so that dragging into a corner and back out again does not lose the
+ * original position.
+ *
+ * PER AXIS: where the square fits inside the source (size <= edge) the origin
+ * clamps into the source as it always did. Where it does NOT fit (sub-fit
+ * zoom on that axis) the source is CENTRED — the origin goes negative and pan
+ * has no say, because there is nothing to reveal by panning an axis the whole
+ * photo already occupies. A 2:1 landscape at zoom 0.7 therefore still pans
+ * horizontally while letterboxing vertically, which is what makes the slider
+ * feel continuous through 1.0.
  */
 export function cropRect(source: Size, zoom: number, pan: Point): CropRect {
   const size = cropSideFor(source, zoom);
+  const axis = (p: number, edge: number) =>
+    size <= edge ? Math.round(clamp(p, 0, edge - size)) : Math.round((edge - size) / 2);
   return {
     size,
-    x: Math.round(clamp(pan.x, 0, Math.max(0, source.width - size))),
-    y: Math.round(clamp(pan.y, 0, Math.max(0, source.height - size))),
+    x: axis(pan.x, source.width),
+    y: axis(pan.y, source.height),
   };
+}
+
+/**
+ * How the SHARP photo lands inside the output square: the source-rect
+ * intersection (always wholly inside the image, so drawImage never samples
+ * undefined pixels) and its mapped destination rect at `edge` output pixels.
+ * THE one source of truth the canvas draw and any preview math share — two
+ * copies of this mapping is how a preview lies about the stored bytes.
+ */
+export function placement(
+  source: Size,
+  rect: CropRect,
+  edge: number,
+): { sx: number; sy: number; sw: number; sh: number; dx: number; dy: number; dw: number; dh: number } {
+  const scale = edge / Math.max(1, rect.size);
+  const sx = Math.max(0, rect.x);
+  const sy = Math.max(0, rect.y);
+  const sw = Math.max(0, Math.min(source.width, rect.x + rect.size) - sx);
+  const sh = Math.max(0, Math.min(source.height, rect.y + rect.size) - sy);
+  return {
+    sx,
+    sy,
+    sw,
+    sh,
+    dx: (sx - rect.x) * scale,
+    dy: (sy - rect.y) * scale,
+    dw: sw * scale,
+    dh: sh * scale,
+  };
+}
+
+/** True when the square is not fully covered by the photo (a fill is needed). */
+export function needsFill(source: Size, rect: CropRect): boolean {
+  return rect.x < 0 || rect.y < 0 || rect.x + rect.size > source.width || rect.y + rect.size > source.height;
 }
 
 /** Where the crop starts: dead centre, which is the best guess we have. */

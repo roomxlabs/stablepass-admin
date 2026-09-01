@@ -8,7 +8,7 @@
 // evidence instead.
 
 import type { CropRect, OutputFormat } from "./photoCrop";
-import { outputEdge } from "./photoCrop";
+import { needsFill, outputEdge, placement } from "./photoCrop";
 
 /**
  * Whether this browser can actually perform a crop.
@@ -98,7 +98,47 @@ export async function cropToBlob(
     }
 
     ctx.imageSmoothingQuality = "high";
-    ctx.drawImage(image, rect.x, rect.y, rect.size, rect.size, 0, 0, edge, edge);
+
+    const source = { width: image.naturalWidth, height: image.naturalHeight };
+    if (needsFill(source, rect)) {
+      // Sub-fit zoom: the photo letterboxes inside the square, and the
+      // uncovered surround is a BLURRED COVER pass of the same photo — the
+      // Instagram treatment, and the one fill that looks intentional on every
+      // image (flat bands read as a rendering fault on the browse rows). The
+      // cover pass is scaled a touch past the edges so the blur never samples
+      // its own transparent border and vignettes.
+      const coverScale = Math.max(edge / source.width, edge / source.height) * 1.1;
+      const dw = source.width * coverScale;
+      const dh = source.height * coverScale;
+      if (typeof ctx.filter === "string") {
+        ctx.filter = `blur(${Math.max(12, Math.round(edge / 30))}px)`;
+        ctx.drawImage(image, (edge - dw) / 2, (edge - dh) / 2, dw, dh);
+        ctx.filter = "none";
+      } else {
+        // No ctx.filter (older Safari): a downscale/upscale bounce through a
+        // tiny offscreen canvas is a cheap box blur with the same read.
+        const tiny = document.createElement("canvas");
+        tiny.width = Math.max(1, Math.round(edge / 24));
+        tiny.height = tiny.width;
+        const tctx = tiny.getContext("2d");
+        if (tctx) {
+          tctx.drawImage(image, (tiny.width - (dw / edge) * tiny.width) / 2,
+            (tiny.height - (dh / edge) * tiny.height) / 2,
+            (dw / edge) * tiny.width, (dh / edge) * tiny.height);
+          ctx.drawImage(tiny, 0, 0, edge, edge);
+        }
+      }
+    }
+
+    // The SHARP photo, via the shared placement mapping (photoCrop.ts) — the
+    // same maths the dialog's preview uses, so the stored bytes cannot differ
+    // from what the admin saw. The source rect is the intersection with the
+    // image, so drawImage never samples outside it (per-spec transparent
+    // black, historically browser-dependent).
+    const put = placement(source, rect, edge);
+    if (put.sw > 0 && put.sh > 0) {
+      ctx.drawImage(image, put.sx, put.sy, put.sw, put.sh, put.dx, put.dy, put.dw, put.dh);
+    }
 
     return await new Promise<Blob | null>((resolve) => {
       canvas.toBlob((blob) => resolve(blob), format.mime, format.quality);

@@ -87,6 +87,32 @@
   max-width: none;
 }
 
+.imageBlur {
+  /* The blurred-cover underlay for sub-fit zoom. `object-fit: cover` + a
+     slight scale-up so the blur never samples past its own edge and vignettes
+     — same construction as the canvas pass in photoCropCanvas.ts. */
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  filter: blur(14px);
+  transform: scale(1.12);
+  pointer-events: none;
+  -webkit-user-drag: none;
+}
+
+.fitBtn {
+  flex: none;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 4px 10px;
+  border: 1px solid var(--line, #d9d2c5);
+  border-radius: 999px;
+  background: transparent;
+  cursor: pointer;
+}
+
 .squareGuide {
   position: absolute;
   inset: 0;

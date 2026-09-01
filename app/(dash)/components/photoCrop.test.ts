@@ -14,6 +14,9 @@ import {
   outputFormat,
   panAfterDrag,
   panForZoom,
+  fitZoom,
+  needsFill,
+  placement,
 } from "./photoCrop";
 
 // ENG-749 — the crop maths. Pure by design, so these are real tests rather than
@@ -47,14 +50,26 @@ describe("zoom bounds", () => {
     expect(cropSideFor(TINY, maxZoom(TINY))).toBe(MIN_CROP_SIDE);
   });
 
-  it("never allows zooming out past 1: the crop cannot exceed the source", () => {
-    expect(clampZoom(WIDE, 0.2)).toBe(ZOOM_MIN);
-    expect(clampZoom(WIDE, -5)).toBe(ZOOM_MIN);
+  // REVERSED, 1 Sep 2026 (Justin: "It only lets me make them larger not
+  // smaller"): the floor is now fitZoom — the whole photo just fits — and the
+  // old "never past 1" rule is retired. Everything below the new floor still
+  // clamps.
+  it("allows zooming out to the whole-photo fit, and no further", () => {
+    // WIDE is 4000×2000: fit = 2000/4000 = 0.5.
+    expect(fitZoom(WIDE)).toBe(0.5);
+    expect(clampZoom(WIDE, 0.7)).toBe(0.7);
+    expect(clampZoom(WIDE, 0.2)).toBe(0.5);
+    expect(clampZoom(WIDE, -5)).toBe(0.5);
     expect(clampZoom(WIDE, 99)).toBe(ZOOM_CEILING);
   });
 
-  it("falls back to the minimum for a non-finite zoom", () => {
-    expect(clampZoom(WIDE, Number.NaN)).toBe(ZOOM_MIN);
+  it("offers a square source no zoom-out at all — fit IS 1 there", () => {
+    expect(fitZoom(SQUARE)).toBe(ZOOM_MIN);
+    expect(clampZoom(SQUARE, 0.3)).toBe(ZOOM_MIN);
+  });
+
+  it("falls back to the floor for a non-finite zoom", () => {
+    expect(clampZoom(WIDE, Number.NaN)).toBe(fitZoom(WIDE));
   });
 });
 
@@ -85,7 +100,11 @@ describe("cropRect", () => {
     expect(rect).toEqual({ x: 0, y: 0, size: 2000 });
   });
 
-  it("clamps the rect wholly inside the source, so output never has empty edges", () => {
+  // Scoped to zoom >= 1 since sub-fit zoom exists: BELOW 1 the square may
+  // exceed the source by design, and the renderer paints the surround (see the
+  // placement/needsFill cases below — "the square is always fully painted" is
+  // the invariant now, not "the rect is inside the source").
+  it("clamps the rect wholly inside the source at zoom >= 1", () => {
     for (const source of [WIDE, TALL, SQUARE, TINY]) {
       for (const zoom of [1, 1.5, 2, maxZoom(source)]) {
         for (const pan of [
@@ -105,6 +124,61 @@ describe("cropRect", () => {
 
   it("gives a square source no slack to pan at zoom 1", () => {
     expect(cropRect(SQUARE, 1, { x: 500, y: 500 })).toEqual({ x: 0, y: 0, size: 800 });
+  });
+
+  // ── sub-fit zoom (1 Sep 2026) ──────────────────────────────────────────────
+  it("centres per axis below fit on that axis, and pan has no say there", () => {
+    // WIDE at fit (0.5): the 4000px square centres the 2000px-tall photo
+    // vertically; horizontally it fits exactly.
+    const rect = cropRect(WIDE, fitZoom(WIDE), { x: 9999, y: -9999 });
+    expect(rect).toEqual({ x: 0, y: -1000, size: 4000 });
+  });
+
+  it("keeps the still-cropping axis pannable at a zoom between fit and 1", () => {
+    // WIDE at 0.8: side = 2500 — taller than the photo (centres, y = -250)
+    // but narrower than its width (pans, clamped into [0, 1500]).
+    const rect = cropRect(WIDE, 0.8, { x: 9999, y: 0 });
+    expect(rect).toEqual({ x: 1500, y: -250, size: 2500 });
+    expect(cropRect(WIDE, 0.8, { x: -50, y: 0 }).x).toBe(0);
+  });
+});
+
+describe("placement + needsFill — the fill contract", () => {
+  it("maps the sharp layer wholly inside the source, at every zoom", () => {
+    for (const source of [WIDE, TALL, SQUARE, TINY]) {
+      for (const zoom of [fitZoom(source), 0.8, 1, 2]) {
+        const rect = cropRect(source, zoom, centredPan(source, zoom));
+        const put = placement(source, rect, outputEdge(rect.size));
+        expect(put.sx).toBeGreaterThanOrEqual(0);
+        expect(put.sy).toBeGreaterThanOrEqual(0);
+        expect(put.sx + put.sw).toBeLessThanOrEqual(source.width);
+        expect(put.sy + put.sh).toBeLessThanOrEqual(source.height);
+      }
+    }
+  });
+
+  it("letterboxes the whole photo, centred, at fit zoom", () => {
+    const rect = cropRect(WIDE, fitZoom(WIDE), centredPan(WIDE, fitZoom(WIDE)));
+    const edge = outputEdge(rect.size); // 1200 (capped)
+    const put = placement(WIDE, rect, edge);
+    // The full 4000×2000 source, scaled into a 1200 square: 1200×600, centred.
+    expect(put).toEqual({ sx: 0, sy: 0, sw: 4000, sh: 2000, dx: 0, dy: 300, dw: 1200, dh: 600 });
+  });
+
+  it("is the identity mapping at zoom >= 1 — no fill, full-bleed sharp layer", () => {
+    const rect = cropRect(WIDE, 1, centredPan(WIDE, 1));
+    const edge = outputEdge(rect.size);
+    const put = placement(WIDE, rect, edge);
+    expect(needsFill(WIDE, rect)).toBe(false);
+    expect(put.dx).toBe(0);
+    expect(put.dy).toBe(0);
+    expect(put.dw).toBe(edge);
+    expect(put.dh).toBe(edge);
+  });
+
+  it("flags the fill exactly when the square is not fully covered", () => {
+    expect(needsFill(WIDE, cropRect(WIDE, 0.8, { x: 0, y: 0 }))).toBe(true);
+    expect(needsFill(SQUARE, cropRect(SQUARE, 1, { x: 0, y: 0 }))).toBe(false);
   });
 });
 

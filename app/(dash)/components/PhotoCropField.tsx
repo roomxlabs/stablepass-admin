@@ -8,7 +8,9 @@ import {
   clampZoom,
   cropRect,
   extForMime,
+  fitZoom,
   maxZoom,
+  needsFill,
   outputEdge,
   outputFormat,
   panAfterDrag,
@@ -213,7 +215,8 @@ export default function PhotoCropField({ file, subject, onCancel, onApply }: Pro
       <div className={styles.panel}>
         <h2 className={styles.title}>Position the photo</h2>
         <div className={styles.sub}>
-          Drag the photo to move it and use the slider to zoom. The whole square is saved and is
+          Drag the photo to move it and use the slider to zoom. Zooming out past the square
+          fits the whole photo, with a blurred fill around it. The whole square is saved and is
           what shows on lists and the {subject}&apos;s profile
           {subject === "horse" ? " — the profile banner shows the middle strip of it" : ""}.
         </div>
@@ -229,6 +232,21 @@ export default function PhotoCropField({ file, subject, onCancel, onApply }: Pro
               onPointerCancel={endDrag}
               data-testid="photo-crop-viewport"
             >
+              {/* Sub-fit zoom letterboxes; the surround the stored square will
+                  carry is a blurred cover of the same photo (photoCropCanvas),
+                  so the preview must show it too — the viewport's cream ground
+                  would lie about the bytes. Rendered only when the square is
+                  not fully covered. */}
+              {needsFill(source, rect) ? (
+                // eslint-disable-next-line @next/next/no-img-element -- local object URL, not a remote asset
+                <img
+                  className={styles.imageBlur}
+                  src={image.url}
+                  alt=""
+                  draggable={false}
+                  data-testid="photo-crop-fill"
+                />
+              ) : null}
               {/* eslint-disable-next-line @next/next/no-img-element -- local object URL, not a remote asset */}
               <img
                 className={styles.image}
@@ -250,7 +268,7 @@ export default function PhotoCropField({ file, subject, onCancel, onApply }: Pro
               <input
                 className={styles.zoom}
                 type="range"
-                min={ZOOM_MIN}
+                min={fitZoom(source)}
                 max={maxZoom(source)}
                 step={0.01}
                 value={zoom}
@@ -258,10 +276,23 @@ export default function PhotoCropField({ file, subject, onCancel, onApply }: Pro
                 aria-label="Zoom"
                 data-testid="photo-crop-zoom"
               />
+              {/* One tap to the floor — the whole reason sub-fit zoom exists
+                  (Justin, 1 Sep 2026: side-on horses never fit the square).
+                  Hidden for square-ish sources, where the floor IS 1. */}
+              {fitZoom(source) < ZOOM_MIN ? (
+                <button
+                  type="button"
+                  className={styles.fitBtn}
+                  onClick={() => onZoom(fitZoom(source))}
+                  data-testid="photo-crop-fit"
+                >
+                  Fit whole photo
+                </button>
+              ) : null}
             </div>
             <div className={styles.meta} data-testid="photo-crop-meta">
               Saving {outputEdge(rect.size)}×{outputEdge(rect.size)} from a {source.width}×
-              {source.height} photo
+              {source.height} photo{needsFill(source, rect) ? " · blurred fill around the photo" : ""}
             </div>
           </>
         ) : (

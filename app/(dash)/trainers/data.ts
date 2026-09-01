@@ -264,3 +264,13 @@ export async function countTrainerReferences(
     );
   return { posts: postRes.count ?? 0, horses: horseRes.count ?? 0 };
 }
+
+/**
+ * Where the Trainers list's "N horses" cell links (Justin, 2 Sep 2026: "click
+ * on the horses to see which horses the trainer has"). Null for a trainer with
+ * no horses — an empty scoped list is a dead end, so the count stays plain.
+ */
+export function trainerHorsesHref(trainerId: string, horseCount: number): string | null {
+  if (horseCount <= 0) return null;
+  return `/horses?trainerId=${encodeURIComponent(trainerId)}`;
+}

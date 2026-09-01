@@ -10,6 +10,7 @@ import {
   TRAINER_DETAIL_COLUMNS,
   TRAINER_DETAIL_COLUMN_MAP,
   type TrainerDetailRow,
+  trainerHorsesHref,
 } from "./data";
 
 // listTrainers takes the sb client by injection, so no module mock is needed —
@@ -206,5 +207,16 @@ describe("helpers", () => {
     expect(timeAgo(null, now)).toBe("-");
     expect(timeAgo("2026-07-11T10:00:00Z", now)).toBe("2h ago");
     expect(timeAgo("2026-07-10T12:00:00Z", now)).toBe("Yesterday");
+  });
+});
+
+// Justin, 2 Sep 2026: the "N horses" cell opens that trainer's horses.
+describe("trainerHorsesHref", () => {
+  it("links a trainer with horses to the trainer-scoped horses list", () => {
+    expect(trainerHorsesHref("t1", 4)).toBe("/horses?trainerId=t1");
+  });
+
+  it("is null for a trainer with no horses — an empty scoped list is a dead end", () => {
+    expect(trainerHorsesHref("t1", 0)).toBeNull();
   });
 });

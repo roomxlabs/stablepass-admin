@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { makeFakeClient, blankState, type FakeState } from "@/lib/testing/supabase-fake";
 import { recordCalls, blankRecord, selectFor, type CallRecord } from "@/lib/testing/call-recorder";
-import { HORSE_LIST_SELECT, fetchHorseForEdit, fetchHorses, fetchTrainerOptions } from "../data";
+import { HORSE_LIST_SELECT, fetchHorseForEdit, fetchHorses, fetchTrainerLabel, fetchTrainerOptions } from "../data";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -128,5 +128,35 @@ describe("fetchHorseForEdit", () => {
     // exist when the truth is that the policy broke.
     state.tables.horse = { select: { error: { code: "42501" } } };
     await expect(fetchHorseForEdit(sb(), "h1")).rejects.toThrow(/42501/);
+  });
+});
+
+// Justin, 2 Sep 2026: "click on the horses to see which horses the trainer
+// has". The Trainers list links its count to `/horses?trainerId=`, and this
+// is the exact filter behind it.
+describe("fetchHorses — trainer scope", () => {
+  it("applies an exact trainer_id filter when a trainerId is given", async () => {
+    state.tables.horse = { select: { rows: [{ id: "h1" }] } };
+    await fetchHorses(sb(), "", "t-42");
+    expect(rec.filters).toContain("horse.trainer_id=t-42");
+  });
+
+  it("applies no trainer filter by default", async () => {
+    state.tables.horse = { select: { rows: [] } };
+    await fetchHorses(sb(), "");
+    expect(rec.filters.filter((f) => f.startsWith("horse.trainer_id="))).toEqual([]);
+  });
+});
+
+describe("fetchTrainerLabel", () => {
+  it("returns the trainer's display name", async () => {
+    state.tables.trainer = { select: { single: { display_name: "Jack Bruce" } } };
+    expect(await fetchTrainerLabel(sb(), "t-42")).toBe("Jack Bruce");
+    expect(rec.filters).toContain("trainer.id=t-42");
+  });
+
+  it("is null for an id that matches nothing (a stale link), not an error", async () => {
+    state.tables.trainer = { select: {} };
+    expect(await fetchTrainerLabel(sb(), "t-gone")).toBeNull();
   });
 });

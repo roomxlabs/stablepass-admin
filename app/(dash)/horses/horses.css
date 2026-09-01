@@ -268,3 +268,27 @@ textarea.adm-input { min-height: 110px; resize: vertical; font-family: var(--fon
   margin-top: 4px;
   grid-column: 1 / -1;
 }
+
+/* Trainer scope bar (Justin, 2 Sep 2026) — sits above the filter bar when the
+   list arrived from a Trainers-list horse count. -------------------------- */
+.adm-scope-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 12px 22px;
+  border-bottom: 1px solid var(--line);
+  background: var(--white);
+  font-size: 13.5px;
+  color: var(--ink);
+}
+.adm-scope-bar .chip {
+  font-size: 12.5px;
+  font-weight: 500;
+  padding: 7px 14px;
+  border-radius: 100px;
+  border: 1px solid var(--line);
+  background: var(--white);
+  color: var(--brand-green);
+  text-decoration: none;
+}

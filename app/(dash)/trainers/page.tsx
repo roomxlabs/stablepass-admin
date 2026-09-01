@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { supabaseServer } from "@/lib/supabase/server";
 import SearchField from "../SearchField";
-import { listTrainers, timeAgo, type TrainerRow } from "./data";
+import { listTrainers, timeAgo, trainerHorsesHref, type TrainerRow } from "./data";
 import { TRAINER_PHOTO_BUCKET, signPhotoMap } from "@/lib/storage/photos";
 import "./trainers.css";
 
@@ -133,7 +133,22 @@ export default async function TrainersPage({
                       {row.location ? <div className="row-sub">{row.location}</div> : null}
                     </td>
                     <td className="nowrap">
-                      <strong>{row.horseCount}</strong> {row.horseCount === 1 ? "horse" : "horses"}
+                      {(() => {
+                        const label = (
+                          <>
+                            <strong>{row.horseCount}</strong> {row.horseCount === 1 ? "horse" : "horses"}
+                          </>
+                        );
+                        const href = trainerHorsesHref(row.id, row.horseCount);
+                        // Justin, 2 Sep 2026: the count opens that trainer's horses.
+                        return href ? (
+                          <Link href={href} className="row-link" data-testid="trainer-horses-link">
+                            {label}
+                          </Link>
+                        ) : (
+                          label
+                        );
+                      })()}
                     </td>
                     <td className="nowrap">{timeAgo(row.lastPostAt)}</td>
                     <td className="nowrap">

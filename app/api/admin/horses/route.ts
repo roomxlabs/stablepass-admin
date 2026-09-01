@@ -11,7 +11,7 @@ import { sexColumns } from "./sex";
 // stored (only foaling_year) and neither is the race-day description — both are
 // derived in Postgres. display_name is derived when the horse is unnamed.
 // ENG-829: shares_for_sale is a boolean only — no price / owner / vendor fields.
-const TRAINING_STATUSES = ["spelling", "pre_training", "farm_training", "city_training", "racing", "retired"];
+const TRAINING_STATUSES = ["spelling", "breaking_in", "pre_training", "in_training", "racing", "retired"];
 const HORSE_STATUSES = ["active", "disabled"];
 
 export async function POST(req: Request) {

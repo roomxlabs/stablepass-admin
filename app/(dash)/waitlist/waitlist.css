@@ -1,0 +1,189 @@
+/* ====================================================================
+   Waitlist — admin screen for the pre-launch signups.
+
+   Scoped to this feature and imported by its page, mirroring trainers.css
+   and horses.css, so the shared app/globals.css stays untouched. The card,
+   table and filter-bar rules are lifted verbatim from dashboard.css and
+   trainers.css rather than re-invented, so this screen is visually identical
+   to the other resource screens.
+   ==================================================================== */
+
+.adm-card {
+  background: var(--white);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+.adm-card + .adm-card-spacer,
+.adm-card.spaced {
+  margin-top: 24px;
+}
+
+.adm-table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: auto;
+}
+
+.adm-table th,
+.adm-table td {
+  text-align: left;
+  padding: 12px 14px;
+  font-size: 13px;
+  border-bottom: 1px solid var(--line);
+  vertical-align: middle;
+}
+
+.adm-table tr:last-child td {
+  border-bottom: none;
+}
+
+.adm-table th:first-child,
+.adm-table td:first-child {
+  padding-left: 22px;
+}
+
+.adm-table th:last-child,
+.adm-table td:last-child {
+  padding-right: 22px;
+}
+
+.adm-table th {
+  background: var(--cream);
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+}
+
+.adm-table tr:hover td {
+  background: rgba(40, 93, 80, 0.025);
+}
+
+.adm-table td .row-thumb,
+.row-thumb {
+  width: 36px;
+  height: 36px;
+  border-radius: 8px;
+  overflow: hidden;
+  flex-shrink: 0;
+  background: var(--cream-dark);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--line-dark);
+}
+
+.adm-table td .row-thumb img,
+.row-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.adm-table td.with-thumb {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.adm-table td .row-name {
+  font-weight: 500;
+  font-size: 14px;
+}
+
+.adm-table td .row-sub {
+  font-size: 12px;
+  color: var(--muted);
+  margin-top: 1px;
+}
+
+.adm-table td.actions {
+  text-align: right;
+  white-space: nowrap;
+}
+
+.adm-table td.actions a {
+  color: var(--brand-green);
+  font-weight: 500;
+  text-decoration: none;
+  font-size: 12.5px;
+  margin-left: 10px;
+}
+
+.adm-table td.actions a.danger {
+  color: var(--red);
+}
+
+.adm-empty {
+  padding: 28px 22px;
+  color: var(--muted);
+  font-size: 13.5px;
+  text-align: center;
+}
+
+.adm-filter-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 22px;
+  border-bottom: 1px solid var(--line);
+  background: var(--cream);
+}
+
+.adm-filter-bar .chip {
+  font-size: 12.5px;
+  font-weight: 500;
+  padding: 7px 14px;
+  border-radius: 100px;
+  border: 1px solid var(--line);
+  background: var(--white);
+  color: var(--ink);
+  cursor: pointer;
+  text-decoration: none;
+}
+
+.adm-filter-bar .chip strong { margin-left: 4px; opacity: 0.7; }
+
+.adm-filter-bar .chip.active {
+  background: var(--brand-green);
+  color: var(--cream);
+  border-color: var(--brand-green);
+}
+
+.adm-filter-bar .spacer { flex: 1; }
+
+.adm-filter-bar .search-mini {
+  background: var(--white);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 7px 12px;
+  font-size: 13px;
+  color: var(--muted);
+  min-width: 220px;
+  display: flex; align-items: center; gap: 7px;
+}
+
+.adm-filter-bar .search-mini .ic { width: 15px; height: 15px; }
+
+.adm-filter-bar .search-mini input {
+  border: none; background: transparent; outline: none;
+  font-family: var(--font-sans); font-size: 13px; color: var(--ink); width: 100%;
+}
+
+/* Waitlist-specific ------------------------------------------------- */
+.adm-table td .muted,
+.adm-table td.muted {
+  color: var(--muted);
+}
+
+.adm-table td a {
+  color: var(--brand-green, inherit);
+  text-decoration: none;
+}
+
+.adm-table td a:hover {
+  text-decoration: underline;
+}

@@ -8,7 +8,7 @@ import {
   humanizeTrainingStatus,
   statusPillClass,
 } from "./format";
-import { fetchHorses, type CountEmbed, type HorseRow } from "./data";
+import { fetchHorses, fetchTrainerLabel, type CountEmbed, type HorseRow } from "./data";
 import { HORSE_PHOTO_BUCKET, signPhotoMap } from "@/lib/storage/photos";
 import "./horses.css";
 
@@ -52,13 +52,24 @@ function embedCount(e: CountEmbed | null): number {
   return e?.[0]?.count ?? 0;
 }
 
-// `filter` and `q` still compose exactly as before; only `page` is gone.
-function buildHref(p: { filter?: Filter; q?: string }): string {
+// `filter`, `q` and `trainerId` compose; only `page` is gone. The trainer
+// scope is deliberately carried by every chip so an operator who arrived from
+// the Trainers list stays inside that trainer's horses while flipping status.
+function buildHref(p: { filter?: Filter; q?: string; trainerId?: string }): string {
   const params = new URLSearchParams();
+  if (p.trainerId) params.set("trainerId", p.trainerId);
   if (p.filter && p.filter !== "all") params.set("filter", p.filter);
   if (p.q) params.set("q", p.q);
   const s = params.toString();
   return s ? `/horses?${s}` : "/horses";
+}
+
+// Search-form hidden fields: everything the URL carries except the query itself.
+function hiddenFor(filter: Filter, trainerId: string): Record<string, string> {
+  const h: Record<string, string> = {};
+  if (trainerId) h.trainerId = trainerId;
+  if (filter !== "all") h.filter = filter;
+  return h;
 }
 
 export default async function HorsesPage({
@@ -74,8 +85,15 @@ export default async function HorsesPage({
     ? (sp.filter as Filter)
     : "all";
   const q = typeof sp.q === "string" ? sp.q.trim() : "";
+  // A uuid, or nothing. Anything else is a malformed link and is ignored
+  // rather than sent to Postgres as a filter value.
+  const trainerId =
+    typeof sp.trainerId === "string" && /^[0-9a-f-]{36}$/i.test(sp.trainerId) ? sp.trainerId : "";
 
-  const all: HorseRow[] = await fetchHorses(sb, q);
+  const [all, trainerLabel] = await Promise.all([
+    fetchHorses(sb, q, trainerId || null),
+    trainerId ? fetchTrainerLabel(sb, trainerId) : Promise.resolve(null),
+  ]);
 
   const counts = {
     all: all.length,
@@ -107,7 +125,7 @@ export default async function HorsesPage({
             placeholder="Search horses…"
             ariaLabel="Search horses"
             defaultValue={q}
-            hidden={filter !== "all" ? { filter } : {}}
+            hidden={hiddenFor(filter, trainerId)}
           />
           <Link href="/horses/new" className="btn btn-primary" style={{ padding: "8px 16px", fontSize: "13.5px" }}>
             + Add horse
@@ -117,11 +135,22 @@ export default async function HorsesPage({
 
       <div className="admin-content">
         <div className="adm-card">
+          {trainerId ? (
+            // Arrived from the Trainers list's horse count (Justin, 2 Sep 2026).
+            <div className="adm-scope-bar" data-testid="trainer-scope">
+              <span>
+                Showing horses for <strong>{trainerLabel ?? "an unknown trainer"}</strong>
+              </span>
+              <Link href={buildHref({ filter, q })} className="chip">
+                Show all horses
+              </Link>
+            </div>
+          ) : null}
           <div className="adm-filter-bar">
             {FILTERS.map((f) => (
               <Link
                 key={f.key}
-                href={buildHref({ filter: f.key, q })}
+                href={buildHref({ filter: f.key, q, trainerId })}
                 className={f.key === filter ? "chip active" : "chip"}
               >
                 {f.label}
@@ -135,15 +164,15 @@ export default async function HorsesPage({
               placeholder="Filter by trainer or stable…"
               ariaLabel="Filter horses"
               defaultValue={q}
-              hidden={filter !== "all" ? { filter } : {}}
+              hidden={hiddenFor(filter, trainerId)}
             />
           </div>
 
           {total === 0 ? (
             <div className="horse-empty">
-              <h2>{q || filter !== "all" ? "No horses match" : "No horses yet"}</h2>
+              <h2>{q || filter !== "all" || trainerId ? "No horses match" : "No horses yet"}</h2>
               <p>
-                {q || filter !== "all"
+                {q || filter !== "all" || trainerId
                   ? "Try a different filter or search."
                   : "Add your first horse to start building the library."}
               </p>

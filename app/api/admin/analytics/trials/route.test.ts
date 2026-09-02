@@ -1,10 +1,13 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { makeFakeClient, blankState, type FakeState } from "@/lib/testing/supabase-fake";
+import { recordCalls, blankRecord, type CallRecord } from "@/lib/testing/call-recorder";
+import { TRIALS_LIST_LIMIT } from "@/lib/analytics/queries";
 
 const state: FakeState = blankState();
+const rec: CallRecord = blankRecord();
 
 vi.mock("@/lib/supabase/server", () => ({
-  supabaseServer: async () => makeFakeClient(state),
+  supabaseServer: async () => recordCalls(makeFakeClient(state), rec),
 }));
 
 import { GET } from "./route";
@@ -20,6 +23,7 @@ function asNonAdmin() {
 
 beforeEach(() => {
   Object.assign(state, blankState());
+  Object.assign(rec, blankRecord());
 });
 
 describe("GET /api/admin/analytics/trials", () => {
@@ -177,5 +181,38 @@ describe("GET /api/admin/analytics/trials", () => {
     const j = await r.json();
     expect(j.error.code).toBe("query_failed");
     expect(JSON.stringify(j)).not.toMatch(/relation|does not exist/);
+  });
+
+  // The trials list was an UNBOUNDED read of every subscription row, and the
+  // analytics tiles were computed by filtering that array. Both were fixed
+  // together: the list is bounded and the tiles are exact head:true counts, so
+  // capping the list cannot make a number wrong.
+  it("bounds the list read and takes the tile numbers from head:true counts", async () => {
+    asAdmin();
+    state.rpcs.admin_trials_by_month = { data: [] };
+    state.tables.subscription = { select: { rows: [] } };
+
+    await GET(new Request("http://localhost/api/admin/analytics/trials"));
+
+    expect(rec.ranges).toContain(`subscription=0-${TRIALS_LIST_LIMIT - 1}`);
+    expect(rec.orders).toContain("subscription.created_at desc");
+
+    const counts = rec.selectOptions.filter((o) => o.table === "subscription");
+    expect(counts).toHaveLength(3); // active, trial, trial-ending-soon
+    for (const c of counts) expect(c).toMatchObject({ count: "exact", head: true });
+    expect(rec.nots).toContain("subscription.user.is_admin=not.is.true");
+  });
+
+  it("the CSV export is NOT capped at the screen's page size", async () => {
+    asAdmin();
+    state.rpcs.admin_trials_by_month = { data: [] };
+    state.tables.subscription = { select: { rows: [] } };
+
+    await GET(new Request("http://localhost/api/admin/analytics/trials?format=csv"));
+
+    // A silently truncated export is data loss, not a performance win.
+    const range = rec.ranges.find((r) => r.startsWith("subscription="))!;
+    const to = Number(range.split("-")[1]);
+    expect(to).toBeGreaterThan(TRIALS_LIST_LIMIT);
   });
 });

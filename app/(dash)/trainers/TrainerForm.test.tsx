@@ -38,6 +38,9 @@ const h = vi.hoisted(() => ({
     // ENG-749: how many times the picked file was decoded. A second decode
     // means the load effect re-ran, which resets the admin's framing.
     loads: 0,
+    // ENG-980: WHICH file the dialog was last opened on. "Reposition" must
+    // re-open the stored photo's source, never a pick that was cancelled.
+    lastLoaded: null as File | null,
     // ENG-746: script the CREATE response so the 409 branch can be exercised.
     // Carries the status AND the server's own envelope, so a test can prove the
     // form substitutes its own honest copy for a 409 while still passing the
@@ -60,8 +63,9 @@ vi.mock("next/navigation", () => ({
 // this that encodes real bytes here — that is what the Playwright shots prove.
 vi.mock("../components/photoCropCanvas", () => ({
   canvasSupported: () => h.script.canvas,
-  loadImage: async () => {
+  loadImage: async (file: File) => {
     h.script.loads += 1;
+    h.script.lastLoaded = file;
     return h.script.canvas
       ? {
           el: {} as HTMLImageElement,
@@ -659,7 +663,8 @@ describe("TrainerForm — profile photo crop (ENG-749)", () => {
   const pick = (container: HTMLElement, file: File) =>
     fireEvent.change(container.querySelector('input[type="file"]')!, { target: { files: [file] } });
 
-  const jpeg = () => new File(["original-jpeg-bytes"], "waller.jpg", { type: "image/jpeg" });
+  const jpeg = (name = "waller.jpg") =>
+    new File(["original-jpeg-bytes"], name, { type: "image/jpeg" });
   const png = () => new File(["original-png-bytes"], "logo.png", { type: "image/png" });
 
   const privateUpload = () => h.storage.find((c) => c.op === "upload" && c.bucket === "trainer-photos");
@@ -812,6 +817,58 @@ describe("TrainerForm — profile photo crop (ENG-749)", () => {
       fireEvent.click(reposition);
 
       await screen.findByTestId("photo-crop-dialog");
+    });
+
+    // ENG-980: Apply is no longer a one-way door. Reposition re-opens the
+    // ORIGINAL file (sessionPick) with the saved framing (initialCrop), so the
+    // dialog resumes rather than starting back over at a centred zoom 1 — and
+    // the slider's floor reflects the resumed source, not the old hard 1.
+    it("Apply then Reposition resumes the saved zoom, with a floor below 1", async () => {
+      const { container } = render(<TrainerForm mode="create" />);
+      pick(container, jpeg());
+      await screen.findByTestId("photo-crop-dialog");
+
+      // Move off the centred default before applying, so "resumed" is
+      // distinguishable from "just re-centred by chance".
+      fireEvent.change(screen.getByTestId("photo-crop-zoom"), { target: { value: "2" } });
+      fireEvent.click(await screen.findByTestId("photo-crop-apply"));
+      await screen.findByText("Photo added");
+
+      fireEvent.click(await screen.findByTestId("trainer-photo-reposition"));
+      await screen.findByTestId("photo-crop-dialog");
+
+      const slider = screen.getByTestId("photo-crop-zoom") as HTMLInputElement;
+      // 4000x2000: the shorter edge / longer edge floor, not the old ZOOM_FILL=1.
+      expect(Number(slider.min)).toBeCloseTo(0.5, 5);
+      expect(Number(slider.min)).toBeLessThan(1);
+      // The framing survives the round trip rather than resetting to centre.
+      expect(Number(slider.value)).toBeCloseTo(2, 5);
+    });
+
+    it("a cancelled pick does not hijack Reposition — the stored photo stays the stored photo", async () => {
+      // ENG-980 review catch. `sessionPick` used to be set the moment a file was
+      // chosen, so: upload P, click Replace, pick F, change your mind and
+      // Cancel — and Reposition then opened F. Applying it would have swapped
+      // the stored photo for one the admin had explicitly backed out of, under
+      // a button that only claims to move the existing photo.
+      const { container } = render(<TrainerForm mode="create" />);
+
+      pick(container, jpeg("first.jpg"));
+      await screen.findByTestId("photo-crop-dialog");
+      fireEvent.click(await screen.findByTestId("photo-crop-apply"));
+      await screen.findByText("Photo added");
+
+      // A second pick that is abandoned rather than applied.
+      pick(container, jpeg("second.jpg"));
+      await screen.findByTestId("photo-crop-dialog");
+      fireEvent.click(screen.getByTestId("photo-crop-cancel"));
+      await waitFor(() => expect(screen.queryByTestId("photo-crop-dialog")).toBeNull());
+
+      // Reposition must re-open the photo that is actually stored: the FIRST
+      // file. The dialog is fed a File, so its name is the observable identity.
+      fireEvent.click(await screen.findByTestId("trainer-photo-reposition"));
+      await screen.findByTestId("photo-crop-dialog");
+      expect(h.script.lastLoaded?.name).toBe("first.jpg");
     });
 
     it("zooming keeps the crop centred and shrinks what is saved", async () => {

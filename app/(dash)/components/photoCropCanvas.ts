@@ -7,8 +7,8 @@
 // touches them is untestable in vitest and has to be provable in the Playwright
 // evidence instead.
 
-import type { CropRect, OutputFormat } from "./photoCrop";
-import { outputEdge } from "./photoCrop";
+import type { CropRect, OutputFormat, Size } from "./photoCrop";
+import { drawPlacement, outputEdge } from "./photoCrop";
 
 /**
  * Whether this browser can actually perform a crop.
@@ -92,13 +92,36 @@ export async function cropToBlob(
     // composite onto the canvas's default TRANSPARENT BLACK and arrive as a
     // black square. White matches the cream/white surfaces every avatar renders
     // against. PNG output keeps its transparency and must not be painted over.
+    //
+    // ENG-980 gave this second job: once the crop can be zoomed out past the
+    // edges of the photo, the fill is also what the padding around the horse is
+    // made of. A JPEG pads white; a PNG pads transparent, which is the right
+    // answer for a logo and matches what the viewport shows.
     if (format.mime === "image/jpeg") {
       ctx.fillStyle = "#FFFFFF";
       ctx.fillRect(0, 0, edge, edge);
     }
 
     ctx.imageSmoothingQuality = "high";
-    ctx.drawImage(image, rect.x, rect.y, rect.size, rect.size, 0, 0, edge, edge);
+
+    // Drawn from the pre-computed intersection rather than by handing drawImage
+    // an out-of-bounds source rect — see drawPlacement. A crop that misses the
+    // photo entirely leaves the fill alone rather than throwing.
+    const source: Size = { width: image.naturalWidth, height: image.naturalHeight };
+    const place = drawPlacement(source, rect, edge);
+    if (place) {
+      ctx.drawImage(
+        image,
+        place.sx,
+        place.sy,
+        place.sw,
+        place.sh,
+        place.dx,
+        place.dy,
+        place.dw,
+        place.dh,
+      );
+    }
 
     return await new Promise<Blob | null>((resolve) => {
       canvas.toBlob((blob) => resolve(blob), format.mime, format.quality);

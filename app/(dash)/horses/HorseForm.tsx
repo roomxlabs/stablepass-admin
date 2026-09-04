@@ -7,7 +7,7 @@ import { supabaseBrowser } from "@/lib/supabase/client";
 import { signPhoto } from "@/lib/storage/photos";
 import { SHARES_WEBSITE_REQUIRED } from "@/lib/horses/shares-for-sale";
 import { trainerHasWebsite } from "@/lib/trainers/website-url";
-import PhotoCropField, { type PickedPhoto } from "../components/PhotoCropField";
+import PhotoCropField, { type CropState, type PickedPhoto } from "../components/PhotoCropField";
 import { HORSE_SEXES, TRAINING_STATUSES, dollarsToCents, horseSexLabel, humanizeTrainingStatus } from "./format";
 
 // Shared add/edit form — screens/07-add-horse.html (re-cut 18 Aug 2026). In
@@ -110,6 +110,22 @@ export default function HorseForm({ mode, trainers, horseId, initial = {} }: Pro
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   // ENG-749. The picked file awaiting its crop; nothing uploads until it resolves.
   const [pendingPhoto, setPendingPhoto] = useState<File | null>(null);
+  // ENG-980. The source behind the photo that is CURRENTLY STORED, plus the
+  // framing last applied to it. Apply used to be a one-way door: it uploaded a
+  // square, and "Reposition" then re-opened that SQUARE — which fills the frame
+  // exactly at its own floor, so dragging it did nothing and Mel reported the
+  // photo as stuck. Re-opening this instead keeps the crop as movable as it was
+  // the first time, and repeated Applies re-crop the same source rather than
+  // cropping a crop (which permanently ate the edges).
+  //
+  // Set ONLY once an upload has SUCCEEDED, never at pick time. It is the answer
+  // to "what is on screen right now", so a pick that was cancelled — or one
+  // whose upload failed — must not land here: "Reposition" would then silently
+  // swap the stored photo for a file the admin had backed out of.
+  const [sessionPick, setSessionPick] = useState<{ file: File; crop: CropState | null } | null>(
+    null,
+  );
+
   // Justin, 26 Aug: re-open the crop dialog on the ALREADY-uploaded photo so the
   // admin can reposition it without re-picking a file.
   const [preparingReposition, setPreparingReposition] = useState(false);
@@ -176,6 +192,9 @@ export default function HorseForm({ mode, trainers, horseId, initial = {} }: Pro
   // cropped to JPEG must land on a .jpg key. Use-as-is passes the original file
   // and its original extension through unchanged.
   async function uploadPhoto(picked: PickedPhoto) {
+    // Captured before the dialog closes: this is the file the crop came from,
+    // and it becomes the session source only if the upload actually lands.
+    const source = pendingPhoto;
     setPendingPhoto(null);
     setUploading(true);
     setError(null);
@@ -190,6 +209,10 @@ export default function HorseForm({ mode, trainers, horseId, initial = {} }: Pro
       // Store the object path (private bucket); sign it for the live preview.
       set("photoUrl", path);
       setPreviewUrl(await signPhoto(sb, PHOTO_BUCKET, path));
+      // The upload landed, so THIS is now the stored photo's source. Set only
+      // here: a cancelled pick or a failed upload must leave the previous one
+      // in place, or "Reposition" would open a photo that was never saved.
+      setSessionPick(source ? { file: source, crop: picked.crop ?? null } : null);
     } catch {
       setError("Photo upload failed. You can still save and add a photo later.");
     } finally {
@@ -197,12 +220,22 @@ export default function HorseForm({ mode, trainers, horseId, initial = {} }: Pro
     }
   }
 
-  // Justin, 26 Aug: reposition an already-uploaded photo. Pull the stored image
-  // back down and feed it to the SAME crop dialog. Note it re-crops what was
-  // saved: a photo stored "use as-is" re-crops fully; one already cropped can
-  // only be repositioned within the saved square, not have trimmed edges back.
+  // Justin, 26 Aug: reposition an already-uploaded photo through the same crop
+  // dialog. ENG-980 split this in two: within the session the original pick is
+  // still in memory and is what re-opens, so the full photo is back. Only a
+  // photo uploaded in an EARLIER session falls through to the stored object,
+  // which re-crops what was saved — trimmed edges do not come back that way.
   async function repositionExisting() {
     if (!previewUrl) return;
+    // Re-open the ORIGINAL pick when there is one, so the full photo is back on
+    // the table rather than the square that was uploaded from it. Falls through
+    // to the stored object only for a photo saved before this form was opened.
+    if (sessionPick) {
+      setError(null);
+      setPendingPhoto(sessionPick.file);
+      return;
+    }
+
     setError(null);
     setPreparingReposition(true);
     try {
@@ -211,7 +244,12 @@ export default function HorseForm({ mode, trainers, horseId, initial = {} }: Pro
       const blob = await res.blob();
       const type = blob.type || "image/jpeg";
       const ext = type.includes("png") ? "png" : "jpg";
-      setPendingPhoto(new File([blob], `reposition.${ext}`, { type }));
+      const restored = new File([blob], `reposition.${ext}`, { type });
+      setPendingPhoto(restored);
+      // Adopt it as the session's source too, so a SECOND reposition re-opens
+      // this same decoded file rather than fetching back the square this one is
+      // about to produce. Without it, every cycle cropped the previous crop.
+      setSessionPick({ file: restored, crop: null });
     } catch {
       setError("Couldn't load the photo to reposition. Use Replace to pick it again.");
     } finally {
@@ -584,6 +622,7 @@ export default function HorseForm({ mode, trainers, horseId, initial = {} }: Pro
                   <PhotoCropField
                     file={pendingPhoto}
                     subject="horse"
+                    initialCrop={pendingPhoto === sessionPick?.file ? sessionPick.crop : null}
                     onCancel={() => setPendingPhoto(null)}
                     onApply={uploadPhoto}
                   />

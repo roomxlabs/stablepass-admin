@@ -1155,3 +1155,49 @@ with the shell around it, so ANY dashboard change re-renders it.
 wrong baseline on the branch. Diff the PNG **dimensions** (`struct.unpack('>II', png[16:24])`) to
 tell a real invalidation from the usual `Date.now()` fixture churn, then refresh just that file and
 declare the one-file widening in the PR. R3-R6 will each hit this too, for the same reason.
+## Ports 8787 + 3002 are HARDCODED, so only ONE admin e2e run can exist at a time (ENG-245)
+**Symptom:** `npx playwright test` dies with `EADDRINUSE 127.0.0.1:8787` from `global-setup`, or —
+worse — it *runs* and every test fails with `ERR_CONNECTION_REFUSED at http://127.0.0.1:3002/signin`.
+**Cause:** `e2e/mock-supabase.mjs:1089` listens on a literal `8787` and `playwright.config.ts` pins
+`3002`; neither reads an env var, and `mock-supabase.mjs` is do-not-touch in most screen tickets. With
+several worktrees in the loop, a sibling run owns the ports. The refused-connection variant is the
+nastier one: Playwright's readiness probe hits the SIBLING's server on 3002, declares the webServer up,
+starts your tests, and then that server exits from under you.
+**Do this:** serialize by hand. Poll for BOTH listeners to be gone
+(`lsof -nP -iTCP:8787 -sTCP:LISTEN`, same for 3002 — plain `lsof -i :8787` also matches a stray
+ESTABLISHED client socket and will never go quiet), and **`npm run build` BEFORE the wait**, not inside
+it: the webServer command is `npm run build && npm run start`, so a cold build leaves a ~90s window in
+which a sibling grabs the port and you lose the race every time. Warm `.next` shrinks it to seconds.
+Retry on `EADDRINUSE|ERR_CONNECTION_REFUSED`; it took 2 attempts here. Also note a sandboxed `lsof`
+sees NOTHING — it will report a busy port as free, so check ports with the sandbox disabled.
+
+## A `scrollWidth <= clientWidth` gate on `documentElement` is HOLLOW on any `(dash)` screen (ENG-245)
+**Symptom:** the epic's machine-checked "no horizontal scroll at 320px" passes on a screen whose card
+is visibly cropped.
+**Cause:** two ancestors swallow the overflow before the document sees it — `app/globals.css`'s
+`.admin-content { overflow-x: auto }` below 900px (ENG-243 added it deliberately, "so a too-wide child
+scrolls inside the content well rather than making the whole document scroll sideways") and the screen
+card's own `overflow: hidden`. Content wider than the viewport is clipped, and
+`documentElement.scrollWidth` still reports 320.
+**Do this:** assert `el.scrollWidth <= el.clientWidth + 1` over `html`, `.admin-content`, the screen's
+`.adm-card` AND each row/card element. A `boundingBox().width <= 320` check does not rescue it either:
+a grid container's box stays at its containing block's width while overflowing tracks paint outside it.
+Every R2/R4-R6 responsive slice inherits this trap.
+
+## Pin CSS by "nothing redeclares it LATER", not "it appears once" (ENG-245)
+The `compose-css.test.ts` `rule()` helper (ENG-558) asserts a selector is declared exactly once in the
+file. That is wrong for a responsive stylesheet, where a desktop rule plus its `@media` override is the
+normal, correct shape — the check reds on every legitimate override. Invert it: assert the block you
+are reading is the **LAST** own-line declaration of that selector in the whole file, and separately
+assert nothing follows the media block (`CSS.slice(mediaEnd).trim() === ""`). That is the property the
+cascade actually cares about, and it catches an override appended after the media query — which the
+scoped-to-the-media-block version silently missed (verified by mutation). It still cannot see a
+duplicate hidden in a comma list or arriving at higher specificity; those need the e2e layout checks.
+
+## `min-height` on a flex item does not centre its text (ENG-245)
+Giving `td.actions a, td.actions button { min-height: 44px }` a 44px tap target inside a
+`display:flex` container blockifies the items, and the container's `align-items: center` centres the
+item's BOX, not the text inside it. Invisible on a borderless text button, obvious on a bordered chip
+(`button.destructive` = Delete): a 44px red rectangle with the label stuck to the top edge. Always pair
+the tap-target `min-height` with `display: inline-flex; align-items: center` on the element itself —
+which is what `.chip` and `.posts-foot .pager a` in this repo already do.

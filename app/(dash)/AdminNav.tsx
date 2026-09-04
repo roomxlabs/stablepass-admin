@@ -20,6 +20,7 @@ const PRIMARY: NavItem[] = [
 const LIBRARY: NavItem[] = [
   { href: "/horses", label: "Horses", icon: "horseHead" },
   { href: "/trainers", label: "Trainers", icon: "user" },
+  { href: "/waitlist", label: "Waitlist", icon: "bookmark" },
 ];
 
 // The exact query app/globals.css uses for the shell breakpoint: below it the

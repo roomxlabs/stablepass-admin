@@ -49,11 +49,21 @@ function unwrap<T>(res: { data: T | null; error: { code?: string } | null }, wha
   return res.data;
 }
 
-export async function fetchHorses(sb: SupabaseClient, q: string): Promise<HorseRow[]> {
+// `trainerId` (Justin, 2 Sep 2026: "click on the horses to see which horses
+// the trainer has") scopes the list EXACTLY to one trainer — unlike `q`, which
+// matches trainer names loosely. The two compose: a search within a trainer's
+// horses is still a search.
+export async function fetchHorses(
+  sb: SupabaseClient,
+  q: string,
+  trainerId: string | null = null,
+): Promise<HorseRow[]> {
   let query = sb
     .from("horse")
     .select(HORSE_LIST_SELECT)
     .order("created_at", { ascending: false });
+
+  if (trainerId) query = query.eq("trainer_id", trainerId);
 
   if (q) {
     const trainerRes = await sb.from("trainer").select("id").ilike("display_name", `%${q}%`);
@@ -71,6 +81,17 @@ export async function fetchHorses(sb: SupabaseClient, q: string): Promise<HorseR
   }
 
   return (unwrap(await query, "horse") ?? []) as HorseRow[];
+}
+
+/**
+ * The display name behind a `?trainerId=` filter, for the "Showing horses for
+ * …" chip. Null when the id matches nothing (a stale link) — the page then
+ * still filters, and the chip names the id's absence honestly.
+ */
+export async function fetchTrainerLabel(sb: SupabaseClient, trainerId: string): Promise<string | null> {
+  const res = await sb.from("trainer").select("display_name").eq("id", trainerId).maybeSingle();
+  const row = unwrap(res, "trainer") as { display_name: string | null } | null;
+  return row?.display_name ?? null;
 }
 
 export type TrainerOption = {

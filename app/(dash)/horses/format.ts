@@ -6,11 +6,15 @@
 // rule exists in exactly one place instead of three. This module only COMPOSES
 // values it is handed; it never derives them.
 
+// The 1 Sep 2026 lifecycle (Justin, iMessage 1363/1369): Breaking In is a new
+// first education stage, and the farm/city split merged into one In Training
+// (be migration 20260901120000 merged the rows for real). Picker order follows
+// the horse's actual lifecycle.
 export const TRAINING_STATUSES = [
   "spelling",
+  "breaking_in",
   "pre_training",
-  "farm_training",
-  "city_training",
+  "in_training",
   "racing",
   "retired",
 ] as const;
@@ -33,9 +37,13 @@ export function horseSexLabel(sex: HorseSex): string {
 
 const TRAINING_LABELS: Record<string, string> = {
   spelling: "Spelling",
+  breaking_in: "Breaking in",
   pre_training: "Pre-training",
-  farm_training: "Farm training",
-  city_training: "City training",
+  in_training: "In training",
+  // Legacy spellings — merged into in_training by be migration 20260901120000;
+  // kept so a stale row read before that deploy still labels correctly.
+  farm_training: "In training",
+  city_training: "In training",
   racing: "Racing",
   retired: "Retired",
 };

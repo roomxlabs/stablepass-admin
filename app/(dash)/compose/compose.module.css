@@ -1158,3 +1158,125 @@
 .previewCompact .previewReelNote {
   font-size: 11.5px;
 }
+
+/* ---- R4 · phone (ENG-246) -----------------------------------------------
+   The single column is already the ≤1080px state (see the 1080 block above);
+   what a phone additionally needs is the desktop paddings off, the native
+   date/time pair unstacked, the modal full-bleed, and — the real fix — the
+   primary action pinned where a thumb can reach it. Below the shell
+   breakpoint `.admin-topbar` is `position: static`, so today the operator has
+   to scroll back past three form steps and the preview rail to publish.
+
+   REVIVAL NOTE (31 Aug 2026): the ticket's rule "PreviewModal frames stack
+   vertically (Mobile first)" no longer maps onto this screen — ENG-558 deleted
+   the second (fake web) frame, and compose-css.test.ts now asserts those
+   device-frame rules stay deleted. There is nothing left to stack. What the
+   rule was protecting survives as the `.modalRoot` / `.modalPanel` rules
+   below: at 320px the one pane stays reachable, scrollable, and its close
+   button stays on screen.
+
+   Every selector inside the media query is indented on purpose:
+   compose-css.test.ts's `rule()` scan only counts a selector that begins its
+   own line, so an indented override is not read as a duplicate declaration. */
+
+/* Hidden by default — desktop must be pixel-unchanged. */
+.mobileBar {
+  display: none;
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 40;
+  gap: 10px;
+  align-items: center;
+  background: var(--white);
+  border-top: 1px solid var(--line);
+  /* The inset keeps the bar clear of the iOS home indicator; without it the
+     primary action sits under the system gesture area and is hard to hit. */
+  padding: 10px 16px calc(10px + env(safe-area-inset-bottom, 0px));
+  box-shadow: 0 -2px 12px rgba(18, 26, 24, 0.08);
+}
+.mobileBarCancel {
+  flex: 0 0 auto;
+  padding-left: 14px;
+  padding-right: 14px;
+}
+/* The primary takes the remaining width, so it stays the obvious target. In
+   edit-draft mode there are TWO of these (Save changes + Publish now) and they
+   share it evenly — `min-width: 0` lets them shrink to fit a 320px bar rather
+   than pushing Cancel off the edge. */
+.mobileBarPrimary {
+  flex: 1 1 0;
+  min-width: 0;
+  font-size: 13.5px;
+  padding-left: 8px;
+  padding-right: 8px;
+  white-space: nowrap;
+}
+
+@media (max-width: 719px) {
+  .mobileBar {
+    display: flex;
+  }
+
+  /* Bottom padding so the last section is never hidden behind the fixed bar. */
+  .grid {
+    gap: 18px;
+    padding-bottom: calc(84px + env(safe-area-inset-bottom, 0px));
+  }
+
+  /* The whole topbar action row goes: the sticky bar carries Cancel, the
+     primary and (in edit mode) Publish now, so leaving the row visible would
+     duplicate every affordance AND put two controls with the same accessible
+     name on screen at once. "Preview" survives as the panel's "Preview post".
+
+     The selector is repeated to reach (0,3,0): the shell owns
+     `.admin-topbar .actions` at (0,2,0) in globals.css (which this ticket may
+     not touch), so a single module class LOSES the cascade and the row stays
+     visible — verified, that is exactly what happened first time. Repetition
+     wins outright instead of relying on stylesheet order, which is not
+     guaranteed between globals.css and a CSS module. */
+  .topActions.topActions.topActions {
+    display: none;
+  }
+
+  .side {
+    padding: 16px;
+  }
+  .side + .side {
+    margin-top: 14px;
+  }
+  .previewTray {
+    padding: 10px;
+  }
+
+  /* Four type tiles on a 288px content well. */
+  .typeOption {
+    padding: 12px 4px;
+    font-size: 12px;
+  }
+
+  /* Native date and time controls have a fixed intrinsic width and will not
+     shrink below it, so side by side they push the panel past 320px. */
+  .dateTimeRow {
+    grid-template-columns: 1fr;
+  }
+
+  /* Modal: full-bleed gutter, top-aligned, and the panel owns the scroll so
+     the head (and its close button) stays on screen. */
+  .modalRoot {
+    padding: 16px;
+    align-items: flex-start;
+  }
+  .modalPanel {
+    /* dvh, not vh: on mobile Safari `100vh` is the LARGE viewport height, so
+       with the browser chrome shown a `100vh`-tall panel runs off the bottom. */
+    max-height: calc(100dvh - 32px);
+  }
+  .modalHead {
+    margin-bottom: 12px;
+  }
+  .modalTitle {
+    font-size: 20px;
+  }
+}

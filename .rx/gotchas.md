@@ -1201,3 +1201,30 @@ item's BOX, not the text inside it. Invisible on a borderless text button, obvio
 (`button.destructive` = Delete): a 44px red rectangle with the label stuck to the top edge. Always pair
 the tap-target `min-height` with `display: inline-flex; align-items: center` on the element itself —
 which is what `.chip` and `.posts-foot .pager a` in this repo already do.
+## The Playwright harness is a MACHINE-WIDE singleton — one admin e2e run at a time (ENG-246, 31 Aug 2026)
+`e2e/global-setup.ts` starts the mock Supabase on a hardcoded `127.0.0.1:8787` (`mock-supabase.mjs`
+line ~1089) and `playwright.config.ts` starts Next on `:3002`. Neither is overridable by env, so two
+worktree workers running `npx playwright test` at the same time fight over both ports. Symptoms, all of
+which look like a broken diff and are not: `EADDRINUSE 127.0.0.1:8787` from global-setup;
+`http://127.0.0.1:3002/signin is already used`; `net::ERR_CONNECTION_REFUSED` mid-suite; and a bare
+`exit 137` when the other worker's `lsof -ti:3002 | xargs kill -9` cleanup reaps YOUR server.
+The ENG-247 trick of a temp config on a spare port only moves the Next port — `:8787` still collides,
+and the inline `signIn()` helpers hardcode `waitForURL("http://127.0.0.1:3002/")`, so the spare-port
+config breaks every spec that signs in.
+Do-this: serialise. Poll until BOTH ports are free, run, and retry the whole invocation on 137 /
+EADDRINUSE / ERR_CONNECTION_REFUSED rather than reading it as a failure. Never `kill -9` a process on
+3002/8787 you did not start — check `ps` for a sibling worktree path first.
+
+## `next start` on a half-built `.next` says "Could not find a production build" (ENG-246)
+An interrupted `npm run build` (e.g. a Playwright run aborted while its `webServer` command was
+building) leaves a `.next/` with a manifest and a `lock` file but **no `BUILD_ID`**, and every later
+run fails at the server, looking like a config problem. Do-this: `rm -rf .next && npm run build`, then
+confirm `.next/BUILD_ID` exists before blaming `playwright.config.ts`.
+
+## A `fullPage` screenshot paints a `position: fixed` bar TWICE (ENG-246)
+Compose's new phone action bar is fixed to the viewport bottom. `page.screenshot({ fullPage: true })`
+on the scrolling mobile page painted it (and the shell's sticky header) part-way down the tall image —
+evidence showing the bar somewhere it never appears. The same trap the `17-compose-voice` shot already
+worked around for the sidebar/topbar.
+Do-this: for a pinned element, shoot the VIEWPORT (no `fullPage`); for the whole column in one frame,
+`setViewportSize({ width: <phone>, height: 1600 })` and shoot that.

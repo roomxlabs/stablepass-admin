@@ -313,8 +313,12 @@ export default function HorseForm({ mode, trainers, horseId, initial = {} }: Pro
         </div>
       </div>
 
-      <div className="admin-content">
-        <div style={{ maxWidth: 760 }}>
+      {/* `horse-form` scopes this screen's responsive rules in horses.css (the
+          mockup classes it reflows are duplicated in trainers.css, which this
+          ticket must not touch). `horse-form-body` carries the clearance for
+          the fixed mobile save bar. ENG-247. */}
+      <div className="admin-content horse-form">
+        <div className="horse-form-body" style={{ maxWidth: 760 }}>
           {error && <div className="form-error">{error}</div>}
 
           {/* Basics */}
@@ -532,7 +536,10 @@ export default function HorseForm({ mode, trainers, horseId, initial = {} }: Pro
               </div>
             </div>
             <div className="adm-card-body">
-              <div className={form.photoUrl ? "upload-zone filled" : "upload-zone"} style={form.photoUrl ? undefined : { padding: 28 }}>
+              {/* The empty-zone `padding: 28` moved to horses.css
+                  (`.horse-form .upload-zone:not(.filled)`) — same desktop
+                  value, but now overridable at the mobile breakpoint. */}
+              <div className={form.photoUrl ? "upload-zone filled" : "upload-zone"}>
                 {form.photoUrl ? (
                   <>
                     <div className="preview-set">
@@ -665,11 +672,16 @@ export default function HorseForm({ mode, trainers, horseId, initial = {} }: Pro
             </div>
           </div>
 
-          <div className="form-actions">
-            <Link href="/horses" className="btn btn-light" style={{ padding: "10px 22px" }}>
+          {/* Below 720px horses.css turns this row into the epic's fixed
+              bottom save bar (rule 7). The inline paddings are dropped so the
+              mobile rule can size the two buttons to the 44px tap target;
+              `.horse-form-actions .btn` in horses.css keeps the desktop
+              10px/22px. */}
+          <div className="form-actions horse-form-actions" data-testid="horse-form-actions">
+            <Link href="/horses" className="btn btn-light">
               Cancel
             </Link>
-            <button type="submit" className="btn btn-primary" style={{ padding: "10px 22px" }} disabled={submitting || uploading}>
+            <button type="submit" className="btn btn-primary" disabled={submitting || uploading}>
               {submitting ? "Saving…" : cta}
             </button>
           </div>

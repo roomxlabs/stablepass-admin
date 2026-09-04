@@ -8,7 +8,7 @@ import "../trainers.css";
 export default function NewTrainerPage() {
   return (
     <>
-      <div className="admin-topbar">
+      <div className="admin-topbar trainers-screen">
         <h1 className="adm-crumb">
           <Link href="/trainers">Trainers</Link>
           <span className="sep">›</span>
@@ -18,7 +18,7 @@ export default function NewTrainerPage() {
           <Link href="/trainers" className="adm-topbar-link">Cancel</Link>
         </div>
       </div>
-      <div className="admin-content">
+      <div className="admin-content trainers-screen trainers-form-screen">
         <TrainerForm mode="create" />
       </div>
     </>

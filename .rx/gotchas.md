@@ -1253,3 +1253,37 @@ Do NOT retarget the temp config at another port: `signIn()` in horses/shell/dash
 `waitForURL("http://127.0.0.1:3002/")` and every spec then times out.
 Related: start the server and run the suite in ONE shell call — a server left running across calls
 gets reaped, and the next run fails as CONNECTION_REFUSED for no visible reason.
+## The Playwright harness is NOT concurrency-safe across worktrees (ENG-248)
+**Symptom:** a *pre-existing* trainers/horses/posts spec goes red for no reason, or `EADDRINUSE`
+on 8787, while another loop worker is running its own suite in a sibling worktree.
+**Cause:** every worktree hardcodes the same two ports — 3002 (`playwright.config.ts` webServer) and
+8787 (`e2e/mock-supabase.mjs`) — and `/__control` is shared **global mutable state**, so two
+concurrent runs flip each other's `setEmpty()` dataset mid-test.
+**Do this:** serialize `npm run e2e` across stablepass-admin worktrees, exactly like the
+one-worker-at-a-time rule for stablepass-be. Check `lsof -nP -iTCP:3002 -sTCP:LISTEN` (and 8787)
+before starting, and re-run before believing a red in a spec your diff does not touch.
+
+## `position: sticky; bottom: 0` does NOT work inside `.admin-content` (ENG-248)
+`app/globals.css` gives `.admin-content` `overflow-x: auto` at the shell breakpoint (<=899px). A
+non-`visible` value on one axis forces the other to compute to `auto`, so `.admin-content` becomes a
+dual-axis **scrollport** whose height is content-driven and therefore never scrolls vertically — a
+sticky bottom child resolves against it and never engages while the document scrolls. Use
+`position: fixed` for a mobile bottom action bar and reserve its height with a `padding-bottom` on
+the screen wrapper. No ancestor forms a fixed containing block (the only `transform` in globals.css
+is on `.admin-drawer`, a sibling), and the z-index lanes are bar 40 < backdrop 90 < drawer 100.
+
+## A `documentElement`-only no-h-scroll check is not a gate (ENG-248)
+Two blind spots, both real in this app: (1) `.admin-content`'s `overflow-x: auto` swallows an
+over-wide child, so the document stays innocent while the screen is visibly broken; (2) a
+`position: fixed` element contributes to **no** scrollable-overflow region at all, so overflow inside
+a fixed bottom bar reads as `{doc:0, well:0}`. Measure `documentElement`, `.admin-content`,
+`.admin-topbar` **and** any fixed bar — see `overflow()` in `e2e/trainers.spec.ts`.
+
+## Screen-scoped CSS files share class names — scope new media queries to the screen (ENG-248)
+`trainers.css`, `horses.css`, `posts.css` each define `.adm-card` / `.adm-table` / `.pill` etc., and
+an App-Router imported stylesheet is **global once its chunk loads** (verified: after a client-side
+nav from `/trainers` to `/posts`, the trainers media blocks are still in `document.styleSheets`). So
+an unscoped `@media (max-width: 719px) .adm-table {…}` in one screen's file silently restyles the
+others. Put a screen class (`trainers-screen`) on that screen's `.admin-topbar` + `.admin-content`
+wrappers and scope every new rule under it — the `(dash)` layout is R1's file, so there is no shared
+ancestor inside a screen ticket's surface to hang it on.

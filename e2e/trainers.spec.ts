@@ -230,3 +230,206 @@ test("failed photo copy warning", async ({ page }) => {
   await expect(page.getByTestId("marketing-photo-warning")).toBeVisible({ timeout: 30000 });
   await page.screenshot({ path: "e2e/__screenshots__/21-trainer-marketing-copy-failed.png", fullPage: true });
 });
+
+// ===================================================================
+// ENG-248 — R6 responsive. Floor 320px, phone 375px; content stacks at
+// <720px per the epic's locked rules.
+// ===================================================================
+
+const PHONES = [
+  { label: "320x700", width: 320, height: 700 },
+  { label: "375x812", width: 375, height: 812 },
+] as const;
+
+/**
+ * The machine-checked no-horizontal-scroll gate.
+ *
+ * It measures FOUR boxes, not one, because three of them are invisible to a
+ * `documentElement`-only check:
+ *
+ *  - `.admin-content` — globals.css gives it `overflow-x: auto` at the shell
+ *    breakpoint, so an over-wide screen scrolls INSIDE the content well and
+ *    leaves `documentElement.scrollWidth` innocent.
+ *  - `.admin-topbar` — the same, via its own flex row.
+ *  - `.adm-form-actions` — the save bar is `position: fixed`, and fixed boxes
+ *    contribute NOTHING to the scrollable overflow of the document or of any
+ *    overflow ancestor. Verified: forcing 148px of overflow inside the bar at
+ *    320px still reads {doc:0, well:0, topbar:0}. Without this probe the one
+ *    construct ENG-248 adds would sit outside the ticket's headline gate, and a
+ *    longer button label would clip the primary action off-screen on green.
+ */
+async function overflow(page: Page) {
+  return page.evaluate(() => {
+    const measure = (el: Element | null) => (el ? el.scrollWidth - el.clientWidth : 0);
+    const doc = document.documentElement;
+    return {
+      doc: doc.scrollWidth - doc.clientWidth,
+      well: measure(document.querySelector(".admin-content")),
+      topbar: measure(document.querySelector(".admin-topbar")),
+      actions: measure(document.querySelector(".adm-form-actions")),
+    };
+  });
+}
+
+async function expectNoHScroll(page: Page) {
+  const o = await overflow(page);
+  expect(o.doc, "document scrolls sideways").toBeLessThanOrEqual(0);
+  expect(o.well, ".admin-content scrolls sideways").toBeLessThanOrEqual(0);
+  expect(o.topbar, ".admin-topbar scrolls sideways").toBeLessThanOrEqual(0);
+  expect(o.actions, "the sticky save bar scrolls sideways").toBeLessThanOrEqual(0);
+}
+
+for (const phone of PHONES) {
+  test(`trainers list has no horizontal scroll at ${phone.label}`, async ({ page }) => {
+    test.setTimeout(90000);
+    await setEmpty(false);
+    await page.setViewportSize({ width: phone.width, height: phone.height });
+    await signIn(page);
+    await page.goto("/trainers");
+    await expect(page.getByTestId("trainers-table")).toBeVisible({ timeout: 30000 });
+    await expectNoHScroll(page);
+
+    // Rows render as cards: the column header row is gone and the Edit action
+    // is a real >=44px target rather than a 12.5px inline link.
+    await expect(page.locator(".adm-table thead")).toBeHidden();
+    const edit = page.locator(".adm-table td.actions a").first();
+    const box = await edit.boundingBox();
+    expect(box!.height).toBeGreaterThanOrEqual(44);
+  });
+
+  test(`add-trainer form stacks with a sticky save bar at ${phone.label}`, async ({ page }) => {
+    test.setTimeout(90000);
+    await page.setViewportSize({ width: phone.width, height: phone.height });
+    await signIn(page);
+    await page.goto("/trainers/new");
+    await expect(page.getByTestId("trainer-form")).toBeVisible({ timeout: 30000 });
+    await expectNoHScroll(page);
+
+    // 1-col: the two halves of a `.adm-grid-2col` share a left edge.
+    const role = page.locator(".adm-contact .adm-input").first();
+    const name = page.locator(".adm-contact .adm-input").nth(1);
+    const rb = await role.boundingBox();
+    const nb = await name.boundingBox();
+    expect(nb!.x).toBeCloseTo(rb!.x, 0);
+    expect(nb!.y).toBeGreaterThan(rb!.y);
+
+    // Contacts render as cards.
+    await expect(page.getByTestId("contact-card").first()).toBeVisible();
+
+    // Sticky save bar: pinned to the bottom of the VIEWPORT while the form is
+    // scrolled to the top, i.e. before any of its own content would put it there.
+    await page.evaluate(() => window.scrollTo(0, 0));
+    const submit = page.getByTestId("submit-trainer");
+    const sb = await submit.boundingBox();
+    expect(sb!.height).toBeGreaterThanOrEqual(44);
+    expect(sb!.y + sb!.height).toBeLessThanOrEqual(phone.height);
+    expect(sb!.y).toBeGreaterThan(phone.height * 0.6);
+
+    // Viewport-clipped on purpose: a fullPage capture stitches the fixed bar in
+    // at its scroll offset, which reads as a bar floating mid-document. This is
+    // what the operator actually sees.
+    await page.screenshot({
+      path: `e2e/__screenshots__/r6-mobile-add-trainer-sticky-bar-${phone.width}.png`,
+    });
+  });
+
+  test(`edit trainer fits ${phone.label} and never buries the delete button`, async ({ page }) => {
+    test.setTimeout(90000);
+    await page.setViewportSize({ width: phone.width, height: phone.height });
+    await signIn(page);
+    await page.goto("/trainers/t1/edit");
+    await expect(page.getByTestId("trainer-form")).toBeVisible({ timeout: 30000 });
+    // The densest screen in the ticket: contacts + upload zone + Danger zone.
+    await expectNoHScroll(page);
+
+    // The reserve under the fixed bar is a magic number (76px vs a ~65px bar),
+    // so assert the thing it exists to protect instead of the number: at the
+    // very bottom of the document the destructive control must still be the
+    // element under its own centre point, not the save bar. A hidden-but-enabled
+    // delete is the failure mode that actually matters here.
+    await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+    const del = page.getByTestId("delete-trainer-button");
+    const box = (await del.boundingBox())!;
+    expect(box.height).toBeGreaterThanOrEqual(44);
+    const onTop = await page.evaluate(
+      ([x, y]) => {
+        const el = document.elementFromPoint(x, y);
+        return el?.closest("[data-testid=delete-trainer-button]") !== null;
+      },
+      [box.x + box.width / 2, box.y + box.height / 2] as const,
+    );
+    expect(onTop, "the save bar is covering the delete button").toBe(true);
+  });
+}
+
+test("trainers list renders as cards on a phone (populated + empty)", async ({ page }) => {
+  test.setTimeout(90000);
+  await page.setViewportSize({ width: 375, height: 812 });
+  await setEmpty(false);
+  await signIn(page);
+  await page.goto("/trainers");
+  await expect(page.getByTestId("trainers-table")).toBeVisible({ timeout: 30000 });
+  await page.screenshot({ path: "e2e/__screenshots__/r6-mobile-trainers-list.png", fullPage: true });
+
+  await setEmpty(true);
+  await page.goto("/trainers");
+  await expect(page.getByTestId("trainers-empty")).toBeVisible({ timeout: 30000 });
+  await expectNoHScroll(page);
+  await page.screenshot({ path: "e2e/__screenshots__/r6-mobile-trainers-empty.png", fullPage: true });
+  await setEmpty(false);
+});
+
+test("add-trainer form renders on a phone", async ({ page }) => {
+  test.setTimeout(90000);
+  await page.setViewportSize({ width: 375, height: 812 });
+  await signIn(page);
+  await page.goto("/trainers/new");
+  await expect(page.getByTestId("trainer-form")).toBeVisible({ timeout: 30000 });
+  await page.screenshot({ path: "e2e/__screenshots__/r6-mobile-add-trainer.png", fullPage: true });
+});
+
+test("edit-trainer contacts stack as cards on a phone", async ({ page }) => {
+  test.setTimeout(90000);
+  await page.setViewportSize({ width: 375, height: 812 });
+  await signIn(page);
+  await page.goto("/trainers/t1/edit");
+  await expect(page.getByTestId("trainer-form")).toBeVisible({ timeout: 30000 });
+  await expectNoHScroll(page);
+
+  const cards = page.getByTestId("contact-card");
+  await expect(cards.first()).toBeVisible();
+
+  // Add a second contact so "stacked" is actually observable: card 2 sits
+  // BELOW card 1 and shares its left edge.
+  await page.getByTestId("add-contact").click();
+  await expect(cards).toHaveCount(2);
+  const a = await cards.nth(0).boundingBox();
+  const b = await cards.nth(1).boundingBox();
+  expect(b!.x).toBeCloseTo(a!.x, 0);
+  expect(b!.y).toBeGreaterThanOrEqual(a!.y + a!.height);
+
+  // The Remove action on the second contact is a real tap target.
+  const remove = page.locator(".adm-contact-remove").first();
+  const rb = await remove.boundingBox();
+  expect(rb!.height).toBeGreaterThanOrEqual(44);
+
+  await expectNoHScroll(page);
+  await page.screenshot({ path: "e2e/__screenshots__/r6-mobile-edit-trainer-contacts.png", fullPage: true });
+});
+
+test("desktop trainers layout is unchanged at 1280px", async ({ page }) => {
+  test.setTimeout(90000);
+  await setEmpty(false);
+  await signIn(page);
+  await page.goto("/trainers");
+  await expect(page.getByTestId("trainers-table")).toBeVisible({ timeout: 30000 });
+  // The table is still a table (the responsive rules are behind <=719px) and
+  // the save bar on the form is still the plain right-aligned row.
+  await expect(page.locator(".adm-table thead")).toBeVisible();
+  await page.goto("/trainers/new");
+  await expect(page.getByTestId("trainer-form")).toBeVisible({ timeout: 30000 });
+  const pos = await page
+    .locator(".adm-form-actions")
+    .evaluate((el) => getComputedStyle(el).position);
+  expect(pos).toBe("static");
+});

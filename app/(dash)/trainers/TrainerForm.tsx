@@ -496,7 +496,11 @@ export default function TrainerForm(props: Props) {
         <div className="adm-card-body">
           <div className="adm-contacts">
             {contacts.map((c, i) => (
-              <div className="adm-contact" key={c.id ?? `new-${i}`}>
+              // ENG-248: `contact-card` is the responsive handle — below 720px
+              // each contact renders as its own stacked card (trainers.css).
+              // Still internal, admin-only data (guardrail §3): the attribute is
+              // a test hook on this gated screen, nothing is exposed.
+              <div className="adm-contact" data-testid="contact-card" key={c.id ?? `new-${i}`}>
                 <div className="adm-contact-head">
                   <div className={i === 0 ? "adm-contact-tag primary" : "adm-contact-tag"}>
                     Contact {i + 1} · {i === 0 ? "Trainer" : "Staff"}

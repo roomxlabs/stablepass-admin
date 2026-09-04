@@ -1045,3 +1045,30 @@ ignores descendant selectors when checking for duplicates, so it is structurally
 **Do this:** any new `.postCard*` modifier needs a `.previewCompact` twin AND its own pin. And note
 the rail is the surface the operator actually composes against — the modal is opt-in, so a
 modal-only screenshot proves the less important half.
+
+## e2e mock: supabase-js sends `.range()` as `offset=`/`limit=` QUERY PARAMS, not a `Range` header
+Symptom: a paginated screen renders EVERY fixture row in the Playwright screenshot, and the pager
+never advances — while the unit tests pass, because the vitest fake's `.range()` is a no-op.
+Cause: PostgREST accepts both forms, but supabase-js 2.110 serialises `.range(from,to)` into the
+query string. A mock branch that only reads `req.headers["range"]` silently ignores the window.
+Do this: in `e2e/mock-supabase.mjs`, read `url.searchParams.get("offset"/"limit")` first and keep the
+`Range` header as a fallback. (ENG-976, `/rest/v1/waitlist` branch.)
+
+## e2e mock: `url.searchParams.get()` has ALREADY percent-decoded — do not decode again
+Symptom: the whole mock server dies mid-suite with `URIError: URI malformed`, taking every remaining
+test with it (they report as "did not run", which reads like a timeout, not a crash).
+Cause: an `ilike` value arrives as the literal `ilike.%term%`. Calling `decodeURIComponent` on it
+reads the bare `%` wildcards as escape sequences — `%__` throws.
+Do this: slice the `ilike.` prefix and strip `%` directly; never double-decode a searchParams value.
+
+## A ticket can be PARTLY shipped already — diff the ticket against `origin/main` before building
+ENG-976 was grilled on 2 Sep and its page, search, total, copy-emails and nav entry were hand-shipped
+to `main` the same day (6a1f65f). Only the CSV export, the pagination and the two BFF routes were
+actually outstanding. Always read the freshly-fetched base for the ticket's own feature before
+implementing it, or you will rebuild what is already there and produce a conflicting diff.
+
+## `public.waitlist` is read with the CALLER's RLS client — the ticket text saying "service client" is stale
+ENG-976's body says admin waitlist reads "must go through the admin BFF with the service client".
+That is wrong for this repo: `waitlist_select_admin` (is_admin + AAL2) already grants the read, and
+this file's own first rule forbids a service-role client in admin routes. Build it with
+`requireAdmin()`'s `sb`. The RLS policy is then a second, independent gate behind the route gate.

@@ -341,6 +341,42 @@ function sendJson(res, status, body) {
 // Emulates a PostgREST list/count response: sets Content-Range so supabase-js
 // can read `count` from `count: 'exact'` queries (dashboard tiles rely on this),
 // and returns no body for the HEAD requests that `head: true` issues.
+// Waitlist (ENG-976) — 28 pre-launch signups, deliberately more than one
+// 25-row page so the pager and the "export covers rows beyond page 1" claim are
+// both visible in the screenshots. Fake addresses only: the real table holds
+// self-submitted member emails and must never reach a test fixture.
+const WAITLIST_FIXTURES = [
+  { id: "wl28", email: "arlo@example.com", source: "marketing", created_at: new Date(Date.UTC(2026, 7, 30, 9, 0)).toISOString() },
+  { id: "wl27", email: "greta@example.com", source: "marketing", created_at: new Date(Date.UTC(2026, 7, 29, 10, 13)).toISOString() },
+  { id: "wl26", email: "seb@example.com", source: "marketing", created_at: new Date(Date.UTC(2026, 7, 28, 11, 26)).toISOString() },
+  { id: "wl25", email: "willa@example.com", source: "referral", created_at: new Date(Date.UTC(2026, 7, 27, 12, 39)).toISOString() },
+  { id: "wl24", email: "dexter@example.com", source: "marketing", created_at: new Date(Date.UTC(2026, 7, 26, 13, 52)).toISOString() },
+  { id: "wl23", email: "ivy@example.com", source: "marketing", created_at: new Date(Date.UTC(2026, 7, 25, 14, 5)).toISOString() },
+  { id: "wl22", email: "rory@example.com", source: "marketing", created_at: new Date(Date.UTC(2026, 7, 24, 15, 18)).toISOString() },
+  { id: "wl21", email: "cleo@example.com", source: "referral", created_at: new Date(Date.UTC(2026, 7, 23, 16, 31)).toISOString() },
+  { id: "wl20", email: "otis@example.com", source: "marketing", created_at: new Date(Date.UTC(2026, 7, 22, 17, 44)).toISOString() },
+  { id: "wl19", email: "nina@example.com", source: "marketing", created_at: new Date(Date.UTC(2026, 7, 21, 18, 57)).toISOString() },
+  { id: "wl18", email: "hugo@example.com", source: "marketing", created_at: new Date(Date.UTC(2026, 7, 20, 9, 10)).toISOString() },
+  { id: "wl17", email: "freya@example.com", source: "referral", created_at: new Date(Date.UTC(2026, 7, 19, 10, 23)).toISOString() },
+  { id: "wl16", email: "milo@example.com", source: "marketing", created_at: new Date(Date.UTC(2026, 7, 18, 11, 36)).toISOString() },
+  { id: "wl15", email: "daisy@example.com", source: "marketing", created_at: new Date(Date.UTC(2026, 7, 17, 12, 49)).toISOString() },
+  { id: "wl14", email: "angus@example.com", source: "marketing", created_at: new Date(Date.UTC(2026, 7, 16, 13, 2)).toISOString() },
+  { id: "wl13", email: "lucia@example.com", source: "referral", created_at: new Date(Date.UTC(2026, 7, 15, 14, 15)).toISOString() },
+  { id: "wl12", email: "felix@example.com", source: "marketing", created_at: new Date(Date.UTC(2026, 7, 14, 15, 28)).toISOString() },
+  { id: "wl11", email: "imogen@example.com", source: "marketing", created_at: new Date(Date.UTC(2026, 7, 13, 16, 41)).toISOString() },
+  { id: "wl10", email: "noah@example.com", source: "marketing", created_at: new Date(Date.UTC(2026, 7, 12, 17, 54)).toISOString() },
+  { id: "wl09", email: "zara@example.com", source: "referral", created_at: new Date(Date.UTC(2026, 7, 11, 18, 7)).toISOString() },
+  { id: "wl08", email: "harvey@example.com", source: "marketing", created_at: new Date(Date.UTC(2026, 7, 10, 9, 20)).toISOString() },
+  { id: "wl07", email: "ruby@example.com", source: "marketing", created_at: new Date(Date.UTC(2026, 7, 9, 10, 33)).toISOString() },
+  { id: "wl06", email: "owen@example.com", source: "marketing", created_at: new Date(Date.UTC(2026, 7, 8, 11, 46)).toISOString() },
+  { id: "wl05", email: "sana@example.com", source: "referral", created_at: new Date(Date.UTC(2026, 7, 7, 12, 59)).toISOString() },
+  { id: "wl04", email: "tom@example.com", source: "marketing", created_at: new Date(Date.UTC(2026, 7, 6, 13, 12)).toISOString() },
+  { id: "wl03", email: "priya@example.com", source: "marketing", created_at: new Date(Date.UTC(2026, 7, 5, 14, 25)).toISOString() },
+  { id: "wl02", email: "jack@example.com", source: "marketing", created_at: new Date(Date.UTC(2026, 7, 4, 15, 38)).toISOString() },
+  { id: "wl01", email: "mel@example.com", source: "referral", created_at: new Date(Date.UTC(2026, 7, 3, 16, 51)).toISOString() },
+];
+
+
 function sendTable(res, method, rows, total) {
   const count = total ?? rows.length;
   const headers = {
@@ -979,6 +1015,66 @@ export function startMockSupabase() {
         ...corsHeaders(),
       });
       res.end(JSON.stringify(POST_FIXTURES));
+      return;
+    }
+
+    // /rest/v1/waitlist (ENG-976) — its OWN branch, ahead of the generic reader,
+    // because the waitlist screen is the only one that needs real PostgREST
+    // paging semantics: supabase-js `.range(from,to)` sends a `Range` header and
+    // `{count:"exact"}` sends `Prefer: count=exact`, and the page's footer/pager
+    // is driven entirely by the `Content-Range` total that comes back. The
+    // generic reader answers with `sendJson` (no Content-Range at all), so a
+    // waitlist read routed through it would report `count: null` and render a
+    // pager that never advances.
+    if ((req.method === "GET" || req.method === "HEAD") && url.pathname === "/rest/v1/waitlist") {
+      let rows = WAITLIST_FIXTURES;
+
+      // `.ilike("email", "%term%")` → `email=ilike.%25term%25`. The __none__
+      // sentinel (same convention as horses/trainers) drives the empty state.
+      const email = url.searchParams.get("email");
+      if (email && email.startsWith("ilike.")) {
+        // `searchParams.get` has ALREADY percent-decoded the value, so this is
+        // literally `ilike.%term%`. Decoding it a second time throws URIError on
+        // the bare `%` wildcards (it read `%__` as an escape) and killed the mock
+        // server outright, taking the rest of the suite with it.
+        const term = email.slice("ilike.".length).replace(/%/g, "").toLowerCase();
+        rows = term ? rows.filter((r) => r.email.toLowerCase().includes(term)) : rows;
+      }
+
+      // The unfiltered headline count reads `select("id")` with no Range and no
+      // count preference — serve every row so `total` is the whole waitlist.
+      const total = rows.length;
+      let page = rows;
+      let from = 0;
+      // supabase-js 2.110 serialises `.range(from,to)` as `offset=`/`limit=`
+      // QUERY PARAMS, not the `Range` header PostgREST also accepts. Read the
+      // params first and keep the header as a fallback, so this branch keeps
+      // working if the client ever switches back.
+      const offsetParam = Number(url.searchParams.get("offset"));
+      const limitParam = Number(url.searchParams.get("limit"));
+      const range = req.headers["range"];
+      if (Number.isFinite(offsetParam) && url.searchParams.has("offset")) {
+        from = Math.max(0, offsetParam);
+        const size = url.searchParams.has("limit") && Number.isFinite(limitParam) ? limitParam : rows.length;
+        page = rows.slice(from, from + size);
+      } else if (typeof range === "string" && /^\d+-\d+$/.test(range)) {
+        const [a, b] = range.split("-").map(Number);
+        from = a;
+        page = rows.slice(a, b + 1);
+      }
+
+      const headers = {
+        "Content-Type": "application/json",
+        "Content-Range": `${from}-${Math.max(from, from + page.length - 1)}/${total}`,
+        ...corsHeaders(),
+      };
+      if (req.method === "HEAD") {
+        res.writeHead(200, headers);
+        res.end();
+        return;
+      }
+      res.writeHead(200, headers);
+      res.end(JSON.stringify(page));
       return;
     }
 

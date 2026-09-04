@@ -46,7 +46,7 @@ export default function AnalyticsScreen({ view }: { view: AnalyticsView }) {
         </div>
       </div>
 
-      <div className="admin-content">
+      <div className="admin-content analytics-screen">
         {/* Summary tiles for the selected period */}
         <div className="adm-stats five" data-testid="analytics-tiles">
           {view.tiles.map((t) => (
@@ -148,14 +148,21 @@ export default function AnalyticsScreen({ view }: { view: AnalyticsView }) {
                 </thead>
                 <tbody>
                   {view.trials.map((t) => (
-                    <tr key={`${t.email}-${t.startedAt}`}>
+                    <tr key={`${t.email}-${t.startedAt}`} data-testid="trial-row">
                       <td>
                         <div className="row-name">{t.name || "—"}</div>
                         <div className="row-sub">{t.email}</div>
                       </td>
-                      <td>{shortDate(t.startedAt)}</td>
-                      <td>{shortDate(t.endsAt)}</td>
+                      <td>
+                        <span className="cell-label">Started</span>
+                        {shortDate(t.startedAt)}
+                      </td>
+                      <td>
+                        <span className="cell-label">Ends</span>
+                        {shortDate(t.endsAt)}
+                      </td>
                       <td className="num">
+                        <span className="cell-label">Days left</span>
                         <span className={daysLeftPillClass(t.daysLeft)}>{t.daysLeft}</span>
                       </td>
                     </tr>
@@ -198,20 +205,33 @@ export default function AnalyticsScreen({ view }: { view: AnalyticsView }) {
               </thead>
               <tbody>
                 {view.trainers.map((t) => (
-                  <tr key={t.trainerId}>
+                  <tr key={t.trainerId} data-testid="trainer-row">
                     <td>
                       <div className="row-name">{t.name}</div>
                       <div className="row-sub">
                         {t.horses} {t.horses === 1 ? "horse" : "horses"} on platform
                       </div>
                     </td>
-                    <td className="num">{formatNumber(t.posts)}</td>
-                    <td className="num">{formatNumber(t.opens)}</td>
                     <td className="num">
+                      <span className="cell-label">Posts</span>
+                      {formatNumber(t.posts)}
+                    </td>
+                    <td className="num">
+                      <span className="cell-label">Opens</span>
+                      {formatNumber(t.opens)}
+                    </td>
+                    <td className="num">
+                      <span className="cell-label">Reactions</span>
                       <strong>{formatNumber(t.reactions)}</strong>
                     </td>
-                    <td className="num">{formatNumber(t.saves)}</td>
-                    <td className="num">{formatNumber(t.clicks)}</td>
+                    <td className="num">
+                      <span className="cell-label">Saves</span>
+                      {formatNumber(t.saves)}
+                    </td>
+                    <td className="num">
+                      <span className="cell-label">Website clicks</span>
+                      {formatNumber(t.clicks)}
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -251,17 +271,27 @@ export default function AnalyticsScreen({ view }: { view: AnalyticsView }) {
                 </thead>
                 <tbody>
                   {view.horses.map((h) => (
-                    <tr key={h.horseId}>
+                    <tr key={h.horseId} data-testid="horse-row">
                       <td>
                         <div className="row-name">{h.name}</div>
                         <div className="row-sub">{h.trainerName}</div>
                       </td>
-                      <td className="num">{formatNumber(h.posts)}</td>
-                      <td className="num">{formatNumber(h.opens)}</td>
                       <td className="num">
+                        <span className="cell-label">Posts</span>
+                        {formatNumber(h.posts)}
+                      </td>
+                      <td className="num">
+                        <span className="cell-label">Opens</span>
+                        {formatNumber(h.opens)}
+                      </td>
+                      <td className="num">
+                        <span className="cell-label">Reactions</span>
                         <strong>{formatNumber(h.reactions)}</strong>
                       </td>
-                      <td className="num">{formatNumber(h.saves)}</td>
+                      <td className="num">
+                        <span className="cell-label">Saves</span>
+                        {formatNumber(h.saves)}
+                      </td>
                     </tr>
                   ))}
                 </tbody>
@@ -292,7 +322,7 @@ export default function AnalyticsScreen({ view }: { view: AnalyticsView }) {
                 </thead>
                 <tbody>
                   {view.topPosts.map((p) => (
-                    <tr key={p.postId}>
+                    <tr key={p.postId} data-testid="top-post-row">
                       <td>
                         <div className="row-name">
                           <Link href={`/analytics/posts/${p.postId}`}>
@@ -303,8 +333,12 @@ export default function AnalyticsScreen({ view }: { view: AnalyticsView }) {
                           {p.horseName} · {typeLabel(p.type)}
                         </div>
                       </td>
-                      <td className="num">{formatNumber(p.opens)}</td>
                       <td className="num">
+                        <span className="cell-label">Opens</span>
+                        {formatNumber(p.opens)}
+                      </td>
+                      <td className="num">
+                        <span className="cell-label">Reactions</span>
                         <strong>{formatNumber(p.reactions)}</strong>
                       </td>
                     </tr>

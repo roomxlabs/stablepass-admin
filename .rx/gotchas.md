@@ -1287,3 +1287,67 @@ an unscoped `@media (max-width: 719px) .adm-table {…}` in one screen's file si
 others. Put a screen class (`trainers-screen`) on that screen's `.admin-topbar` + `.admin-content`
 wrappers and scope every new rule under it — the `(dash)` layout is R1's file, so there is no shared
 ancestor inside a screen ticket's surface to hang it on.
+## Two screens' stylesheets both declaring `.cell-label` tie on specificity (ENG-881)
+The responsive epic's table→card transform re-attaches column headings inline as
+`<span class="cell-label">`, hidden on desktop. ENG-245 (posts) and ENG-881 (analytics) each
+ship that pattern in their OWN scoped stylesheet. Both wrote the bare `.cell-label { display:
+none }` for desktop and `.cell-label { display: block }` inside their 719px block — all (0,1,0).
+App Router route stylesheets PERSIST across soft navigations inside the `(dash)` layout, so on a
+phone "visit /analytics then navigate to /posts" can leave analytics' desktop `display: none`
+winning on source order and stripping the posts cards' headings.
+**Cause:** equal specificity across two persisted stylesheets = navigation-order-dependent cascade.
+**Do NOT "fix" it by raising specificity** (`.adm-table .cell-label`, (0,2,0)) — that out-specifies
+the sibling's mobile rule and hides its labels outright, which is worse.
+**Do this:** confine each declaration to its own breakpoint — `@media (min-width: 720px) {
+.cell-label { display: none } }` for the desktop half, never a bare top-level rule. Then neither
+sheet says anything about `.cell-label` outside the range it owns. Pinned in `analytics-css.test.ts`
+("confines the desktop hide to a min-width query").
+
+## A leaf-node PII scan goes blind the moment you nest a span in the cell (ENG-881)
+`AnalyticsScreen.test.tsx`'s guardrail found member emails with
+`querySelectorAll("td, div, span").filter(el => el.children.length === 0 && /@/.test(el.textContent))`.
+Adding one `<span class="cell-label">` per metric cell made every `<td class="num">` a non-leaf, so
+the filter silently stopped scanning them — the suite stayed green while the guardrail's reach
+shrank. **Do this:** scan an element's OWN direct text nodes
+(`[...el.childNodes].filter(n => n.nodeType === 3)`), not `children.length === 0`. Mutation-check it:
+put an email in a metric cell and confirm the test goes red.
+
+## `:first-of-type` is element-type, not class (ENG-881)
+`.adm-grid-2:first-of-type` means "the first `div` among its siblings that also has `.adm-grid-2`" —
+in `.admin-content` the first div is `.adm-stats`, so the selector matched ZERO elements and the
+Playwright assertion built on it was dead-red rather than wrong-red. Use
+`page.locator(".adm-grid-2").first()`.
+
+## The analytics trials card overflows its desktop grid track by 5px (pre-existing, unfixed)
+At 1280px the "Members on trial" card reports `scrollWidth 403 > clientWidth 398` and is clipped by
+`.adm-card { overflow: hidden }` — a 4-column table with 22px gutters in the narrow half of the
+1.4fr/1fr grid. It predates ENG-881 and that ticket's acceptance demanded desktop stay pixel-equal,
+so it was deliberately NOT fixed. A desktop no-horizontal-scroll assertion must therefore scope to
+`html` + `.admin-content`; `e2e/analytics.spec.ts` pins the card-level count at exactly 1 so a new
+overflow still fails. Worth fixing under its own ticket.
+
+## A responsive block on SHARED `.adm-*` classes bleeds to every (dash) screen (ENG-881)
+The `.adm-table` / `.adm-stats` / `.adm-stat` / `.adm-grid-2` / `.adm-card-head` classes are the shared
+design system, not any one screen's. The dashboard (`app/(dash)/page.tsx`) uses ALL FIVE and
+`dashboard.css` declares zero media queries; `trainers.css` and `horses.css` likewise. App Router keeps
+a route's CSS chunk in the document after a soft navigation inside `(dash)` — **verified**: after
+`/analytics` → drawer → `/`, an `analytics-screen` rule was still live in `document.styleSheets`.
+So an unscoped `@media (max-width: 719px) { .adm-table tbody tr { display: grid } }` in ONE screen's
+stylesheet silently restyles the dashboard's tables into unlabelled card grids for anyone who
+navigates there from that screen on a phone. Green suites see none of it.
+**Do this:** put a screen-owned root class on the screen's own `.admin-content`
+(`<div className="admin-content analytics-screen">`) and prefix every `.adm-*` rule in the media block
+with it — ENG-245 got the same protection for free by keying to `tr.row-link`. Pin it with a test that
+parses the media block and asserts every selector line carries the scope
+(`analytics-css.test.ts` → "scopes EVERY mobile rule"). **Strip CSS comments before that assertion** —
+the prose names the very selectors under test, so a raw substring check asserts the commentary.
+**Exception:** `.admin-topbar` is a SIBLING of `.admin-content`, so nothing in it can take a descendant
+scope. Scope those by content instead (`:has(> .period-toggle)`), and leave a genuinely
+single-use class like `.period-toggle` unscoped — but check it really is single-use first.
+
+## A no-horizontal-scroll helper passes for a scope that matches NOTHING (ENG-881)
+`for (const el of document.querySelectorAll(sel)) if (overflow) return false` returns "clean" when the
+selector matched zero elements, so a renamed class or a screen without that element quietly shrinks the
+gate and stays green. **Do this:** return per-scope match COUNTS alongside the verdict and assert each
+scope measured ≥1. Corollary: keep a separate scope list per screen/state — the per-post analytics
+screen has no `.adm-table` at all, and the all-zeros state renders `.chart-empty` instead of the tables.

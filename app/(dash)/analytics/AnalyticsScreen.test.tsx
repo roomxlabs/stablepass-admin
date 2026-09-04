@@ -147,7 +147,13 @@ describe("AnalyticsScreen — populated", () => {
 
   it("renders the website-clicks column and the compliance note", () => {
     render(<AnalyticsScreen view={view()} />);
-    expect(screen.getByText("Website clicks")).toBeTruthy();
+    // Scoped to the <thead>: ENG-881 re-attaches every column heading inline on
+    // each row for the <720px card layout, so a bare getByText now matches the
+    // header AND the row's `.cell-label`.
+    const headings = Array.from(
+      screen.getByTestId("trainer-engagement").querySelectorAll("thead th"),
+    ).map((th) => th.textContent);
+    expect(headings).toContain("Website clicks");
     expect(
       screen.getByText(/counts only · per-account detail pending the compliance check/),
     ).toBeTruthy();
@@ -181,8 +187,17 @@ describe("AnalyticsScreen — member PII is confined to the trials list", () => 
     const { container } = render(<AnalyticsScreen view={view()} />);
     const trialsTable = screen.getByTestId("trials-table");
 
-    const withEmail = Array.from(container.querySelectorAll("td, div, span")).filter(
-      (el) => el.children.length === 0 && /@/.test(el.textContent ?? ""),
+    // Scan each element's OWN direct text nodes, not `children.length === 0`.
+    // ENG-881 put a `<span class="cell-label">` inside every metric cell, so a
+    // childless-leaf filter would skip every `<td class="num">` — and a member
+    // email dropped into one would sail past this guardrail undetected.
+    const ownText = (el: Element) =>
+      Array.from(el.childNodes)
+        .filter((n) => n.nodeType === 3)
+        .map((n) => n.textContent ?? "")
+        .join("");
+    const withEmail = Array.from(container.querySelectorAll("td, div, span")).filter((el) =>
+      /@/.test(ownText(el)),
     );
     expect(withEmail.length).toBeGreaterThan(0); // the trials row itself
     for (const el of withEmail) {
@@ -204,6 +219,54 @@ describe("AnalyticsScreen — member PII is confined to the trials list", () => 
     expect(screen.getByTestId("trainer-engagement").textContent).not.toContain("Sarah Mitchell");
     expect(screen.getByTestId("horse-engagement").textContent).not.toContain("Sarah Mitchell");
     expect(screen.getByTestId("top-posts").textContent).not.toContain("Sarah Mitchell");
+  });
+});
+
+// ENG-881 — the mobile card transform is pure CSS, but it depends on markup the
+// screen must keep: every row is addressable, and every cell that loses its
+// <thead> heading below 720px carries that heading back inline. analytics.css
+// hides `.cell-label` on desktop; these prove the labels EXIST and match the
+// column they re-attach (analytics-css.test.ts proves the CSS half).
+describe("AnalyticsScreen — the mobile card transform's markup contract", () => {
+  const CARD_TABLES: Array<[string, string, string[]]> = [
+    // [row testid, table testid, the headings a card must re-attach]
+    ["trial-row", "trials-table", ["Started", "Ends", "Days left"]],
+    [
+      "trainer-row",
+      "trainer-engagement",
+      ["Posts", "Opens", "Reactions", "Saves", "Website clicks"],
+    ],
+    ["horse-row", "horse-engagement", ["Posts", "Opens", "Reactions", "Saves"]],
+    ["top-post-row", "top-posts", ["Opens", "Reactions"]],
+  ];
+
+  it.each(CARD_TABLES)("%s carries its column headings inline", (rowId, tableId, headings) => {
+    render(<AnalyticsScreen view={view()} />);
+    const row = screen.getAllByTestId(rowId)[0];
+    expect(row.closest("table")).toBe(screen.getByTestId(tableId));
+
+    const labels = Array.from(row.querySelectorAll(".cell-label")).map((el) => el.textContent);
+    expect(labels).toEqual(headings);
+
+    // Every cell after the name cell needs one — a card tile showing a bare
+    // integer with no heading is the failure mode this guards.
+    const cells = Array.from(row.querySelectorAll("td"));
+    for (const cell of cells.slice(1)) {
+      expect(cell.querySelector(".cell-label")).not.toBeNull();
+    }
+    // …and the name cell must NOT have one: it is the card's title.
+    expect(cells[0].querySelector(".cell-label")).toBeNull();
+  });
+
+  it.each(CARD_TABLES)("%s's inline headings match its <thead>", (rowId, tableId) => {
+    render(<AnalyticsScreen view={view()} />);
+    const table = screen.getByTestId(tableId);
+    const headings = Array.from(table.querySelectorAll("thead th")).map((th) => th.textContent);
+    const labels = Array.from(
+      screen.getAllByTestId(rowId)[0].querySelectorAll(".cell-label"),
+    ).map((el) => el.textContent);
+    // The first column heading stays in the title cell, so drop it.
+    expect(labels).toEqual(headings.slice(1));
   });
 });
 

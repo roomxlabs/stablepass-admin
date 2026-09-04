@@ -330,7 +330,7 @@ textarea.adm-input { min-height: 110px; resize: vertical; line-height: 1.55; }
 }
 
 /* --- Content-stacking breakpoint ----------------------------------- */
-@media (max-width: 719px) {
+@media (max-width: 899px) {
   /* Cards reclaim ~12px of line length at 320px. */
   .trainers-screen .adm-card-body { padding: 16px; }
   .trainers-screen .adm-card-head { padding: 16px; }

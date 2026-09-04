@@ -1351,3 +1351,94 @@ selector matched zero elements, so a renamed class or a screen without that elem
 gate and stays green. **Do this:** return per-scope match COUNTS alongside the verdict and assert each
 scope measured ≥1. Corollary: keep a separate scope list per screen/state — the per-post analytics
 screen has no `.adm-table` at all, and the all-zeros state renders `.chart-empty` instead of the tables.
+
+## The content-stacking breakpoint is 899px, NOT 720px (raised by ENG-962)
+
+**Symptom:** a screen looks right at 390px and at 1280px, but at iPad-portrait
+768px its table is cut off mid-column and the action buttons (Unpublish/Delete,
+Edit) are unreachable — with no scrollbar to get to them.
+
+**Cause:** the shell drops its sidebar at `max-width: 899px`, so at 768px the
+content well is only ~734px. Every screen originally scoped its own stacking to
+`max-width: 719px`, which left a dead **720-899px band** rendering the DESKTOP
+layout inside a phone-width well.
+
+**Know WHICH box clips — this is easy to get wrong.** `.admin-content` is
+`overflow-x: auto` below 900px (`app/globals.css`), so the DOCUMENT never
+scrolls sideways. The box that actually clips is the table's wrapper,
+**`.adm-card { overflow: hidden }`** (posts.css / horses.css). That is why a
+`scrollWidth <= clientWidth` check on `documentElement` passes while the screen
+is visibly broken.
+
+**Do this:** scope per-screen stacking to `@media (max-width: 899px)`, equal to
+the shell's collapse point. The convention block in `app/globals.css` is the
+source of truth — keep the two numbers equal. If a table genuinely must stay a
+table, give it `overflow-x: auto` so the columns stay reachable
+(`.analytics-screen .adm-card` does this for the two-up desktop cards).
+
+## `scrollWidth <= innerWidth` is NOT sufficient to prove a screen fits
+
+Because `.admin-content` clips, the document width stays honest while content is
+unreachable. `e2e/shell.spec.ts`'s sweep therefore asserts BOTH: (a) the document
+does not scroll sideways, and (b) no element with `overflow-x: hidden|clip` has
+`scrollWidth > clientWidth` (content the operator cannot reach). Check (b) is the
+one that catches the real regressions — verified by reverting the posts fix and
+watching it fail with "900px in a 734px box". `overflow-x: visible` is
+deliberately not a failure (SVG chart labels paint outside their box and stay
+readable).
+
+## A grid/flex item's automatic minimum size is its MIN-CONTENT
+
+**Symptom (ENG-962, compose @390):** after picking a photo, the compose column
+was 384px inside a 358px well. A 1x1 test fixture does NOT reproduce it.
+
+**Cause:** a picked 1600px-wide photo reports a 640px min-content even while it
+renders at 358px, and that floor propagates up every grid/flex ancestor whose
+`min-width` is `auto` (the default). Add `min-width: 0` to break the chain
+(`.grid > *`, `.uploadZone.filled`) plus `max-width: 100%` on the media itself.
+
+**Testing note:** any e2e proving a media-overflow fix must upload a REAL,
+large-dimension file — `e2e/fixtures/wide-1600x900.png` exists for this. A 1x1
+placeholder reports a 1px intrinsic width and proves nothing about aspect or
+min-content.
+
+## e2e/mock-supabase.mjs must answer for EVERY dash route
+
+The responsive sweep visits every `(dash)` route, so a route whose table the mock
+does not handle 500s in e2e while rendering fine in production (`/waitlist` did
+exactly this: `(e ?? []).map is not a function` from an unhandled
+`GET /rest/v1/waitlist`). When a new dash screen lands from `main`, add its
+fixture + handler here — including the `select=id` count probe, which is a
+separate request from the list read.
+
+## A stacking block MUST be scoped to its screen class, or it leaks
+
+**Symptom (ENG-962):** the DASHBOARD table lost its header row at 768px — but
+only after the operator had visited `/posts` first. Hard-reloading `/` was fine.
+
+**Cause:** route CSS persists across soft navigations inside `(dash)`. posts.css
+was the epic's ONE stylesheet whose stacking block was unscoped (PostsLibrary.tsx
+rendered a bare `<div className="admin-content">` while trainers/analytics/
+dashboard all carry `.trainers-screen` / `.analytics-screen` / `.dash-content`).
+Its `.adm-table thead { display: none }` therefore applied to every screen's
+shared `.adm-table`. While both blocks sat at 719px this was self-correcting —
+the other screen's own card rules fired at the same width. Raising posts.css to
+899px opened a 180px band where the leak was destructive: header hidden, and the
+other screen's `td[data-label]::before` labels still dormant at 719px.
+
+**Do this:** scope every stacking rule to the screen's own class, and scope the
+class on the screen's `.admin-content`. `posts-css.test.ts` now has a guard
+(`every rule carries the screen scope`) that fails on any unscoped rule inside
+the media block; the desktop design-system base above it is deliberately global.
+`e2e/shell.spec.ts` has the behavioural counterpart, which soft-navigates
+`/posts` -> `/` and asserts the dashboard header survives.
+
+**Testing note:** a sweep that reaches every route with `page.goto()` is
+structurally blind to this — a hard navigation drops the other screen's CSS. Any
+cross-screen CSS assertion needs a real in-app soft navigation.
+
+## `window.innerWidth` is the wrong denominator for an overflow assertion
+
+It INCLUDES the vertical scrollbar, so up to ~15px of genuine horizontal overflow
+passes. Use `document.documentElement.clientWidth`, which excludes it — the
+`hasNoHorizontalScroll()` helper in `e2e/shell.spec.ts` has always done this.

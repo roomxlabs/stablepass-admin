@@ -205,6 +205,18 @@ function isoDaysAgo(n) {
   return new Date(Date.now() - n * 864e5).toISOString().slice(0, 10);
 }
 
+// ENG-962: `public.waitlist` landed on main (ENG-723 table + the 2 Sep admin
+// screen) after this mock was last extended, so /waitlist 500'd here while it
+// rendered fine in production. The responsive sweep visits EVERY dash route, so
+// the mock has to answer for every dash route too.
+const WAITLIST_FIXTURES = [
+  { id: "w1", email: "amelia.hart@example.com", source: "marketing", created_at: ago(2 * H) },
+  { id: "w2", email: "tom.blackwood@example.com", source: "marketing", created_at: ago(D) },
+  { id: "w3", email: "priya.raman@example.com", source: "referral", created_at: ago(3 * D) },
+  { id: "w4", email: "jack.oconnell@example.com", source: "instagram", created_at: ago(6 * D) },
+  { id: "w5", email: "sophie.nguyen@example.com", source: null, created_at: ago(9 * D) },
+];
+
 // 14 days of opens, with two race-day peaks matching the mockup's shape.
 const OPENS_BY_DAY = [
   480, 620, 400, 730, 540, 940, 780, 460, 600, 380, 680, 560, 900, 720,
@@ -736,6 +748,18 @@ export function startMockSupabase() {
     //      empty-state spec never saw `.horse-empty`;
     //   2. the dashboard handler's `status=eq.active` test also matched
     //      compose's read and returned trainer-less rows.
+    // ENG-962: waitlist list + the headline count (`select=id` with HEAD/count).
+    if ((req.method === "GET" || req.method === "HEAD") && url.pathname === "/rest/v1/waitlist") {
+      const select = url.searchParams.get("select") ?? "";
+      // The total-count probe asks for `select=id` only.
+      if (select === "id") {
+        sendTable(res, req.method, WAITLIST_FIXTURES.map((w) => ({ id: w.id })), WAITLIST_FIXTURES.length);
+        return;
+      }
+      sendTable(res, req.method, WAITLIST_FIXTURES, WAITLIST_FIXTURES.length);
+      return;
+    }
+
     // Per .rx/gotchas.md: specific handlers BEFORE the dispatcher, keyed on a
     // discriminator unique to the calling screen. Each branch below names its
     // caller and the marker that identifies it — keep them mutually exclusive.

@@ -37,6 +37,15 @@
   gap: 24px;
   align-items: start;
 }
+/* ENG-962: a grid item's automatic minimum size is its MIN-CONTENT, so a
+   picked photo's intrinsic width (a 1600px original reports min-content 640px
+   even while it renders at 358px) propagated straight up this chain and pushed
+   the single column to 384px inside a 358px well at 390px — clipped, because
+   `.admin-content` absorbs the overflow rather than scrolling the document.
+   Flooring the items at 0 lets the track govern the width instead. */
+.grid > * {
+  min-width: 0;
+}
 
 /* ---- Section ------------------------------------------------------------- */
 .section {
@@ -324,6 +333,8 @@
   border-style: solid;
   border-color: var(--line);
   text-align: left;
+  /* ENG-962: same automatic-minimum-size trap as `.grid > *`, one level down. */
+  min-width: 0;
 }
 .dropCta {
   cursor: pointer;
@@ -413,6 +424,11 @@
   gap: 12px;
   background: var(--white);
   border-top: 1px solid var(--line);
+  /* ENG-962: filename + the Replace/Remove buttons total ~382px of
+     min-content. Rather than force the panel wider than a 390px phone, let the
+     actions drop to their own line. */
+  flex-wrap: wrap;
+  min-width: 0;
 }
 .uploadMeta {
   font-size: 12.5px;

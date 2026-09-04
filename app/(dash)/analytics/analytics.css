@@ -254,11 +254,31 @@
    ==================================================================== */
 
 /* Column headings re-attached inline; card mode only (see AnalyticsScreen). */
-@media (min-width: 720px) {
+@media (min-width: 900px) {
   .analytics-screen .cell-label { display: none; }
+
+  /* ENG-962: a two-up card body is ~398px, but "Members on trial" needs 403px
+     of min-content (table-layout: auto cannot shrink a table below that) and
+     `.adm-card` clips its overflow — which is how the gate saw ENDS truncated
+     to "7 Se..." and the SAVES column missing, with no way to scroll to
+     either. Scrolling the card keeps every column reachable; `auto` (not
+     `scroll`) means no scrollbar on the cards that already fit.
+
+     Scoped to >=900px deliberately: below that the stacking block has already
+     turned these tables into cards, and this file's own guard test forbids a
+     `.analytics-screen` rule sitting outside a media block.
+
+     Trade-off, accepted: the scroll container is the whole card, so the head
+     scrolls with the table rather than staying pinned. The overflow here is
+     5px (403 vs 398), so that movement is imperceptible — and the table is a
+     direct sibling of `.adm-card-head` with no wrapper to scroll instead, so
+     pinning the head would mean changing AnalyticsScreen.tsx's markup, which
+     is outside this ticket's surface. Revisit if a column ever pushes a card
+     far enough that the head visibly drifts. */
+  .analytics-screen .adm-card { overflow-x: auto; }
 }
 
-@media (max-width: 719px) {
+@media (max-width: 899px) {
   /* Period toggle: a date control, so it goes full-width and splits its
      three options evenly rather than sitting as a 210px pill.
 

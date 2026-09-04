@@ -1,4 +1,5 @@
-// ENG-881's acceptance is a set of CSS facts: below 720px the tiles go two-up,
+// ENG-881's acceptance is a set of CSS facts: below the content-stacking
+// breakpoint the tiles go two-up,
 // the two-column grids collapse, the period toggle goes full-width, and the
 // three engagement tables stop being tables. Vitest stubs stylesheets — jsdom's
 // getComputedStyle sees none of this — so a render test can never prove any of
@@ -15,10 +16,13 @@ const CSS = readFileSync(join(process.cwd(), "app/(dash)/analytics/analytics.css
 
 // The mobile block, isolated. Everything ENG-881 adds lives inside it, so
 // asserting against this slice also proves a rule is not leaking to desktop.
-const MEDIA_OPEN = "@media (max-width: 719px) {";
+// ENG-962 raised the content-stacking breakpoint from 719px to 899px to match
+// the shell's sidebar-collapse point (see app/globals.css). The desktop-only
+// block below moved from `min-width: 720px` to `min-width: 900px` with it.
+const MEDIA_OPEN = "@media (max-width: 899px) {";
 function mobileBlock(): string {
   const start = CSS.indexOf(MEDIA_OPEN);
-  expect(start, "analytics.css must declare the 720px content-stacking breakpoint").toBeGreaterThan(
+  expect(start, "analytics.css must declare the 899px content-stacking breakpoint").toBeGreaterThan(
     -1,
   );
   // Balance braces from the media query's own `{` to find its close.
@@ -88,7 +92,7 @@ function rule(selector: string, source = MOBILE, winsCascade = true): string {
   return source.slice(hits[0], source.indexOf("}", hits[0]));
 }
 
-describe("analytics.css — the <720px stacking transform (ENG-881)", () => {
+describe("analytics.css — the <900px stacking transform (ENG-881, breakpoint raised by ENG-962)", () => {
   it("collapses BOTH stat-tile grids, including the 5-up override", () => {
     // `.adm-stats.five` is (0,2,0) and would out-specify a bare `.adm-stats`
     // mobile rule, leaving the five summary tiles at 44px wide each at 320px.
@@ -156,7 +160,7 @@ describe("analytics.css — the <720px stacking transform (ENG-881)", () => {
 
   it("confines the desktop hide to a min-width query, not a bare selector", () => {
     // ENG-245's posts.css declares the SAME bare `.cell-label` selector and
-    // shows it with `display: block` inside its own 719px block — equal (0,1,0)
+    // shows it with `display: block` inside its own 899px block — equal (0,1,0)
     // specificity. Route stylesheets persist across soft navigations in the
     // (dash) layout, so a bare `.cell-label { display: none }` here would tie
     // with it and let navigation order decide whether the posts cards keep
@@ -164,7 +168,7 @@ describe("analytics.css — the <720px stacking transform (ENG-881)", () => {
     // out-specify posts and hide them outright), so each declaration is
     // confined to its own breakpoint. This pins that shape.
     expect(DESKTOP).toMatch(
-      /@media \(min-width: 720px\) \{\s*\n\s*\.analytics-screen \.cell-label \{ display: none; \}\s*\n\}/,
+      /@media \(min-width: 900px\) \{\s*\n\s*\.analytics-screen \.cell-label \{ display: none; \}[\s\S]*?\n\}/,
     );
     // No bare, unqueried `.cell-label` rule may exist anywhere in the file.
     const bare = ownLineHits(".cell-label", CSS).filter((i) => {
@@ -250,7 +254,7 @@ describe("analytics.css — the <720px stacking transform (ENG-881)", () => {
     expect(DESKTOP).toMatch(/\.adm-grid-2\.even \{ grid-template-columns: 1fr 1fr; \}/);
     expect(code(DESKTOP)).not.toContain("thead");
     // …and no rule above the breakpoint may carry the mobile scope class.
-    expect(code(DESKTOP).replace(/@media \(min-width: 720px\)[\s\S]*$/, "")).not.toContain(
+    expect(code(DESKTOP).replace(/@media \(min-width: 900px\)[\s\S]*$/, "")).not.toContain(
       ".analytics-screen",
     );
     // …and nothing follows the media block that could override it unnoticed.

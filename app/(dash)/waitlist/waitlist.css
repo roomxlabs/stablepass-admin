@@ -187,3 +187,52 @@
 .adm-table td a:hover {
   text-decoration: underline;
 }
+
+/* Filter-bar actions ------------------------------------------------ */
+/* The shared `.btn` is sized for a form footer (15px / 12px 22px), which is
+   too heavy for a filter bar sitting next to 12.5px chips. Scale both actions
+   down to chip weight here rather than touching globals.css. */
+.adm-filter-bar .btn {
+  font-size: 12.5px;
+  font-weight: 500;
+  padding: 7px 14px;
+}
+
+.adm-filter-bar .btn:not(.btn-primary) {
+  border: 1px solid var(--line);
+  background: var(--white);
+  color: var(--ink);
+}
+
+.adm-filter-bar .btn:not(.btn-primary):hover {
+  border-color: var(--line-dark);
+}
+
+/* Footer (count + pagination) --------------------------------------- */
+/* Mirrors `.posts-foot .pager` so paging reads identically on every list
+   screen; scoped here so posts.css stays this screen's reference, not its
+   dependency. */
+.waitlist-foot {
+  padding: 16px 22px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 13px;
+  color: var(--muted);
+  border-top: 1px solid var(--line);
+}
+
+.waitlist-foot .pager { display: flex; gap: 8px; }
+
+.waitlist-foot .pager a,
+.waitlist-foot .pager span {
+  padding: 6px 14px;
+  font-size: 12.5px;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--line);
+  background: var(--white);
+  color: var(--ink);
+  text-decoration: none;
+}
+
+.waitlist-foot .pager span.disabled { opacity: 0.45; }

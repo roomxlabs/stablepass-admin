@@ -154,11 +154,13 @@ export default async function HorsesPage({
   // approximation, because this grid is UNPAGINATED (hotfix, 25 Aug 2026) and
   // `all` holds every row the operator can read.
   const sortedInJs = sort === "followers" || sort === "lastpost";
-  const sortValue = (h: HorseRow): number | null => {
-    if (sort === "followers") return embedCount(h.follows);
-    const at = lastPostAt?.get(h.id);
-    return at ? new Date(at).getTime() : null;
-  };
+  // Parse each timestamp ONCE, not once per comparison: a comparator runs
+  // O(n log n) times, and `new Date(...)` inside it would re-parse the same
+  // strings on every keystroke-triggered reload.
+  const lastPostEpoch = new Map<string, number>();
+  if (lastPostAt) for (const [id, at] of lastPostAt) lastPostEpoch.set(id, new Date(at).getTime());
+  const sortValue = (h: HorseRow): number | null =>
+    sort === "followers" ? embedCount(h.follows) : lastPostEpoch.get(h.id) ?? null;
   // Both JS sorts read biggest/most-recent first, and `compareValues` sinks
   // nulls in either direction — a horse that has never been posted about is
   // unknown, not "the least recent". Ties break on name so the order is total

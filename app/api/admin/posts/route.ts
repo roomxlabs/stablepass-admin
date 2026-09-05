@@ -4,7 +4,13 @@ import { ok, fail } from "@/lib/api/envelope";
 import { createMuxDirectUpload, MuxError } from "@/lib/mux";
 import { isLabelCheckViolation, LABEL_ERROR_MESSAGE, normalisePostLabel } from "@/lib/posts/labels";
 import { MAX_PHOTOS, uploadSlotPath } from "@/lib/posts/media";
-import { POST_SORT_DEFAULT_DIR, parsePostSort, postsOrder, postsSelect } from "@/lib/posts/sort";
+import {
+  POSTS_API_SELECT,
+  POST_SORT_DEFAULT_DIR,
+  parsePostSort,
+  postsOrder,
+  postsSelect,
+} from "@/lib/posts/sort";
 
 const POST_MEDIA_BUCKET = "post-media"; // T15 private bucket (photo/voice)
 // ENG-611: widened from video|photo. `post.type`'s CHECK has permitted all of
@@ -46,15 +52,10 @@ export async function GET(req: Request) {
   let query = sb
     .from("post")
     .select(
-      // `label` (ENG-745) is selected so the posts library can render the
-      // category chip; that rendering is a later slice, this only carries it.
       // `postsSelect` makes the horse embed `!inner` for the horse-name sort
       // only — PostgREST will not order parent rows by an embedded column
       // otherwise. Every other sort gets this string unchanged.
-      postsSelect(
-        "id,horse_id,type,status,title,body,label,like_count,published_at,scheduled_for,created_at,horse:horse_id(display_name,racing_name),trainer:source_trainer_id(name)",
-        sort,
-      ),
+      postsSelect(POSTS_API_SELECT, sort),
       { count: "exact" },
     );
   for (const o of postsOrder(sort, dir)) {
@@ -74,8 +75,13 @@ export async function GET(req: Request) {
   // someone other than the horse's own trainer, and the Trainers list's counts
   // are byline-based, so filtering the other way would make the count and the
   // list it opens disagree.
+  // Shape-checked like the screen does it: a non-uuid would otherwise reach
+  // Postgres, 400, and get echoed back through `fail("query_failed",
+  // error.message)` — leaking a schema detail for what is only ever a stale
+  // link. Ignored rather than rejected, so a bad bookmark shows the library.
   const trainerId = u.searchParams.get("trainerId");
-  if (trainerId) query = query.eq("source_trainer_id", trainerId);
+  if (trainerId && /^[0-9a-f-]{36}$/i.test(trainerId))
+    query = query.eq("source_trainer_id", trainerId);
 
   // Strip the characters that are structural in PostgREST's `.or()` grammar
   // (`,` separates clauses; `(` `)` group / delimit `.in(...)`) so a free-text

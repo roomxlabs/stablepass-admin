@@ -1,0 +1,279 @@
+/* ====================================================================
+   Subscribers — admin screen for who is subscribed, for how long, and
+   who has churned (ENG-982).
+
+   Scoped to this feature and imported by its page, mirroring waitlist.css,
+   trainers.css and horses.css, so the shared app/globals.css stays
+   untouched. The card, table, filter-bar and pager rules are lifted
+   VERBATIM from waitlist.css (which lifted them from dashboard.css /
+   trainers.css) rather than re-invented, so this screen is visually
+   identical to the other resource screens.
+
+   There is no `11-subscribers.html` mockup — `.rx/mockups.md` lists ten
+   admin screens and this is not one of them. The design source is
+   therefore the same one waitlist.css used for the same reason: the
+   shipped admin resource-screen system, with token values pulled from
+   `06-stage1-design/mockups/web/style.css` rather than eyeballed. The
+   `.pill` block below is copied verbatim from that stylesheet (its
+   "Tags / pills" section) because `.pill` is used by the mockups but has
+   never been needed in app code before, so it is not in globals.css.
+   ==================================================================== */
+
+.adm-card {
+  background: var(--white);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+.adm-table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: auto;
+}
+
+.adm-table th,
+.adm-table td {
+  text-align: left;
+  padding: 12px 14px;
+  font-size: 13px;
+  border-bottom: 1px solid var(--line);
+  vertical-align: middle;
+}
+
+.adm-table tr:last-child td {
+  border-bottom: none;
+}
+
+.adm-table th:first-child,
+.adm-table td:first-child {
+  padding-left: 22px;
+}
+
+.adm-table th:last-child,
+.adm-table td:last-child {
+  padding-right: 22px;
+}
+
+.adm-table th {
+  background: var(--cream);
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+}
+
+.adm-table tr:hover td {
+  background: rgba(40, 93, 80, 0.025);
+}
+
+.adm-table td .row-name {
+  font-weight: 500;
+  font-size: 14px;
+}
+
+.adm-table td .row-sub {
+  font-size: 12px;
+  color: var(--muted);
+  margin-top: 1px;
+}
+
+.adm-table td .muted,
+.adm-table td.muted {
+  color: var(--muted);
+}
+
+.adm-table td a {
+  color: var(--brand-green);
+  text-decoration: none;
+}
+
+.adm-table td a:hover {
+  text-decoration: underline;
+}
+
+.adm-empty {
+  padding: 28px 22px;
+  color: var(--muted);
+  font-size: 13.5px;
+  text-align: center;
+}
+
+/* Filter bar --------------------------------------------------------- */
+
+.adm-filter-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 22px;
+  border-bottom: 1px solid var(--line);
+  background: var(--cream);
+  flex-wrap: wrap;
+}
+
+.adm-filter-bar .chip {
+  font-size: 12.5px;
+  font-weight: 500;
+  padding: 7px 14px;
+  border-radius: 100px;
+  border: 1px solid var(--line);
+  background: var(--white);
+  color: var(--ink);
+  cursor: pointer;
+  text-decoration: none;
+}
+
+.adm-filter-bar .chip strong { margin-left: 4px; opacity: 0.7; }
+
+.adm-filter-bar .chip.active {
+  background: var(--brand-green);
+  color: var(--cream);
+  border-color: var(--brand-green);
+}
+
+.adm-filter-bar .spacer { flex: 1; }
+
+/* The shared `.btn` is sized for a form footer (15px / 12px 22px), which is
+   too heavy for a filter bar sitting next to 12.5px chips. Scale it down to
+   chip weight here rather than touching globals.css — same reasoning, and
+   same values, as waitlist.css. */
+.adm-filter-bar .btn {
+  font-size: 12.5px;
+  font-weight: 500;
+  padding: 7px 14px;
+}
+
+.adm-filter-bar .btn:not(.btn-primary) {
+  border: 1px solid var(--line);
+  background: var(--white);
+  color: var(--ink);
+}
+
+.adm-filter-bar .btn:not(.btn-primary):hover {
+  border-color: var(--line-dark);
+}
+
+/* A second filter row: the tenure bands sit under the status chips rather
+   than wrapping into them, so "which status" and "how long subscribed" read
+   as two independent questions instead of one long undifferentiated strip. */
+.subs-filter-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 22px;
+  border-bottom: 1px solid var(--line);
+  background: var(--white);
+  flex-wrap: wrap;
+}
+
+.subs-filter-row .filter-label {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+  margin-right: 2px;
+}
+
+.subs-filter-row .chip {
+  font-size: 12.5px;
+  font-weight: 500;
+  padding: 6px 13px;
+  border-radius: 100px;
+  border: 1px solid var(--line);
+  background: var(--white);
+  color: var(--ink);
+  text-decoration: none;
+}
+
+.subs-filter-row .chip.active {
+  background: var(--brand-green);
+  color: var(--cream);
+  border-color: var(--brand-green);
+}
+
+/* Status pills ------------------------------------------------------- */
+/* Copied verbatim from 06-stage1-design/mockups/web/style.css ("Tags /
+   pills"). Real token values, not eyeballed: the amber/red pair are literal
+   hexes in the design system because they have no CSS variable there. */
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11.5px;
+  font-weight: 600;
+  padding: 3px 9px;
+  border-radius: 100px;
+  background: var(--cream-dark);
+  color: var(--muted);
+  letter-spacing: 0.02em;
+}
+
+.pill.green { background: var(--brand-green-soft); color: var(--brand-green-dark); }
+.pill.amber { background: #FBF1D6; color: #8A6712; }
+.pill.red { background: #FCEBE7; color: #B0411F; }
+.pill.dot::before { content: '●'; font-size: 9px; }
+
+/* Cancellation surfacing --------------------------------------------- */
+/* The point of this screen (Mel, 2 Sep): open it and SEE who churned,
+   without clicking into anything. The red pill alone reads as just another
+   tag in a column of tags, so a cancelled row also carries a left accent
+   bar — the row itself is marked, not merely one cell of it. */
+.adm-table tr.is-cancelled td:first-child {
+  box-shadow: inset 3px 0 0 var(--red);
+}
+
+.adm-table tr.is-cancelled td {
+  background: rgba(200, 74, 62, 0.03);
+}
+
+.adm-table tr.is-cancelled:hover td {
+  background: rgba(200, 74, 62, 0.06);
+}
+
+.subs-cancelled-on {
+  color: #B0411F;
+  font-weight: 500;
+}
+
+/* Tenure reads as a number first, unit second — it is the column Mel sorts
+   the cohort by in her head. */
+.subs-tenure {
+  font-variant-numeric: tabular-nums;
+}
+
+.subs-tenure .unit {
+  color: var(--muted);
+  font-size: 12px;
+  margin-left: 3px;
+}
+
+/* Footer (count + pagination) ---------------------------------------- */
+/* Mirrors `.waitlist-foot .pager` (itself mirroring `.posts-foot .pager`) so
+   paging reads identically on every list screen; scoped here so waitlist.css
+   stays this screen's reference, not its dependency. */
+.subscribers-foot {
+  padding: 16px 22px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 13px;
+  color: var(--muted);
+  border-top: 1px solid var(--line);
+}
+
+.subscribers-foot .pager { display: flex; gap: 8px; }
+
+.subscribers-foot .pager a,
+.subscribers-foot .pager span {
+  padding: 6px 14px;
+  font-size: 12.5px;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--line);
+  background: var(--white);
+  color: var(--ink);
+  text-decoration: none;
+}
+
+.subscribers-foot .pager span.disabled { opacity: 0.45; }

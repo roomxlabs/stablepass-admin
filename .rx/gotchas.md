@@ -1096,3 +1096,39 @@ with zero pan slack on both axes, so dragging does nothing — it reads as "the 
 forms now hold a `sessionPick` ({file, crop}) and re-open that. Set it ONLY in the upload's SUCCESS
 branch: adopting at pick time means a cancelled pick (or a failed upload) leaves "Reposition"
 pointing at a file the admin backed out of, which silently swaps the stored photo on the next Apply.
+
+## The e2e mock swallows EVERY `/rest/v1/subscription` read — add a branch AHEAD of it (ENG-982)
+`e2e/mock-supabase.mjs`'s dashboard block answers `p.startsWith("/rest/v1/subscription")` with
+`sendTable(res, method, [], 412)` — an empty list plus the Members-tile count. That is deliberate for
+the tile, but it shadows any NEW subscription-reading screen: the Subscribers page rendered "No
+subscribers yet" against perfectly good fixtures until its own branch was inserted *above* the
+dashboard block. Discriminate on a column only your read selects (`current_period_end` here; the
+analytics trials branch uses `trial_ends_at` the same way).
+
+Read that column name off **`url.searchParams.get("select")`, which is already percent-decoded**.
+Do NOT reach for `decodeURIComponent(url.search)`: a search string carrying a bare `%` wildcard
+(`email=ilike.%term%`, which the waitlist and trainers searches both send) makes it throw `URIError`
+and kill the mock server outright — every later spec then fails with `ERR_CONNECTION_REFUSED`, which
+reads like a flaky suite rather than a one-line bug. That is the same crash the waitlist branch
+already documents inline; it was re-hit writing ENG-982's branch.
+
+## `subscription` has NO `canceled_at` column — a cancellation date is `updated_at`, and that is lossy
+`docs/specs/database.sql` gives `subscription` only `created_at` / `updated_at` / `current_period_end`
+/ `trial_ends_at`. Any "when did they cancel" feature therefore derives the date from `updated_at` on a
+`canceled` row, which moves on ANY later write to that row. Ship it labelled as an approximation (see
+`app/(dash)/subscribers/data.ts`), and do not let a ticket assume the column exists — a real
+`canceled_at` is a backend change.
+
+## Staff exclusion forces JS-side filtering AND JS-side paging (ENG-315 → ENG-982)
+`is_admin` lives on the EMBEDDED `app_user`, not on `subscription`, so PostgREST cannot filter it in
+the query. That means a subscriber list cannot page in SQL either: `LIMIT/OFFSET` before dropping
+staff rows leaves holes and miscounts. The working shape is fetch-all-batched → drop staff in JS →
+filter → slice. It also makes "the CSV covers every page" fall out for free. Do not "optimise" this
+back into `.range()`-per-page without solving the embed filter first.
+
+## `.rx/fe-harness.md` does not exist, but the harness does (noted 5 Sep 2026)
+The implement skill's pre-flight asks for `.rx/fe-harness.md`; this repo has never had one. The actual
+harness is `playwright.config.ts` + `e2e/global-setup.ts` + `e2e/mock-supabase.mjs` — fully
+self-contained (mock GoTrue + PostgREST, seeded fixtures, `next build && next start` on :3002), so it
+needs no `.env.playwright` and no real Supabase creds. Sign in with
+`ops@stablepass.co` / `correcthorse` / TOTP `123456`. Reuse it; don't bootstrap a second one.

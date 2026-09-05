@@ -341,6 +341,45 @@ function sendJson(res, status, body) {
 // Emulates a PostgREST list/count response: sets Content-Range so supabase-js
 // can read `count` from `count: 'exact'` queries (dashboard tiles rely on this),
 // and returns no body for the HEAD requests that `head: true` issues.
+// Subscribers (ENG-982) — the cohort behind the Subscribers screen. Deliberately
+// spans all four of TODAY's statuses (`trial`,`active`,`lapsed`,`canceled`) and a
+// spread of tenures, so every tenure band has a member and the two cancelled rows
+// are visible on arrival — which is the whole point of the screen (Mel, 2 Sep).
+//
+// `sub-admin` is the operator's own subscription and MUST NOT appear on the
+// screen: it is the ENG-315 staff-exclusion guardrail, made provable in the
+// browser rather than only in a unit test.
+//
+// Dates are computed RELATIVE TO NOW so tenure bands stay stable as the calendar
+// moves — an absolute fixture would silently slide between bands and rot the
+// screenshots. Day 15 avoids month-boundary flapping.
+//
+// NOTE: `subscription` has NO `canceled_at` column (docs/specs/database.sql), so
+// the cancellation date is `updated_at` on a canceled row. The fixtures set
+// `updated_at` accordingly — recent, because "who churned this week" is the
+// question this screen answers.
+function monthsAgo(n) {
+  const d = new Date();
+  d.setUTCMonth(d.getUTCMonth() - n, 15);
+  d.setUTCHours(9, 0, 0, 0);
+  return d.toISOString();
+}
+function daysAgo(n) {
+  return new Date(Date.now() - n * 864e5).toISOString();
+}
+const SUBSCRIPTION_FIXTURES = [
+  { id: "sub-8", status: "active",   created_at: monthsAgo(19), updated_at: monthsAgo(19), current_period_end: daysAgo(-12), user: { name: "Mei Lin",        email: "mei.lin@example.com",   is_admin: false } },
+  { id: "sub-1", status: "active",   created_at: monthsAgo(14), updated_at: monthsAgo(14), current_period_end: daysAgo(-21), user: { name: "Harriet Vale",   email: "harriet@example.com",   is_admin: false } },
+  { id: "sub-7", status: "lapsed",   created_at: monthsAgo(11), updated_at: monthsAgo(1),  current_period_end: daysAgo(34),  user: { name: "Rafael Costa",   email: "rafael@example.com",    is_admin: false } },
+  { id: "sub-2", status: "active",   created_at: monthsAgo(8),  updated_at: monthsAgo(8),  current_period_end: daysAgo(-6),  user: { name: "Tom Ashcroft",   email: "tom@example.com",       is_admin: false } },
+  { id: "sub-5", status: "canceled", created_at: monthsAgo(7),  updated_at: daysAgo(3),    current_period_end: daysAgo(-9),  user: { name: "Douglas Byrne",  email: "douglas@example.com",   is_admin: false } },
+  { id: "sub-3", status: "active",   created_at: monthsAgo(4),  updated_at: monthsAgo(4),  current_period_end: daysAgo(-17), user: { name: "Priya Raman",    email: "priya@example.com",     is_admin: false } },
+  { id: "sub-6", status: "canceled", created_at: monthsAgo(2),  updated_at: daysAgo(9),    current_period_end: daysAgo(-2),  user: { name: "Simone Clark",   email: "simone@example.com",    is_admin: false } },
+  { id: "sub-4", status: "trial",    created_at: daysAgo(11),   updated_at: daysAgo(11),   current_period_end: null,         user: { name: "Nina Okafor",    email: "nina@example.com",      is_admin: false } },
+  // The operator. Excluded by the staff guardrail — never rendered, never exported.
+  { id: "sub-admin", status: "active", created_at: monthsAgo(22), updated_at: monthsAgo(22), current_period_end: daysAgo(-30), user: { name: "StablePass Ops", email: "ops@stablepass.co", is_admin: true } },
+];
+
 // Waitlist (ENG-976) — 28 pre-launch signups, deliberately more than one
 // 25-row page so the pager and the "export covers rows beyond page 1" claim are
 // both visible in the screenshots. Fake addresses only: the real table holds
@@ -731,6 +770,59 @@ export function startMockSupabase() {
       url.pathname.startsWith("/rest/v1/follow")
     ) {
       sendTable(res, req.method, [], ANALYTICS_EMPTY ? 0 : 204);
+      return;
+    }
+
+    // /rest/v1/subscription — the Subscribers screen (ENG-982). MUST sit ahead of
+    // the dashboard block below, which answers EVERY /rest/v1/subscription read
+    // with an empty list and a 412 count (that is the Members tile's count, and
+    // it is deliberately row-less). Routed through that, this screen would render
+    // "No subscribers yet" no matter what the fixtures say.
+    //
+    // Discriminated on `current_period_end`, which is selected by this screen's
+    // read and by no other subscription read in the app: the dashboard tile
+    // selects only `status,user:user_id(is_admin)`, and the analytics trials list
+    // selects `trial_ends_at` (handled by its own branch above).
+    //
+    // Read the `select` param via searchParams, which is ALREADY percent-decoded.
+    // Do NOT `decodeURIComponent(url.search)` here: a search string carrying a
+    // bare `%` wildcard (`email=ilike.%term%`, which the waitlist and trainers
+    // searches send) makes it throw URIError and kills the whole mock server,
+    // taking the rest of the suite down as ERR_CONNECTION_REFUSED. That exact
+    // trap is recorded in .rx/gotchas.md and was re-hit while writing this
+    // branch.
+    if (
+      (req.method === "GET" || req.method === "HEAD") &&
+      url.pathname.startsWith("/rest/v1/subscription") &&
+      (url.searchParams.get("select") ?? "").includes("current_period_end")
+    ) {
+      const rows = SUBSCRIPTION_FIXTURES;
+      // supabase-js 2.110 serialises `.range(from,to)` as offset/limit query
+      // params (see the waitlist branch for the same note). The data layer pages
+      // until it gets an EMPTY batch, so slicing past the end must return [] —
+      // never the last page again, or the export loop would never terminate.
+      const offsetParam = Number(url.searchParams.get("offset"));
+      const limitParam = Number(url.searchParams.get("limit"));
+      let from = 0;
+      let page = rows;
+      if (url.searchParams.has("offset") && Number.isFinite(offsetParam)) {
+        from = Math.max(0, offsetParam);
+        const size =
+          url.searchParams.has("limit") && Number.isFinite(limitParam) ? limitParam : rows.length;
+        page = rows.slice(from, from + size);
+      }
+      const headers = {
+        "Content-Type": "application/json",
+        "Content-Range": `${from}-${Math.max(from, from + page.length - 1)}/${rows.length}`,
+        ...corsHeaders(),
+      };
+      if (req.method === "HEAD") {
+        res.writeHead(200, headers);
+        res.end();
+        return;
+      }
+      res.writeHead(200, headers);
+      res.end(JSON.stringify(page));
       return;
     }
 

@@ -11,7 +11,7 @@ import { GET } from "./route";
 
 function asAdmin() {
   state.user = { id: "u1" };
-  state.tables.app_user = { select: { single: { is_admin: true } } };
+  state.tables.app_user = { select: { single: { is_admin: true }, rows: [{ id: "admin-1" }] } };
 }
 function asNonAdmin() {
   state.user = { id: "u1" };
@@ -44,7 +44,7 @@ describe("GET /api/admin/analytics/posts/:id", () => {
     expect(j.error.code).toBe("not_found");
   });
 
-  it("returns post analytics for an admin", async () => {
+  it("returns member-only post analytics for an admin (ENG-984)", async () => {
     asAdmin();
     state.tables.post = {
       select: {
@@ -59,13 +59,34 @@ describe("GET /api/admin/analytics/posts/:id", () => {
         },
       },
     };
-    state.rpcs.admin_post_opens_by_day = { data: [{ day: "2026-07-11", opens: 5 }, { day: "2026-07-12", opens: 3 }] };
-    state.rpcs.admin_post_reactions = { data: [{ emoji: "🔥", count: 2 }] };
-    state.tables.bookmark = { select: { count: 7 } };
+    state.tables.impression = {
+      select: {
+        rows: [
+          { user_id: "admin-1", seen_at: "2026-07-11T00:00:00.000Z" },
+          { user_id: "member-1", seen_at: "2026-07-11T00:00:00.000Z" },
+          { user_id: "member-1", seen_at: "2026-07-11T05:00:00.000Z" },
+          { user_id: "member-2", seen_at: "2026-07-12T00:00:00.000Z" },
+        ],
+      },
+    };
+    state.tables.reaction = {
+      select: {
+        rows: [
+          { user_id: "admin-1", emoji: "🔥" },
+          { user_id: "member-1", emoji: "🔥" },
+          { user_id: "member-2", emoji: "🔥" },
+        ],
+      },
+    };
+    state.tables.bookmark = {
+      select: { rows: [{ user_id: "admin-1" }, { user_id: "member-1" }] },
+    };
     // reach is per-post: count of `follow` rows targeting this post's horse,
     // not a global trial|active subscription count (which would be identical
     // for every post regardless of horse).
-    state.tables.follow = { select: { count: 42 } };
+    state.tables.follow = {
+      select: { rows: [{ user_id: "admin-1" }, { user_id: "member-1" }, { user_id: "member-2" }] },
+    };
     state.tables.subscription = { select: { count: 100 } };
 
     const r = await GET(new Request("http://localhost/api/admin/analytics/posts/p1"), ctx());
@@ -80,13 +101,13 @@ describe("GET /api/admin/analytics/posts/:id", () => {
       publishedAt: "2026-07-10T00:00:00.000Z",
     });
     expect(j.data.opensByDay).toEqual([
-      { day: "2026-07-11", opens: 5 },
-      { day: "2026-07-12", opens: 3 },
+      { day: "2026-07-11", opens: 2 },
+      { day: "2026-07-12", opens: 1 },
     ]);
     expect(j.data.reactionsByEmoji).toEqual([{ emoji: "🔥", count: 2 }]);
-    expect(j.data.saves).toBe(7);
-    expect(j.data.opens).toBe(8);
-    expect(j.data.reach).toBe(42);
+    expect(j.data.saves).toBe(1);
+    expect(j.data.opens).toBe(3);
+    expect(j.data.reach).toBe(2);
   });
 
   it("reach is 0 for a post with no horse_id (no follow query issued)", async () => {
@@ -104,10 +125,10 @@ describe("GET /api/admin/analytics/posts/:id", () => {
         },
       },
     };
-    state.rpcs.admin_post_opens_by_day = { data: [] };
-    state.rpcs.admin_post_reactions = { data: [] };
-    state.tables.bookmark = { select: { count: 0 } };
-    state.tables.follow = { select: { count: 999 } }; // must be ignored: no horse_id
+    state.tables.impression = { select: { rows: [] } };
+    state.tables.reaction = { select: { rows: [] } };
+    state.tables.bookmark = { select: { rows: [] } };
+    state.tables.follow = { select: { rows: [{ user_id: "member-1" }] } }; // must be ignored: no horse_id
 
     const r = await GET(new Request("http://localhost/api/admin/analytics/posts/p2"), ctx());
     const j = await r.json();

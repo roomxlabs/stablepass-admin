@@ -13,7 +13,7 @@ const iso = (daysAgo: number) => new Date(Date.now() - daysAgo * 864e5).toISOStr
 
 function asAdmin() {
   state.user = { id: "u1" };
-  state.tables.app_user = { select: { single: { is_admin: true } } };
+  state.tables.app_user = { select: { single: { is_admin: true }, rows: [{ id: "admin-1" }] } };
 }
 function asNonAdmin() {
   state.user = { id: "u1" };
@@ -31,7 +31,7 @@ describe("GET /api/admin/analytics", () => {
     expect(r.status).toBe(403);
   });
 
-  it("returns the tile counts + quiet horses for an admin", async () => {
+  it("returns the tile counts + quiet horses for an admin, excluding admin reactions/saves (ENG-984)", async () => {
     asAdmin();
     // post: count drives postsThisWeek; rows drive last-post recency.
     state.tables.post = {
@@ -43,8 +43,22 @@ describe("GET /api/admin/analytics", () => {
         ],
       },
     };
-    state.tables.reaction = { select: { count: 3420 } };
-    state.tables.bookmark = { select: { count: 612 } };
+    // reactions/saves are now recomputed member-only from raw rows, not a
+    // head-count — one admin row in each must NOT be counted.
+    state.tables.reaction = {
+      select: {
+        rows: [
+          { user_id: "admin-1" },
+          { user_id: "member-1" },
+          { user_id: "member-2" },
+        ],
+      },
+    };
+    state.tables.bookmark = {
+      select: {
+        rows: [{ user_id: "admin-1" }, { user_id: "member-1" }],
+      },
+    };
     state.tables.subscription = {
       select: {
         rows: [
@@ -70,8 +84,8 @@ describe("GET /api/admin/analytics", () => {
     expect(r.status).toBe(200);
     const j = await r.json();
     expect(j.data.postsThisWeek).toBe(68);
-    expect(j.data.reactions).toBe(3420);
-    expect(j.data.saves).toBe(612);
+    expect(j.data.reactions).toBe(2); // admin-1's reaction excluded
+    expect(j.data.saves).toBe(1); // admin-1's save excluded
     expect(j.data.members).toBe(3); // 4 subscription rows, one is staff (excluded)
 
     // h1 posted within the week → NOT quiet. h6 (stale 20d) + h8 (never) are.

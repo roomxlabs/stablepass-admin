@@ -3,7 +3,7 @@ import { requireAdminPage } from "@/lib/auth/admin";
 import PostsLibrary from "./PostsLibrary";
 import { mapPostRow, parseStatusFilter } from "./format";
 import { parseSortDir } from "../list-href";
-import { POST_SORT_DEFAULT_DIR, parsePostSort, postsOrder } from "@/lib/posts/sort";
+import { POST_SORT_DEFAULT_DIR, parsePostSort, postsOrder, postsSelect } from "@/lib/posts/sort";
 import type { PostRow, StatusCounts, StatusFilter } from "./types";
 import { HORSE_PHOTO_BUCKET, POST_MEDIA_BUCKET, signPhotoMap } from "@/lib/storage/photos";
 import { muxSignedStreamUrl, muxSignedThumbnailUrl } from "@/lib/mux-playback";
@@ -83,7 +83,7 @@ export default async function PostsPage({
   // list is offset-paginated, so a client-side sort would only reorder the 20
   // rows this page happens to hold. `postsOrder` also appends a `created_at`
   // tiebreaker so paging through equal-valued rows stays stable.
-  let pageQuery = sb.from("post").select(POST_FIELDS, { count: "exact" });
+  let pageQuery = sb.from("post").select(postsSelect(POST_FIELDS, sort), { count: "exact" });
   for (const o of postsOrder(sort, dir)) {
     pageQuery = pageQuery.order(o.column, {
       ascending: o.ascending,

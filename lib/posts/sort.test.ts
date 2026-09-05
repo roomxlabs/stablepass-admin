@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { parsePostSort, postsOrder, POST_SORT_KEYS, type PostSort } from "./sort";
+import { parsePostSort, postsOrder, postsSelect, POST_SORT_KEYS, type PostSort } from "./sort";
 
 describe("parsePostSort", () => {
   it("keeps an allow-listed value", () => {
@@ -57,5 +57,31 @@ describe("postsOrder", () => {
       const order = postsOrder(key, dir);
       expect(order[order.length - 1]).toEqual({ column: "created_at", ascending: false });
     }
+  });
+});
+
+describe("postsSelect — the horse-name sort needs an INNER embed", () => {
+  const SELECT =
+    "id,horse_id,type,status,horse:horse_id(display_name,racing_name),trainer:source_trainer_id(name)";
+
+  it("leaves the select byte-identical for the default order", () => {
+    expect(postsSelect(SELECT, "")).toBe(SELECT);
+  });
+
+  it("leaves the select byte-identical for every non-horse sort", () => {
+    for (const sort of ["published", "engagement", "status"] as const) {
+      expect(postsSelect(SELECT, sort)).toBe(SELECT);
+    }
+  });
+
+  it("makes ONLY the horse embed inner when sorting by horse name", () => {
+    const out = postsSelect(SELECT, "horse");
+    // PostgREST will not order PARENT rows by an embedded column unless the
+    // embed is an inner join — without this the sort silently does nothing.
+    expect(out).toContain("horse:horse_id!inner(display_name,racing_name)");
+    // The trainer embed must NOT become inner: it is a different relationship
+    // and turning it inner would change which rows the list returns.
+    expect(out).toContain("trainer:source_trainer_id(name)");
+    expect(out).not.toContain("trainer:source_trainer_id!inner");
   });
 });

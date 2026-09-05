@@ -2,13 +2,23 @@ import Link from "next/link";
 import { requireAdminPage } from "@/lib/auth/admin";
 import { Icon } from "../icons";
 import SearchField from "../SearchField";
+import SortSelect from "../SortSelect";
+import { buildListHref, compareValues, parseSortKey } from "../list-href";
 import {
   formatCount,
   horseSubtitle,
   humanizeTrainingStatus,
   statusPillClass,
 } from "./format";
-import { fetchHorses, fetchTrainerLabel, type CountEmbed, type HorseRow } from "./data";
+import {
+  fetchHorseLastPostMap,
+  fetchHorses,
+  fetchTrainerLabel,
+  HORSE_SORT_KEYS,
+  type CountEmbed,
+  type HorseRow,
+  type HorseSort,
+} from "./data";
 import { HORSE_PHOTO_BUCKET, signPhotoMap } from "@/lib/storage/photos";
 import "./horses.css";
 
@@ -55,21 +65,44 @@ function embedCount(e: CountEmbed | null): number {
 // `filter`, `q` and `trainerId` compose; only `page` is gone. The trainer
 // scope is deliberately carried by every chip so an operator who arrived from
 // the Trainers list stays inside that trainer's horses while flipping status.
-function buildHref(p: { filter?: Filter; q?: string; trainerId?: string }): string {
-  const params = new URLSearchParams();
-  if (p.trainerId) params.set("trainerId", p.trainerId);
-  if (p.filter && p.filter !== "all") params.set("filter", p.filter);
-  if (p.q) params.set("q", p.q);
-  const s = params.toString();
-  return s ? `/horses?${s}` : "/horses";
+// Now via the shared `buildListHref` (ENG-963) so all three list screens drop
+// empty params identically. `sort` joins filter/q/trainerId as a carried param.
+function buildHref(p: {
+  filter?: Filter;
+  q?: string;
+  trainerId?: string;
+  sort?: HorseSort | "";
+}): string {
+  return buildListHref("/horses", {
+    trainerId: p.trainerId,
+    filter: p.filter && p.filter !== "all" ? p.filter : "",
+    q: p.q,
+    // "newest" is the default order, so it is never written to the URL — a
+    // shared link says what is non-default about the view and nothing else.
+    sort: p.sort && p.sort !== "newest" ? p.sort : "",
+  });
 }
 
-// Search-form hidden fields: everything the URL carries except the query itself.
-function hiddenFor(filter: Filter, trainerId: string): Record<string, string> {
+// The grid has no column headers to click, so sort is a select. Labels are the
+// operator's words, not the column names.
+const SORT_OPTIONS: { value: HorseSort; label: string }[] = [
+  { value: "newest", label: "Newest first" },
+  { value: "name", label: "Name (A–Z)" },
+  { value: "followers", label: "Most followers" },
+  { value: "lastpost", label: "Recently posted" },
+];
+
+// Form hidden fields: everything the URL carries except the field's own input
+// (`q` for the search box, `sort` for the select).
+function hiddenFor(
+  filter: Filter,
+  trainerId: string,
+  extra: Record<string, string> = {},
+): Record<string, string> {
   const h: Record<string, string> = {};
   if (trainerId) h.trainerId = trainerId;
   if (filter !== "all") h.filter = filter;
-  return h;
+  return { ...h, ...extra };
 }
 
 export default async function HorsesPage({
@@ -90,9 +123,15 @@ export default async function HorsesPage({
   const trainerId =
     typeof sp.trainerId === "string" && /^[0-9a-f-]{36}$/i.test(sp.trainerId) ? sp.trainerId : "";
 
-  const [all, trainerLabel] = await Promise.all([
-    fetchHorses(sb, q, trainerId || null),
+  // "" is not a valid option value here — the select always shows a concrete
+  // choice — so an absent/stale `?sort=` resolves to the historical default.
+  const sort: HorseSort = parseSortKey(sp.sort, HORSE_SORT_KEYS) || "newest";
+
+  const [all, trainerLabel, lastPostAt] = await Promise.all([
+    fetchHorses(sb, q, trainerId || null, sort),
     trainerId ? fetchTrainerLabel(sb, trainerId) : Promise.resolve(null),
+    // Only the "recently posted" sort needs this extra read.
+    sort === "lastpost" ? fetchHorseLastPostMap(sb) : Promise.resolve(null),
   ]);
 
   const counts = {
@@ -102,12 +141,37 @@ export default async function HorsesPage({
     retired: all.filter((h) => h.training_status === "retired").length,
   };
 
-  const filtered = all.filter((h) => {
+  const unsorted = all.filter((h) => {
     if (filter === "active") return h.training_status !== "retired";
     if (filter === "racing") return h.training_status === "racing";
     if (filter === "retired") return h.training_status === "retired";
     return true;
   });
+
+  // `name` / `newest` were already ordered by Postgres inside fetchHorses.
+  // `followers` (an embedded count) and `lastpost` (not a column on `horse` at
+  // all) can only be ordered here — which is exact, not a per-page
+  // approximation, because this grid is UNPAGINATED (hotfix, 25 Aug 2026) and
+  // `all` holds every row the operator can read.
+  const sortedInJs = sort === "followers" || sort === "lastpost";
+  // Parse each timestamp ONCE, not once per comparison: a comparator runs
+  // O(n log n) times, and `new Date(...)` inside it would re-parse the same
+  // strings on every keystroke-triggered reload.
+  const lastPostEpoch = new Map<string, number>();
+  if (lastPostAt) for (const [id, at] of lastPostAt) lastPostEpoch.set(id, new Date(at).getTime());
+  const sortValue = (h: HorseRow): number | null =>
+    sort === "followers" ? embedCount(h.follows) : lastPostEpoch.get(h.id) ?? null;
+  // Both JS sorts read biggest/most-recent first, and `compareValues` sinks
+  // nulls in either direction — a horse that has never been posted about is
+  // unknown, not "the least recent". Ties break on name so the order is total
+  // and identical across reloads.
+  const filtered = sortedInJs
+    ? [...unsorted].sort(
+        (a, b) =>
+          compareValues(sortValue(a), sortValue(b), "desc") ||
+          compareValues(a.display_name, b.display_name, "asc"),
+      )
+    : unsorted;
 
   const total = filtered.length;
   // Private bucket: turn each stored photo path into a signed URL for display.
@@ -125,7 +189,7 @@ export default async function HorsesPage({
             placeholder="Search horses…"
             ariaLabel="Search horses"
             defaultValue={q}
-            hidden={hiddenFor(filter, trainerId)}
+            hidden={hiddenFor(filter, trainerId, sort !== "newest" ? { sort } : {})}
           />
           <Link href="/horses/new" className="btn btn-primary" style={{ padding: "8px 16px", fontSize: "13.5px" }}>
             + Add horse
@@ -141,16 +205,21 @@ export default async function HorsesPage({
               <span>
                 Showing horses for <strong>{trainerLabel ?? "an unknown trainer"}</strong>
               </span>
-              <Link href={buildHref({ filter, q })} className="chip">
-                Show all horses
-              </Link>
+              <span className="scope-actions">
+                <Link href={`/posts?trainerId=${encodeURIComponent(trainerId)}`} className="chip">
+                  Their posts
+                </Link>
+                <Link href={buildHref({ filter, q, sort })} className="chip">
+                  Show all horses
+                </Link>
+              </span>
             </div>
           ) : null}
           <div className="adm-filter-bar">
             {FILTERS.map((f) => (
               <Link
                 key={f.key}
-                href={buildHref({ filter: f.key, q, trainerId })}
+                href={buildHref({ filter: f.key, q, trainerId, sort })}
                 className={f.key === filter ? "chip active" : "chip"}
               >
                 {f.label}
@@ -158,13 +227,20 @@ export default async function HorsesPage({
               </Link>
             ))}
             <div className="spacer" />
+            <SortSelect
+              action="/horses"
+              options={SORT_OPTIONS}
+              value={sort}
+              ariaLabel="Sort horses"
+              hidden={hiddenFor(filter, trainerId, q ? { q } : {})}
+            />
             <SearchField
               action="/horses"
               className="search-mini"
               placeholder="Filter by trainer or stable…"
               ariaLabel="Filter horses"
               defaultValue={q}
-              hidden={hiddenFor(filter, trainerId)}
+              hidden={hiddenFor(filter, trainerId, sort !== "newest" ? { sort } : {})}
             />
           </div>
 

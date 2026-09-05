@@ -4,6 +4,7 @@ import { ok, fail } from "@/lib/api/envelope";
 import { createMuxDirectUpload, MuxError } from "@/lib/mux";
 import { isLabelCheckViolation, LABEL_ERROR_MESSAGE, normalisePostLabel } from "@/lib/posts/labels";
 import { MAX_PHOTOS, uploadSlotPath } from "@/lib/posts/media";
+import { POST_SORT_DEFAULT_DIR, parsePostSort, postsOrder } from "@/lib/posts/sort";
 
 const POST_MEDIA_BUCKET = "post-media"; // T15 private bucket (photo/voice)
 // ENG-611: widened from video|photo. `post.type`'s CHECK has permitted all of
@@ -16,9 +17,18 @@ const CREATABLE_TYPES: string[] = ["video", "photo", "voice", "text"];
 // the client uploads the file bytes directly to Mux (video) / Storage (photo).
 const accepted = (data: unknown) => NextResponse.json({ data }, { status: 202 });
 
-// GET /api/admin/posts?status=&horseId=&q=  — review queue / library + search.
+// GET /api/admin/posts?status=&horseId=&trainerId=&q=&sort=&dir=
+//   — review queue / library + search.
 // Offset pagination; `q` is a free-text ILIKE over title/body plus the joined
 // horse and trainer names (resolved BFF-side against the RLS admin client).
+//
+// `sort`/`dir` (ENG-963) are applied as `.order()` on the QUERY, before
+// `.range()`. That ordering is the whole point: this endpoint is
+// offset-paginated, so sorting the returned page instead would reorder 50 rows
+// out of the wrong 50. `sort` shares its mapping with the Posts screen
+// (lib/posts/sort.ts) so the URL means the same thing in both.
+// An unknown `sort` falls back to the default `created_at desc` rather than
+// 400-ing — a stale bookmark should show the library, not an error.
 export async function GET(req: Request) {
   const g = await requireAdmin();
   if ("res" in g) return g.res;
@@ -28,6 +38,11 @@ export async function GET(req: Request) {
   const limit = Math.min(Number(u.searchParams.get("limit")) || 50, 100);
   const offset = Math.max(Number(u.searchParams.get("offset")) || 0, 0);
 
+  const sort = parsePostSort(u.searchParams.get("sort"));
+  const rawDir = u.searchParams.get("dir");
+  const dir =
+    rawDir === "asc" || rawDir === "desc" ? rawDir : sort ? POST_SORT_DEFAULT_DIR[sort] : "desc";
+
   let query = sb
     .from("post")
     .select(
@@ -35,13 +50,26 @@ export async function GET(req: Request) {
       // category chip; that rendering is a later slice, this only carries it.
       "id,horse_id,type,status,title,body,label,like_count,published_at,scheduled_for,created_at,horse:horse_id(display_name,racing_name),trainer:source_trainer_id(name)",
       { count: "exact" },
-    )
-    .order("created_at", { ascending: false });
+    );
+  for (const o of postsOrder(sort, dir)) {
+    query = query.order(o.column, {
+      ascending: o.ascending,
+      ...(o.nullsFirst === undefined ? {} : { nullsFirst: o.nullsFirst }),
+    });
+  }
 
   const status = u.searchParams.get("status");
   if (status) query = query.eq("status", status);
   const horseId = u.searchParams.get("horseId");
   if (horseId) query = query.eq("horse_id", horseId);
+  // ENG-963 — scope the library to one trainer's posts, the counterpart of the
+  // Horses list's `?trainerId=`. Filters `post.source_trainer_id` (the byline),
+  // NOT the horse's trainer: the two differ whenever a post is bylined to
+  // someone other than the horse's own trainer, and the Trainers list's counts
+  // are byline-based, so filtering the other way would make the count and the
+  // list it opens disagree.
+  const trainerId = u.searchParams.get("trainerId");
+  if (trainerId) query = query.eq("source_trainer_id", trainerId);
 
   // Strip the characters that are structural in PostgREST's `.or()` grammar
   // (`,` separates clauses; `(` `)` group / delimit `.in(...)`) so a free-text

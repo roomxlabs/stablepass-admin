@@ -4,6 +4,7 @@ import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import type { PostStatus } from "./types";
 import { deletePost, discardDraft, publishNow, republishPost, unpublishPost } from "./api";
+import ToastRegion, { useToast } from "../Toast";
 
 // The per-row action affordances. Which action shows is a pure function of the
 // post's status (guardrail §2): Discard appears only on a draft; a published
@@ -24,23 +25,61 @@ const DELETE_CONFIRM =
   "Permanently delete this post?\n\n" +
   "This removes the post from the database. It CANNOT be undone.\n\n" +
   "To hide a published post from members without deleting it, cancel and use Unpublish instead.";
+// What each action says when it succeeds, and the status the row optimistically
+// takes while `router.refresh()` re-runs the server component. `null` means the
+// row is going away (discard / delete) — there is no next status to show, so
+// the affordances are simply retired.
+//
+// The optimistic status is deliberately LOCAL to this component rather than
+// hoisted into the posts list: PostsLibrary.tsx / PostRow.tsx are outside this
+// ticket's surface and are being edited concurrently by ENG-963. The row's
+// pills still update on refresh as they always did; what this fixes is the ~1s
+// window where the operator had already clicked "Unpublish" and the button
+// still said "Unpublish", which is what made people click it twice.
+const OUTCOME: Record<string, { message: string; next: PostStatus | null }> = {
+  unpublish: { message: "Post unpublished — members can no longer see it.", next: "unpublished" },
+  republish: { message: "Post republished — it's live for members again.", next: "published" },
+  publish: { message: "Post published.", next: "published" },
+  discard: { message: "Draft discarded.", next: null },
+  delete: { message: "Post permanently deleted.", next: null },
+};
+
 export default function PostActions({ id, status }: { id: string; status: PostStatus }) {
   const router = useRouter();
   const [pending, startTransition] = useTransition();
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  // Optimistic overlay on the server-rendered `status`. `undefined` = no action
+  // has completed yet, so the server's value stands; `null` = the row is gone.
+  const [optimistic, setOptimistic] = useState<PostStatus | null | undefined>(undefined);
+  const { toasts, showToast, dismissToast } = useToast();
   const working = busy || pending;
+  // Drop the overlay as soon as the SERVER sends a different status than the
+  // one it was standing in for. Without this the overlay shadows the prop for
+  // the life of the component: a row re-rendered with a genuinely new status —
+  // someone else republishes while this instance is still mounted — would keep
+  // showing the stale affordance forever.
+  const [seenStatus, setSeenStatus] = useState<PostStatus>(status);
+  if (status !== seenStatus) {
+    setSeenStatus(status);
+    setOptimistic(undefined);
+  }
+  const shown = optimistic === undefined ? status : optimistic;
 
-  async function act(fn: (id: string) => Promise<void>, confirm?: string) {
+  async function act(fn: (id: string) => Promise<void>, key: keyof typeof OUTCOME, confirm?: string) {
     if (confirm && typeof window !== "undefined" && !window.confirm(confirm)) return;
-    setError(null);
     setBusy(true);
     try {
       await fn(id);
+      // Only adopt the optimistic status AFTER the BFF confirmed the
+      // transition. Flipping it before the await would show "Unpublished" for a
+      // call that then 409s — the publish routes re-assert the precondition on
+      // the UPDATE itself (see ENG-950), so losing a race is a real outcome.
+      setOptimistic(OUTCOME[key].next);
+      showToast(OUTCOME[key].message, "success");
       // Re-run the server component so the row reflects its new status.
       startTransition(() => router.refresh());
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Action failed.");
+      showToast(e instanceof Error ? e.message : "Action failed.", "error");
     } finally {
       setBusy(false);
     }
@@ -48,47 +87,46 @@ export default function PostActions({ id, status }: { id: string; status: PostSt
 
   return (
     <>
-      {status === "published" && (
-        <button type="button" className="danger" disabled={working} onClick={() => act(unpublishPost)}>
+      {shown === "published" && (
+        <button type="button" className="danger" disabled={working} onClick={() => act(unpublishPost, "unpublish")}>
           Unpublish
         </button>
       )}
-      {status === "unpublished" && (
-        <button type="button" disabled={working} onClick={() => act(republishPost)}>
+      {shown === "unpublished" && (
+        <button type="button" disabled={working} onClick={() => act(republishPost, "republish")}>
           Republish
         </button>
       )}
-      {(status === "scheduled" || status === "draft") && (
-        <button type="button" disabled={working} onClick={() => act(publishNow)}>
+      {(shown === "scheduled" || shown === "draft") && (
+        <button type="button" disabled={working} onClick={() => act(publishNow, "publish")}>
           Publish now
         </button>
       )}
-      {status === "draft" && (
+      {shown === "draft" && (
         <button
           type="button"
           className="danger"
           disabled={working}
-          onClick={() => act(discardDraft, "Discard this draft? This can't be undone.")}
+          onClick={() => act(discardDraft, "discard", "Discard this draft? This can't be undone.")}
         >
           Discard
         </button>
       )}
-      {status !== "draft" && (
+      {shown !== null && shown !== "draft" && (
         <button
           type="button"
           className="destructive"
           disabled={working}
           title="Permanently delete this post"
-          onClick={() => act(deletePost, DELETE_CONFIRM)}
+          onClick={() => act(deletePost, "delete", DELETE_CONFIRM)}
         >
           Delete
         </button>
       )}
-      {error && (
-        <span className="row-err" role="alert">
-          {error}
-        </span>
-      )}
+      {/* Replaces the old 11px `.row-err` string in the actions cell: a failed
+          publish now announces itself assertively instead of hiding in the
+          corner of a table row (ENG-964). */}
+      <ToastRegion toasts={toasts} onDismiss={dismissToast} />
     </>
   );
 }

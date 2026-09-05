@@ -29,7 +29,14 @@ import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
-import { isLabelCheckViolation, isPostLabel, normalisePostLabel, POST_LABEL_PRESETS } from "./labels";
+import {
+  isBannedLabel,
+  isLabelCheckViolation,
+  isPostLabel,
+  MAX_LABEL_LENGTH,
+  normalisePostLabel,
+  POST_LABEL_PRESETS,
+} from "./labels";
 
 /**
  * Locate the sibling stablepass-be checkout.
@@ -272,8 +279,11 @@ describe("post label presets — drift guard against stablepass-be", () => {
   // any inserted `post_label` row. That makes this admin-side echo the only
   // automated check over the presets admin itself ships.
   it("contains no betting or bookmaker terminology", () => {
-    const banned = /\b(odds|bet|betting|bookmaker|wager|tip|tips|tipping|punt|market)\b/i;
-    for (const preset of POST_LABEL_PRESETS) expect(preset).not.toMatch(banned);
+    // ENG-979 promoted this pattern out of the test and into `labels.ts`, so
+    // the preset array, the request validator and the Add-new route are all
+    // screened by ONE copy. A local regex here could drift from the one that
+    // actually guards the authoring surface, which is the copy that matters.
+    for (const preset of POST_LABEL_PRESETS) expect(isBannedLabel(preset)).toBe(false);
   });
 });
 
@@ -287,12 +297,72 @@ describe("isPostLabel / normalisePostLabel", () => {
     expect(isPostLabel(null)).toBe(false);
   });
 
-  it("normalises an explicit clear to null and an off-list value to undefined", () => {
+  it("normalises an explicit clear to null and an unusable value to undefined", () => {
     expect(normalisePostLabel("Trackwork")).toBe("Trackwork");
     expect(normalisePostLabel(null)).toBeNull();
     expect(normalisePostLabel("")).toBeNull();
     expect(normalisePostLabel("Betting Tips")).toBeUndefined();
     expect(normalisePostLabel(42)).toBeUndefined();
+  });
+
+  // -------------------------------------------------------------------------
+  // ENG-979 — the validator stopped being the gate on WHICH labels exist.
+  //
+  // Since ENG-978 the live allowed set is the `post_label` TABLE, which an
+  // admin adds to at runtime. A validator pinned to this compile-time array
+  // would reject the very categories Add-new creates, so it now screens only
+  // for things that are wrong regardless of the table's contents, and lets
+  // `post_label_name_fk` decide the rest.
+  // -------------------------------------------------------------------------
+  describe("ENG-979 · runtime-added labels pass through to the FK", () => {
+    it("accepts a well-formed name that is in no preset array", () => {
+      expect(normalisePostLabel("Owner Update")).toBe("Owner Update");
+    });
+
+    it("accepts the hyphen near-miss — the DATABASE refuses it, not this", () => {
+      // It names no `post_label` row, so the foreign key rejects it with 23503
+      // and both post routes map that to a 400. The validator cannot tell a
+      // typo from a category created five minutes ago.
+      expect(normalisePostLabel("Race Day - Today")).toBe("Race Day - Today");
+    });
+
+    it("trims, because the column's own constraint requires a btrim'd name", () => {
+      // `post_label_name_not_blank` is `name = btrim(name)`, so an untrimmed
+      // value could never match a stored row.
+      expect(normalisePostLabel("  Owner Update  ")).toBe("Owner Update");
+      expect(normalisePostLabel("   ")).toBeNull();
+    });
+
+    it("still refuses a non-string — that is a type error, not a category", () => {
+      expect(normalisePostLabel(42)).toBeUndefined();
+      expect(normalisePostLabel({})).toBeUndefined();
+      expect(normalisePostLabel(true)).toBeUndefined();
+    });
+
+    it("still refuses an over-long name", () => {
+      expect(normalisePostLabel("x".repeat(MAX_LABEL_LENGTH))).toBe("x".repeat(MAX_LABEL_LENGTH));
+      expect(normalisePostLabel("x".repeat(MAX_LABEL_LENGTH + 1))).toBeUndefined();
+    });
+
+    // Guardrail 6 stays a HARD reject on the write path, independently of the
+    // Add-new route: a post write is a second way to put a name on a member's
+    // screen, and be's database no longer refuses one on its own.
+    it.each(["Betting Tips", "Best Odds", "Bookmaker Corner", "Tipping Update", "Punting Notes", "Market Movers"])(
+      "still refuses the gambling-flavoured name %s",
+      (name) => {
+        expect(normalisePostLabel(name)).toBeUndefined();
+        expect(isBannedLabel(name)).toBe(true);
+      },
+    );
+
+    it("does not refuse ordinary racing vocabulary", () => {
+      // Word-boundary anchored, so a banned token inside a longer legitimate
+      // word does not trip it.
+      for (const ok of ["Trackwork", "Barrier Trial Debrief", "Stable Update", "Marketing Notes"]) {
+        expect(isBannedLabel(ok)).toBe(false);
+        expect(normalisePostLabel(ok)).toBe(ok);
+      }
+    });
   });
 });
 

@@ -5,10 +5,16 @@ import ComposeScreen from "./ComposeScreen";
 import type { EditInitial, HorseOption, TrainerOption } from "./types";
 import { POST_LABEL_PRESETS } from "@/lib/posts/labels";
 
+// ENG-979 — the picker's "+ Add new…" sentinel. Duplicated here deliberately:
+// asserting the literal is what would catch ComposeScreen changing it to a
+// value a real category could collide with.
+const ADD_NEW = "__stablepass_add_new_label__";
+
 // Mock the whole network layer so the component test never touches fetch /
 // Supabase / Mux. Each fn is a spy we assert against.
 const api = vi.hoisted(() => ({
   createDraft: vi.fn(),
+  createPostLabel: vi.fn(),
   patchPost: vi.fn(),
   publishPost: vi.fn(),
   schedulePost: vi.fn(),
@@ -102,24 +108,28 @@ describe("ComposeScreen", () => {
     };
     render(<ComposeScreen horses={HORSES} trainers={TRAINERS} initial={initial} />);
 
-    // Title switches to edit; fields hydrate from the post.
+    // Heading switches to edit; fields hydrate from the post.
     expect(screen.getByRole("heading", { name: "Edit post" })).toBeTruthy();
-    expect((screen.getByTestId("title") as HTMLInputElement).value).toBe("Old title");
+    // ENG-979 — there is no free-text title input any more. The single field is
+    // the label picker, and a post with no label opens on "No label".
+    expect(screen.queryByTestId("title")).toBeNull();
+    expect((screen.getByTestId("label-select") as HTMLSelectElement).value).toBe("");
     expect((screen.getByTestId("caption") as HTMLTextAreaElement).value).toBe("Old caption");
     expect((screen.getByTestId("byline-select") as HTMLSelectElement).value).toBe("t1");
     // Media shown read-only; no horse search / create controls in edit mode.
     expect(screen.getByTestId("media-existing")).toBeTruthy();
     expect(screen.queryByTestId("horse-search")).toBeNull();
 
-    // Edit title + caption + byline, then save → PATCH the existing post.
-    fireEvent.change(screen.getByTestId("title"), { target: { value: "New title" } });
+    // Edit caption + byline, then save → PATCH the existing post.
     fireEvent.change(screen.getByTestId("caption"), { target: { value: "New caption" } });
     fireEvent.change(screen.getByTestId("byline-select"), { target: { value: "t2" } });
     fireEvent.click(screen.getByTestId("primary-action"));
 
     await waitFor(() =>
+      // ENG-979 — no `title` key at all. Absent means "leave the column
+      // alone", which is what preserves "Old title" on a post written before
+      // the field was removed.
       expect(api.patchPost).toHaveBeenCalledWith("post-9", {
-        title: "New title",
         body: "New caption",
         sourceTrainerId: "t2",
       }),
@@ -157,7 +167,6 @@ describe("ComposeScreen", () => {
     // Fields persisted first, then the existing publish endpoint flips it live.
     await waitFor(() => expect(api.publishPost).toHaveBeenCalledWith("post-7"));
     expect(api.patchPost).toHaveBeenCalledWith("post-7", {
-      title: null,
       body: "Almost ready",
       sourceTrainerId: "t1",
     });
@@ -214,11 +223,10 @@ describe("ComposeScreen", () => {
 
     fireEvent.click(screen.getByTestId("primary-action"));
 
-    // Title (empty → null) + caption + byline persisted, then the publish
+    // Caption + byline persisted (ENG-979: no `title` key), then the publish
     // endpoint called with the draft id.
     await waitFor(() => expect(api.publishPost).toHaveBeenCalledWith("p1"));
     expect(api.patchPost).toHaveBeenCalledWith("p1", {
-      title: null,
       body: "Spot-on before Saturday.",
       sourceTrainerId: "t1",
       // ENG-748 — a single-photo post now also persists its post_media row 0.
@@ -502,7 +510,6 @@ describe("ComposeScreen", () => {
     await waitFor(() => expect(api.schedulePost).toHaveBeenCalledWith("p1", expectedIso));
     // Fields PATCHed before the schedule action, same as the publish path.
     expect(api.patchPost).toHaveBeenCalledWith("p1", {
-      title: null,
       body: "",
       sourceTrainerId: "t1",
       // ENG-748 — the scheduled path persists the photo set too, for the same
@@ -578,7 +585,6 @@ describe("ComposeScreen", () => {
     const expectedIso = new Date("2099-07-01T18:45").toISOString();
     await waitFor(() => expect(api.schedulePost).toHaveBeenCalledWith("post-5", expectedIso));
     expect(api.patchPost).toHaveBeenCalledWith("post-5", {
-      title: "Race day",
       body: "Big race Saturday",
       sourceTrainerId: "t1",
     });
@@ -869,7 +875,7 @@ function editInitial(label: string | null): EditInitial {
 }
 
 describe("ENG-745 · label picker", () => {
-  it("offers No label plus all 13 presets, in the contract's order", () => {
+  it("offers No label plus all 14 presets, in the contract's order, then Add new", () => {
     renderScreen();
     const select = screen.getByTestId("label-select") as HTMLSelectElement;
     const options = [...select.options].map((o) => o.value);
@@ -877,7 +883,11 @@ describe("ENG-745 · label picker", () => {
     // "" is the No label option; the rest must be the presets, in order and
     // complete. Comparing the whole array (not `toContain` per preset) is what
     // catches an accidental reorder or a dropped entry.
-    expect(options).toEqual(["", ...POST_LABEL_PRESETS]);
+    //
+    // ENG-979 — with no `labels` prop the component falls back to the builtin
+    // floor, and the Add-new sentinel is appended LAST so it never sits
+    // between two real categories.
+    expect(options).toEqual(["", ...POST_LABEL_PRESETS, ADD_NEW]);
     expect(select.options[0].textContent).toBe("No label");
     // Not a disabled placeholder — clearing a category must be selectable.
     expect(select.options[0].disabled).toBe(false);
@@ -1092,11 +1102,189 @@ describe("ENG-745 · a label this build does not know", () => {
     );
   });
 
+});
+
+// ---------------------------------------------------------------------------
+// ENG-979 — ONE field, and Add-new.
+// ---------------------------------------------------------------------------
+describe("ENG-979 · one title field with Add-new", () => {
+  it("renders ONE field, not two — the free-text title input is gone", () => {
+    renderScreen();
+    // The control that remains is the picker...
+    expect(screen.getByTestId("label-select")).toBeTruthy();
+    // ...and the separate free-text title input no longer exists. This is the
+    // acceptance criterion "composing a post offers one field, not two".
+    expect(screen.queryByTestId("title")).toBeNull();
+  });
+
+  it("labels that one field 'Title' — Mel's word, not 'Label'", () => {
+    renderScreen();
+    // "I guess just call it title, because that's what the title is."
+    const field = screen.getByLabelText("Title");
+    expect(field).toBe(screen.getByTestId("label-select"));
+  });
+
+  it("renders the LIVE labels from the server, not the compile-time presets", () => {
+    render(
+      <ComposeScreen
+        horses={HORSES}
+        trainers={TRAINERS}
+        labels={["Stable Update", "Owner Update"]}
+      />,
+    );
+    const select = screen.getByTestId("label-select") as HTMLSelectElement;
+    expect([...select.options].map((o) => o.value)).toEqual([
+      "",
+      "Stable Update",
+      "Owner Update",
+      ADD_NEW,
+    ]);
+  });
+
+  it("Add-new posts to the route, then selects the created label and lists it", async () => {
+    api.createPostLabel.mockResolvedValue({ name: "Owner Update" });
+    render(<ComposeScreen horses={HORSES} trainers={TRAINERS} labels={["Stable Update"]} />);
+    const select = screen.getByTestId("label-select") as HTMLSelectElement;
+
+    // Choosing the sentinel opens the inline field rather than setting a value.
+    fireEvent.change(select, { target: { value: ADD_NEW } });
+    expect(screen.getByTestId("add-label-row")).toBeTruthy();
+    expect(select.value).toBe("");
+
+    fireEvent.change(screen.getByTestId("new-label-input"), {
+      target: { value: "Owner Update" },
+    });
+    fireEvent.click(screen.getByTestId("add-label-save"));
+
+    await waitFor(() => expect(api.createPostLabel).toHaveBeenCalledWith("Owner Update"));
+    // Created AND selected AND present in the options, in the one interaction.
+    await waitFor(() => expect(select.value).toBe("Owner Update"));
+    expect([...select.options].map((o) => o.value)).toEqual([
+      "",
+      "Stable Update",
+      "Owner Update",
+      ADD_NEW,
+    ]);
+    // The field closes on success.
+    expect(screen.queryByTestId("add-label-row")).toBeNull();
+  });
+
+  it("selects the route's CANONICAL spelling, not what was typed", async () => {
+    // The route is idempotent by folded name: typing "trackwork" when
+    // "Trackwork" exists returns the existing row. Selecting the typed string
+    // would put a value in state that the foreign key then refuses.
+    api.createPostLabel.mockResolvedValue({ name: "Trackwork" });
+    render(<ComposeScreen horses={HORSES} trainers={TRAINERS} labels={["Trackwork"]} />);
+    const select = screen.getByTestId("label-select") as HTMLSelectElement;
+
+    fireEvent.change(select, { target: { value: ADD_NEW } });
+    fireEvent.change(screen.getByTestId("new-label-input"), { target: { value: "  trackwork " } });
+    fireEvent.click(screen.getByTestId("add-label-save"));
+
+    await waitFor(() => expect(select.value).toBe("Trackwork"));
+    // And it is not listed twice.
+    expect([...select.options].map((o) => o.value).filter((v) => v === "Trackwork")).toHaveLength(1);
+  });
+
+  it("the created label is what a save then sends as `label`", async () => {
+    api.createPostLabel.mockResolvedValue({ name: "Owner Update" });
+    api.patchPost.mockResolvedValue(undefined);
+    render(
+      <ComposeScreen horses={HORSES} trainers={TRAINERS} initial={editInitial(null)} labels={[]} />,
+    );
+    fireEvent.change(screen.getByTestId("label-select"), { target: { value: ADD_NEW } });
+    fireEvent.change(screen.getByTestId("new-label-input"), { target: { value: "Owner Update" } });
+    fireEvent.click(screen.getByTestId("add-label-save"));
+    await waitFor(() =>
+      expect((screen.getByTestId("label-select") as HTMLSelectElement).value).toBe("Owner Update"),
+    );
+
+    fireEvent.click(screen.getByTestId("primary-action"));
+    await waitFor(() =>
+      expect(api.patchPost).toHaveBeenCalledWith(
+        "post-745",
+        expect.objectContaining({ label: "Owner Update" }),
+      ),
+    );
+  });
+
+  it("keeps the typed value and shows the reason when the route refuses it", async () => {
+    // A guardrail-6 rejection is fixable in place; closing the field and
+    // discarding what they wrote is not a recoverable state.
+    api.createPostLabel.mockRejectedValue(
+      new Error("That label can’t be used: StablePass carries no betting, odds or tipping content."),
+    );
+    render(<ComposeScreen horses={HORSES} trainers={TRAINERS} labels={[]} />);
+    fireEvent.change(screen.getByTestId("label-select"), { target: { value: ADD_NEW } });
+    fireEvent.change(screen.getByTestId("new-label-input"), { target: { value: "Betting Tips" } });
+    fireEvent.click(screen.getByTestId("add-label-save"));
+
+    await waitFor(() => expect(screen.getByTestId("add-label-error")).toBeTruthy());
+    expect(screen.getByTestId("add-label-error").textContent).toContain("no betting");
+    // Still open, still holding what they typed, and nothing was selected.
+    expect((screen.getByTestId("new-label-input") as HTMLInputElement).value).toBe("Betting Tips");
+    expect((screen.getByTestId("label-select") as HTMLSelectElement).value).toBe("");
+  });
+
+  it("never calls the route for a blank name", async () => {
+    render(<ComposeScreen horses={HORSES} trainers={TRAINERS} labels={[]} />);
+    fireEvent.change(screen.getByTestId("label-select"), { target: { value: ADD_NEW } });
+    fireEvent.change(screen.getByTestId("new-label-input"), { target: { value: "   " } });
+    fireEvent.click(screen.getByTestId("add-label-save"));
+    await waitFor(() => expect(screen.getByTestId("add-label-error")).toBeTruthy());
+    expect(api.createPostLabel).not.toHaveBeenCalled();
+  });
+
+  it("Cancel closes the field without selecting anything", () => {
+    render(<ComposeScreen horses={HORSES} trainers={TRAINERS} labels={["Stable Update"]} />);
+    const select = screen.getByTestId("label-select") as HTMLSelectElement;
+    fireEvent.change(select, { target: { value: ADD_NEW } });
+    fireEvent.click(screen.getByTestId("add-label-cancel"));
+    expect(screen.queryByTestId("add-label-row")).toBeNull();
+    expect(select.value).toBe("");
+    expect(api.createPostLabel).not.toHaveBeenCalled();
+  });
+
+  it("the Add-new sentinel can never be saved as a label", async () => {
+    // If the sentinel leaked into state a save would try to write it to
+    // post.label, where the foreign key would reject the whole post.
+    api.patchPost.mockResolvedValue(undefined);
+    render(<ComposeScreen horses={HORSES} trainers={TRAINERS} initial={editInitial("Trial")} />);
+    fireEvent.change(screen.getByTestId("label-select"), { target: { value: ADD_NEW } });
+    fireEvent.click(screen.getByTestId("add-label-cancel"));
+    fireEvent.click(screen.getByTestId("primary-action"));
+    await waitFor(() => expect(api.patchPost).toHaveBeenCalled());
+    const payload = api.patchPost.mock.calls[0][1] as Record<string, unknown>;
+    expect(payload.label).not.toBe(ADD_NEW);
+  });
+
+  it("still shows a stored label that is missing from the live list", () => {
+    // Otherwise the <select> falls back to index 0 and reads "No label" while
+    // state holds the real value — the control lying about the post.
+    render(
+      <ComposeScreen
+        horses={HORSES}
+        trainers={TRAINERS}
+        initial={editInitial("Retired Category")}
+        labels={["Stable Update"]}
+      />,
+    );
+    const select = screen.getByTestId("label-select") as HTMLSelectElement;
+    expect(select.value).toBe("Retired Category");
+  });
+
+  it("the Preview button is still there (guardrail)", () => {
+    renderScreen();
+    expect(screen.getAllByRole("button", { name: /Preview post/i }).length).toBeGreaterThan(0);
+  });
+
   it("offers no pass-through option when the stored label IS a preset", () => {
+
     render(<ComposeScreen horses={HORSES} trainers={TRAINERS} initial={editInitial("Trial")} />);
     const select = screen.getByTestId("label-select") as HTMLSelectElement;
-    // Exactly "No label" + the 13 presets; nothing extra bolted on.
-    expect([...select.options].map((o) => o.value)).toEqual(["", ...POST_LABEL_PRESETS]);
+    // Exactly "No label" + the presets + Add new; no duplicate pass-through
+    // option bolted on for a label that is already in the list.
+    expect([...select.options].map((o) => o.value)).toEqual(["", ...POST_LABEL_PRESETS, ADD_NEW]);
     expect(select.value).toBe("Trial");
   });
 });

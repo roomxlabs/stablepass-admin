@@ -16,7 +16,7 @@ import "./posts.css";
 
 const PAGE_SIZE = 20;
 const POST_FIELDS =
-  "id,horse_id,type,status,title,body,media_url,mux_playback_id,poster_url,poster_time_s,like_count,published_at,scheduled_for,created_at," +
+  "id,horse_id,type,status,title,label,body,media_url,mux_playback_id,poster_url,poster_time_s,like_count,published_at,scheduled_for,created_at," +
   "horse:horse_id(display_name,racing_name,photo_url),trainer:source_trainer_id(name)";
 
 // Resolve free-text `q` into a PostgREST OR clause across post title/body plus

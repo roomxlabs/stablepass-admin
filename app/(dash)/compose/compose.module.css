@@ -1158,3 +1158,36 @@
 .previewCompact .previewReelNote {
   font-size: 11.5px;
 }
+
+/* ENG-979 — the Add-new row under the title picker.
+
+   The text field takes the remaining width and the two buttons stay their
+   natural size, so the control lines up with the <select> above it at every
+   width the dash supports. `min-width: 0` on the input is load-bearing: a flex
+   item defaults to `min-width: auto`, which refuses to shrink below its
+   intrinsic width and pushed the buttons out of the column in the 720-899px
+   band. */
+.addLabelRow {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.addLabelRow .input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.addLabelRow button {
+  flex: 0 0 auto;
+  white-space: nowrap;
+  padding: 10px 16px;
+  font-size: 13.5px;
+}
+
+/* Inline, in place, next to the field that caused it — not a toast. A guardrail
+   rejection or an over-length name is fixable right here, and the operator must
+   still be able to see what they typed while they fix it. */
+.addLabelError {
+  margin-top: 6px;
+  font-size: 13px;
+  color: var(--danger, #B4433B);
+}

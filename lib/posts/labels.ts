@@ -16,11 +16,20 @@
  * adds a category by INSERTing a row — no migration. The live allowed set is
  * whatever `post_label` holds.
  *
- * KNOWN GAP (deliberate, out of scope for ENG-989): admin cannot yet POST with
- * a runtime-added label. `normalisePostLabel` rejects anything outside this
- * array and both routes turn that into a 400 before the database is reached, so
- * the `23503` backstop below is unreachable through admin's own surface. The
- * picker reading `post_label` live is a separate ticket (see ENG-979).
+ * GAP NOW CLOSED (ENG-979). This used to read: "admin cannot yet POST with a
+ * runtime-added label — `normalisePostLabel` rejects anything outside this
+ * array, so the `23503` backstop below is unreachable through admin's own
+ * surface." That is no longer true. `normalisePostLabel` now accepts any
+ * trimmed, non-blank, non-gambling string, and `post_label` — via
+ * `post_label_name_fk` — is what decides whether it exists. The `23503`
+ * backstop is now the LIVE enforcement path, not dead code: an operator who
+ * sends a label that is not in the table gets a 400 from it.
+ *
+ * That is the correct layering. This array cannot be the gate any more: the
+ * whole point of ENG-978 + ENG-979 is that an admin adds a category at runtime,
+ * so a validator pinned to a compile-time array would reject the very labels
+ * the feature exists to create — and would do it before the database, which is
+ * the only thing that actually knows the live set.
  *
  * So the 14 names below are be's **seeded builtins** — the floor every client
  * may assume, pinned permanently by be's `post_label_immutable_builtin` trigger
@@ -79,7 +88,50 @@ export const FK_VIOLATION = "23503";
  * an admin-inserted `post_label` row is valid too, so this array is the floor
  * admin's picker offers, not the closed set the database accepts.
  */
-export const LABEL_ERROR_MESSAGE = `label must be one of the ${POST_LABEL_PRESETS.length} presets, or null.`;
+export const LABEL_ERROR_MESSAGE = `label must be one of the ${POST_LABEL_PRESETS.length} presets, a label you have added, or null.`;
+
+/**
+ * Guardrail 6 (no betting / bookmaker anything) as a PREVENTIVE control on the
+ * one surface that can still author a category name.
+ *
+ * Why this lives here, and why it is admin's job now. be's ENG-978 migration
+ * dropped the closed `post_label_preset` CHECK, and its header states plainly
+ * that a DB-level denylist "was considered and rejected: it cannot be written
+ * in a migration without the tokens it bans appearing in this file's own text,
+ * which `scripts/lint-sql.mjs` greps for and fails the build on". What be kept
+ * is DETECTIVE — a CI test that greps live `post_label` rows after the fact.
+ * ENG-994 is the open ticket asking whether that is enough.
+ *
+ * Admin has no such constraint, and admin's Add-new (ENG-979) is now the ONLY
+ * way a `post_label` row gets authored. So the preventive control belongs
+ * exactly here: at the point of authoring, before the row exists. A detective
+ * grep that fires in CI tomorrow does not stop the label rendering on a
+ * member's feed tonight.
+ *
+ * Word-boundary anchored so ordinary racing vocabulary survives: "Trackwork"
+ * and "Trial" contain no banned token, and \b keeps "bet" from matching inside
+ * a legitimate word. This is the same pattern `labels.test.ts` already applied
+ * to the preset array — promoted to one exported copy so the array, the
+ * request validator and the Add-new route cannot drift apart.
+ */
+export const BANNED_LABEL_PATTERN =
+  /\b(odds|bet|bets|betting|bookmaker|bookie|wager|wagers|wagering|tip|tips|tipping|punt|punts|punting|market|markets)\b/i;
+
+/** True for a label name that trips guardrail 6. Input is trimmed by the caller. */
+export function isBannedLabel(value: string): boolean {
+  return BANNED_LABEL_PATTERN.test(value);
+}
+
+/**
+ * The 400 an operator sees when Add-new (or a post write) carries a name that
+ * trips guardrail 6. Deliberately names the rule rather than the matched token
+ * — echoing the word back is how a denylist teaches people to work around it.
+ */
+export const BANNED_LABEL_MESSAGE =
+  "That label can't be used: StablePass carries no betting, odds or tipping content.";
+
+/** Longest a label name may be. `post_label.name` is unbounded `text`; this is a UI-sanity cap. */
+export const MAX_LABEL_LENGTH = 40;
 
 /** The old CHECK constraint that enforced a closed preset list (dropped by ENG-978). */
 export const LABEL_CONSTRAINT = "post_label_preset";
@@ -134,12 +186,40 @@ export function isPostLabel(value: unknown): value is PostLabel {
 /**
  * Normalise a `label` off a request body to what the column takes.
  *
- * Returns the preset, or `null` for an explicit clear (`null` / `""`), or
- * `undefined` when the value is off-list — which the caller turns into a 400.
- * `undefined` is NOT "absent": callers must check `"label" in body` first,
- * because absent means "leave it alone" while `null` means "clear it".
+ * Returns the trimmed name, or `null` for an explicit clear (`null` / `""` /
+ * whitespace), or `undefined` when the value is unusable — which the caller
+ * turns into a 400. `undefined` is NOT "absent": callers must check
+ * `"label" in body` first, because absent means "leave it alone" while `null`
+ * means "clear it".
+ *
+ * ENG-979 changed WHICH values are unusable. It used to be "anything not in
+ * POST_LABEL_PRESETS". It is now only:
+ *
+ *   - a non-string (`42`, an object) — a type error, not a category;
+ *   - a name longer than MAX_LABEL_LENGTH;
+ *   - a name that trips guardrail 6 (see `isBannedLabel`).
+ *
+ * Everything else is passed through to Postgres, where `post_label_name_fk`
+ * decides whether the label actually exists. That is deliberate and is the
+ * whole point of the ticket: the live allowed set is whatever `post_label`
+ * holds, and this module — a compile-time copy of be's seeded builtins — cannot
+ * know it. A name that is well-formed but not in the table comes back as
+ * `23503`, which `isLabelCheckViolation` recognises and both post routes
+ * already map to a 400. So an unknown label is still rejected; it is just
+ * rejected by the thing that has the answer.
+ *
+ * The trim matters beyond tidiness: `post_label_name_not_blank` requires
+ * `name = btrim(name)`, so an untrimmed name could never match a stored row and
+ * would fail the FK for a reason no operator could see.
  */
-export function normalisePostLabel(value: unknown): PostLabel | null | undefined {
-  if (value === null || value === "") return null;
-  return isPostLabel(value) ? value : undefined;
+export function normalisePostLabel(value: unknown): string | null | undefined {
+  if (value === null) return null;
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  if (trimmed === "") return null;
+  if (trimmed.length > MAX_LABEL_LENGTH) return undefined;
+  // Guardrail 6 stays a hard reject here as well as on the Add-new route: a
+  // post write is a second, independent way to put a name on a member's screen.
+  if (isBannedLabel(trimmed)) return undefined;
+  return trimmed;
 }

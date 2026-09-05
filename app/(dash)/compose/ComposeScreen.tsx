@@ -11,6 +11,7 @@ import PreviewModal from "./PreviewModal";
 import PostPreview, { type PostPreviewData } from "./PostPreview";
 import {
   createDraft,
+  createPostLabel,
   discardDraft,
   patchPost,
   publishPost,
@@ -39,7 +40,19 @@ import type {
   TrainerOption,
 } from "./types";
 import styles from "./compose.module.css";
-import { isPostLabel, POST_LABEL_PRESETS } from "@/lib/posts/labels";
+import { MAX_LABEL_LENGTH, POST_LABEL_PRESETS } from "@/lib/posts/labels";
+
+/**
+ * The picker's "+ Add new…" sentinel.
+ *
+ * A value no real category can collide with: `post_label_name_not_blank`
+ * requires a btrim'd non-empty name, and the Add-new route rejects anything
+ * over MAX_LABEL_LENGTH, but neither stops an operator naming a label
+ * "__add_new__". The leading/trailing underscores plus the ZERO-WIDTH-free
+ * ASCII shape keep it typeable-but-implausible; the onChange handler returns
+ * early on it so it can never reach `label` state or a save payload.
+ */
+const ADD_NEW_VALUE = "__stablepass_add_new_label__";
 
 /**
  * ENG-745 removed the 240-character caption cap entirely — there is deliberately
@@ -132,33 +145,78 @@ export default function ComposeScreen({
   horses,
   trainers,
   initial,
+  labels = [...POST_LABEL_PRESETS],
 }: {
   horses: HorseOption[];
   trainers: TrainerOption[];
   initial?: EditInitial;
+  /**
+   * ENG-979 — the live category list, read server-side from `post_label` and
+   * handed down by page.tsx. The picker renders THIS, not the compile-time
+   * `POST_LABEL_PRESETS` copy, because since ENG-978 the allowed set is a table
+   * an admin can add to at runtime.
+   *
+   * Defaults to the 14 builtins rather than to `[]`. Those rows are pinned
+   * immutable in the database (`post_label_immutable_builtin`), so they are the
+   * one set guaranteed to exist — which makes them the right floor if the
+   * server read comes back empty. An empty picker would read to an operator as
+   * "the feature is broken", and the likeliest response is to publish with no
+   * category at all, which is the exact state this epic exists to remove.
+   */
+  labels?: string[];
 }) {
   const isEdit = !!initial;
   const [search, setSearch] = useState(initial?.horse.name ?? "");
   const [showResults, setShowResults] = useState(false);
   const [horse, setHorse] = useState<HorseOption | null>(initial?.horse ?? null);
   const [bylineId, setBylineId] = useState<string>(initial?.bylineId ?? "");
-  const [title, setTitle] = useState(initial?.title ?? "");
   const [caption, setCaption] = useState(initial?.caption ?? "");
   // "" is the "No label" option; it is sent to the BFF as an explicit null.
   // Seeded from the post being edited, so an old unlabelled post opens on
   // "No label" and stays unlabelled unless the operator picks one.
   const [label, setLabel] = useState<string>(initial?.label ?? "");
   const initialLabel = initial?.label ?? "";
+
   /**
-   * A stored label this build has no preset for still gets an <option>, so the
-   * control can actually display it.
+   * ENG-979 — categories added through Add-new during THIS compose session.
    *
-   * Without one the <select> silently falls back to index 0 and reads "No
-   * label" while state holds the real value — the control lying about the post
-   * in front of you, and unfixable by choosing "No label" because that is
-   * already what it shows, so re-picking it fires no change event.
+   * Held separately from the `labels` prop because that prop is a server render
+   * of `post_label` and does not change until the route re-renders. Merging
+   * here is what makes the created category appear in the picker and be
+   * selectable in the same interaction, which is the whole point of Add-new.
    */
-  const unknownLabel = initialLabel !== "" && !isPostLabel(initialLabel) ? initialLabel : null;
+  const [addedLabels, setAddedLabels] = useState<string[]>([]);
+
+  /**
+   * The option list: the server's live rows, plus anything added this session,
+   * plus the post's own stored label if it is in neither.
+   *
+   * That last case is not hypothetical. A post can carry a label that was
+   * removed from `post_label`, or that this render simply did not read; without
+   * an <option> for it the <select> silently falls back to index 0 and reads
+   * "No label" while state holds the real value — the control lying about the
+   * post in front of you, and unfixable by choosing "No label", because that is
+   * already what it displays, so re-picking it fires no change event.
+   */
+  const options = useMemo(() => {
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const name of [...labels, ...addedLabels, ...(initialLabel ? [initialLabel] : [])]) {
+      if (name && !seen.has(name)) {
+        seen.add(name);
+        out.push(name);
+      }
+    }
+    return out;
+  }, [labels, addedLabels, initialLabel]);
+
+  // Add-new form state. `adding` opens the inline field; it is an inline
+  // control rather than a `window.prompt` so it can be styled, validated in
+  // place, and driven by a test.
+  const [adding, setAdding] = useState(false);
+  const [newLabel, setNewLabel] = useState("");
+  const [addBusy, setAddBusy] = useState(false);
+  const [addError, setAddError] = useState<string | null>(null);
   /**
    * The category fragment every save spreads in — and it is ABSENT unless the
    * operator actually moved the picker.
@@ -789,7 +847,6 @@ export default function ComposeScreen({
           horseId: horse!.id,
           type: postType,
           sourceTrainerId: bylineId,
-          title: title.trim() || undefined,
           body: caption,
           ...labelPatch,
           ...posterTimePatch,
@@ -797,9 +854,11 @@ export default function ComposeScreen({
         setDraft(current);
       }
 
-      // Persist the editable title + byline + caption before the lifecycle action.
+      // Persist the editable byline + caption before the lifecycle action.
+      // ENG-979: `title` is NOT sent. It has no input any more, and an absent
+      // key leaves the column alone — which is what preserves the titles on
+      // posts written before this ticket.
       await patchPost(current.id, {
-        title: title.trim() || null,
         body: caption,
         sourceTrainerId: bylineId,
         ...labelPatch,
@@ -844,11 +903,50 @@ export default function ComposeScreen({
     try {
       await discardDraft(draft.id);
       resetMedia();
-      setTitle("");
       setCaption("");
       setAction({ kind: "ok", message: "Draft discarded." });
     } catch (e) {
       setAction({ kind: "error", message: (e as Error).message });
+    }
+  }
+
+  /**
+   * ENG-979 — Add-new: create the category and select it, in one interaction.
+   *
+   * The route is idempotent by folded name, so retyping an existing category
+   * (differing only in case or spacing) selects the row that already exists
+   * instead of erroring or creating a second one. We therefore select
+   * `created.name` — the row's CANONICAL spelling — rather than what was typed:
+   * an operator who types "trackwork" ends up on "Trackwork", which is the
+   * value `post.label`'s foreign key will accept.
+   */
+  async function submitNewLabel() {
+    const name = newLabel.trim().replace(/\s+/g, " ");
+    if (name === "") {
+      setAddError("Give the label a name.");
+      return;
+    }
+    if (name.length > MAX_LABEL_LENGTH) {
+      setAddError(`Keep it to ${MAX_LABEL_LENGTH} characters or fewer.`);
+      return;
+    }
+    setAddBusy(true);
+    setAddError(null);
+    try {
+      const createdLabel = await createPostLabel(name);
+      setAddedLabels((prev) =>
+        prev.includes(createdLabel.name) ? prev : [...prev, createdLabel.name],
+      );
+      setLabel(createdLabel.name);
+      setNewLabel("");
+      setAdding(false);
+    } catch (e) {
+      // Stay open with the typed value intact — guardrail 6 rejections and
+      // over-length names are both fixable in place, and closing the field
+      // would throw away what they wrote.
+      setAddError((e as Error).message || "Couldn’t add that label.");
+    } finally {
+      setAddBusy(false);
     }
   }
 
@@ -859,7 +957,6 @@ export default function ComposeScreen({
     setAction({ kind: "working" });
     try {
       await patchPost(initial.id, {
-        title: title.trim() || null,
         body: caption,
         sourceTrainerId: bylineId,
         ...labelPatch,
@@ -879,7 +976,6 @@ export default function ComposeScreen({
     setAction({ kind: "working" });
     try {
       await patchPost(initial.id, {
-        title: title.trim() || null,
         body: caption,
         sourceTrainerId: bylineId,
         ...labelPatch,
@@ -912,7 +1008,6 @@ export default function ComposeScreen({
     setAction({ kind: "working" });
     try {
       await patchPost(initial.id, {
-        title: title.trim() || null,
         body: caption,
         sourceTrainerId: bylineId,
         ...labelPatch,
@@ -1548,57 +1643,123 @@ export default function ComposeScreen({
                 ))}
               </select>
 
-              <label className={styles.label} htmlFor="post-title">
-                Title
-              </label>
-              <input
-                id="post-title"
-                className={styles.input}
-                type="text"
-                value={title}
-                data-testid="title"
-                placeholder="Last fast gallop before Saturday"
-                onChange={(e) => setTitle(e.target.value)}
-                style={{ marginBottom: 14 }}
-              />
-
               {/*
-                ENG-745 — the editorial category behind the green pill on the
-                member card. A <select> rather than a row of 13 pills: at 13
-                presets a pill row wraps to three lines and swamps the two
-                fields it sits between, and this matches the Trainer byline
-                control directly above it, which is the metadata section's
-                established language in the mockup.
+                ENG-979 — ONE field where there were two.
 
-                "No label" is a real, selectable option, not a disabled
-                placeholder — clearing a category is something an operator must
+                It used to be a free-text "Title" input AND a "Label" <select>,
+                and that pairing is what sent Mel to this ticket: she typed her
+                own title, the Posts library still said "Untitled post" (it read
+                the label), and she could not tell her posts apart without
+                opening each one. Justin: "You only need one. You need a label
+                or a title, whatever you want to call it. And the ability to
+                make your own." Mel chose the name: "I guess just call it title,
+                because that's what the title is."
+
+                So the CONTROL is the label picker (the value goes to
+                `post.label`, which is what the library and the member pill
+                render) and the WORD is "Title", which is what an operator
+                thinks they are setting. The free-text input is gone; the post
+                title column stays in the schema but has no input behind it any
+                more.
+
+                Still a <select> rather than a pill row: at 14+ categories a
+                pill row wraps to three lines and swamps the section, and this
+                matches the Trainer byline control directly above it — the
+                metadata section's established language.
+
+                "No label" stays a real, selectable option, not a disabled
+                placeholder: clearing a category is something an operator must
                 be able to do, and it is the state every pre-2026-08-19 post is
                 already in.
               */}
               <label className={styles.label} htmlFor="post-label">
-                Label
+                Title
               </label>
               <select
                 id="post-label"
                 className={styles.select}
                 value={label}
                 data-testid="label-select"
-                onChange={(e) => setLabel(e.target.value)}
-                style={{ marginBottom: 14 }}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  // The sentinel is an ACTION, not a value: it opens the
+                  // inline field and must never reach `label` state, or a save
+                  // would try to write "__add__" to post.label.
+                  if (v === ADD_NEW_VALUE) {
+                    setAdding(true);
+                    setAddError(null);
+                    return;
+                  }
+                  setLabel(v);
+                }}
+                style={{ marginBottom: adding ? 8 : 14 }}
               >
                 <option value="">No label</option>
-                {unknownLabel ? (
-                  // Not one of this build's presets — shown so the operator can
-                  // see what the post actually carries and decide, instead of
-                  // the control quietly claiming it has none.
-                  <option value={unknownLabel}>{unknownLabel} (not in this version)</option>
-                ) : null}
-                {POST_LABEL_PRESETS.map((preset) => (
-                  <option key={preset} value={preset}>
-                    {preset}
+                {options.map((name) => (
+                  <option key={name} value={name}>
+                    {name}
                   </option>
                 ))}
+                {/* Mel: "there'll be like one button here, Add New… it'll just
+                    grow as you post more." Last, so it never sits between two
+                    real categories. */}
+                <option value={ADD_NEW_VALUE}>+ Add new…</option>
               </select>
+
+              {adding ? (
+                <div className={styles.addLabelRow} data-testid="add-label-row">
+                  <input
+                    className={styles.input}
+                    type="text"
+                    value={newLabel}
+                    autoFocus
+                    maxLength={MAX_LABEL_LENGTH}
+                    data-testid="new-label-input"
+                    aria-label="New title"
+                    placeholder="Name your new title…"
+                    onChange={(e) => setNewLabel(e.target.value)}
+                    onKeyDown={(e) => {
+                      // Enter submits. Without this the field sits inside the
+                      // compose form and Enter would trigger the primary
+                      // action, publishing a post the operator was still naming.
+                      if (e.key === "Enter") {
+                        e.preventDefault();
+                        void submitNewLabel();
+                      }
+                      if (e.key === "Escape") {
+                        setAdding(false);
+                        setAddError(null);
+                      }
+                    }}
+                  />
+                  <button
+                    type="button"
+                    className="btn btn-primary"
+                    disabled={addBusy}
+                    data-testid="add-label-save"
+                    onClick={() => void submitNewLabel()}
+                  >
+                    {addBusy ? "Adding…" : "Add"}
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-light"
+                    data-testid="add-label-cancel"
+                    onClick={() => {
+                      setAdding(false);
+                      setAddError(null);
+                    }}
+                  >
+                    Cancel
+                  </button>
+                </div>
+              ) : null}
+              {addError ? (
+                <div className={styles.addLabelError} role="alert" data-testid="add-label-error">
+                  {addError}
+                </div>
+              ) : null}
+              {adding || addError ? <div style={{ marginBottom: 14 }} /> : null}
 
               <div className={styles.captionRow}>
                 <label className={styles.label} htmlFor="caption">

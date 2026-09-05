@@ -345,15 +345,51 @@ describe("POST /api/admin/posts — create draft", () => {
     expect(state.calls.mutations).toHaveLength(0);
   });
 
-  it("a hyphen near-miss ('Race Day - Today') → 400 validation_failed", async () => {
+  // ENG-979 — the hyphen near-miss is STILL rejected, but by the database
+  // rather than by the validator, and that relocation is the point.
+  //
+  // "Race Day - Today" (hyphen) is not "Race Day \u00b7 Today" (U+00B7 middle
+  // dot), so it names no row in `post_label` and the foreign key refuses it.
+  // The validator can no longer make that call: since ENG-978 the allowed set
+  // is a table an admin adds to at runtime, so a well-formed name it does not
+  // recognise might be a category created five minutes ago. Postgres is the
+  // only thing that knows, and `isLabelCheckViolation` turns its 23503 into the
+  // same 400 the operator used to get.
+  it("a hyphen near-miss ('Race Day - Today') → 400 from the FK, not the validator", async () => {
     asAdmin();
+    state.tables.horse = { select: { single: { id: "h1" } } };
+    state.tables.post = {
+      mutate: {
+        error: {
+          code: "23503",
+          message:
+            'insert or update on table "post" violates foreign key constraint "post_label_name_fk"',
+        },
+      },
+    };
     const r = await POST(
       postReq({ horseId: "h1", type: "photo", sourceTrainerId: "t1", label: "Race Day - Today" }),
     );
     expect(r.status).toBe(400);
     const j = await r.json();
     expect(j.error.code).toBe("validation_failed");
-    expect(state.calls.mutations).toHaveLength(0);
+  });
+
+  it("ENG-979: a runtime-added label is accepted and written through", async () => {
+    // The feature in one test. "Owner Update" is in no preset array anywhere in
+    // this repo; it is the kind of category Mel adds through Add-new. Before
+    // ENG-979 this 400'd before the database was reached.
+    asAdmin();
+    state.tables.horse = { select: { single: { id: "h1" } } };
+    state.tables.post = {
+      mutate: { single: { id: "p1", status: "draft", type: "photo", horse_id: "h1" } },
+    };
+    const r = await POST(
+      postReq({ horseId: "h1", type: "photo", sourceTrainerId: "t1", label: "Owner Update" }),
+    );
+    expect(r.status).toBe(202);
+    const insertCall = state.calls.mutations.find((m) => m.table === "post" && m.op === "insert");
+    expect(insertCall?.payload).toMatchObject({ label: "Owner Update" });
   });
 
   it("the middle-dot preset ('Race Day · Today') is accepted", async () => {

@@ -254,3 +254,30 @@ describe("PostsLibrary — Published column renders in the browser TZ (via Local
     expect(container.querySelector("time")!.getAttribute("datetime")).toBe(publishedAt);
   });
 });
+
+// ---------------------------------------------------------------------------
+// ENG-979 — the row's name, rendered.
+//
+// `format.test.ts` pins the mapping decision; these pin that the decision
+// actually reaches the screen. Both matter: the row name is also the row's
+// accessible name ("Open <title>"), so a regression here is a screen-reader
+// regression as well as a visual one.
+// ---------------------------------------------------------------------------
+describe("ENG-979 · the post list shows the label", () => {
+  it("renders the label as the row name", () => {
+    const { container } = renderOne({ id: "lab", title: "Trackwork" });
+    expect(container.textContent).toContain("Trackwork");
+    expect(container.textContent).not.toContain("Untitled post");
+  });
+
+  it("a genuinely unnamed post still renders the empty state", () => {
+    // "Untitled post" survives — for a post with no label AND no title.
+    const { container } = renderOne({ id: "none", title: "Untitled post" });
+    expect(container.textContent).toContain("Untitled post");
+  });
+
+  it("the row name is also the row's accessible name", () => {
+    renderOne({ id: "lab", title: "Trackwork" });
+    expect(screen.getByLabelText("Open Trackwork")).toBeTruthy();
+  });
+});

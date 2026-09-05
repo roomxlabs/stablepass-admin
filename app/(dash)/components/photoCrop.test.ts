@@ -3,16 +3,20 @@ import {
   MAX_OUTPUT_EDGE,
   MIN_CROP_SIDE,
   ZOOM_CEILING,
-  ZOOM_MIN,
+  ZOOM_FILL,
   centredPan,
   clampZoom,
   cropRect,
   cropSideFor,
+  drawPlacement,
+  fitCropSide,
   maxCropSide,
   maxZoom,
+  minZoom,
   outputEdge,
   outputFormat,
   panAfterDrag,
+  panBounds,
   panForZoom,
 } from "./photoCrop";
 
@@ -47,14 +51,18 @@ describe("zoom bounds", () => {
     expect(cropSideFor(TINY, maxZoom(TINY))).toBe(MIN_CROP_SIDE);
   });
 
-  it("never allows zooming out past 1: the crop cannot exceed the source", () => {
-    expect(clampZoom(WIDE, 0.2)).toBe(ZOOM_MIN);
-    expect(clampZoom(WIDE, -5)).toBe(ZOOM_MIN);
+  it("ENG-980: zooming out reaches minZoom, where the whole source is in frame", () => {
+    // The old floor pinned every source to ZOOM_FILL (its shorter edge); the
+    // fix lets a landscape or portrait photo zoom out further, to its longer
+    // edge, so the whole thing — not just a full-height slice — is reachable.
+    expect(clampZoom(WIDE, 0.2)).toBe(minZoom(WIDE));
+    expect(minZoom(WIDE)).toBeLessThan(ZOOM_FILL);
+    expect(clampZoom(WIDE, -5)).toBe(minZoom(WIDE));
     expect(clampZoom(WIDE, 99)).toBe(ZOOM_CEILING);
   });
 
   it("falls back to the minimum for a non-finite zoom", () => {
-    expect(clampZoom(WIDE, Number.NaN)).toBe(ZOOM_MIN);
+    expect(clampZoom(WIDE, Number.NaN)).toBe(minZoom(WIDE));
   });
 });
 
@@ -103,8 +111,128 @@ describe("cropRect", () => {
     }
   });
 
-  it("gives a square source no slack to pan at zoom 1", () => {
+  it("a square source has no slack to pan at zoom 1 (already fully visible)...", () => {
     expect(cropRect(SQUARE, 1, { x: 500, y: 500 })).toEqual({ x: 0, y: 0, size: 800 });
+  });
+
+  it("...but DOES have slack once zoomed in, same as any other source", () => {
+    // minZoom(SQUARE) === 1 only means "nothing more to reveal by zooming
+    // OUT" — it must not also mean "cannot pan", which was the old bug's
+    // sibling: a square source zoomed in still crops less than the whole
+    // photo, so there is somewhere to drag.
+    const rect = cropRect(SQUARE, 2, { x: 500, y: 500 });
+    expect(rect.size).toBe(400);
+    expect(rect.x).toBeGreaterThan(0);
+    expect(rect.y).toBeGreaterThan(0);
+  });
+});
+
+describe("fitCropSide / minZoom (ENG-980)", () => {
+  it("minZoom is fit-to-frame for a source larger than the frame in either dimension", () => {
+    for (const source of [WIDE, TALL]) {
+      expect(cropSideFor(source, minZoom(source))).toBe(fitCropSide(source));
+      expect(fitCropSide(source)).toBe(Math.max(source.width, source.height));
+    }
+  });
+
+  it("at minZoom the whole source is inside the crop rect — nothing left off-frame", () => {
+    for (const source of [WIDE, TALL, SQUARE, TINY]) {
+      const z = minZoom(source);
+      const rect = cropRect(source, z, centredPan(source, z));
+      expect(rect.x).toBeLessThanOrEqual(0);
+      expect(rect.y).toBeLessThanOrEqual(0);
+      expect(rect.x + rect.size).toBeGreaterThanOrEqual(source.width);
+      expect(rect.y + rect.size).toBeGreaterThanOrEqual(source.height);
+    }
+  });
+
+  it("a square's minZoom is 1 — it is already entirely visible at ZOOM_FILL", () => {
+    expect(minZoom(SQUARE)).toBe(ZOOM_FILL);
+  });
+});
+
+describe("panBounds", () => {
+  it("runs 0 -> dim-size when the square is smaller than the source (the window moves)", () => {
+    expect(panBounds(2000, 800)).toEqual({ lo: 0, hi: 1200 });
+  });
+
+  it("runs dim-size -> 0 when the square is larger than the source (the photo moves)", () => {
+    expect(panBounds(2000, 4000)).toEqual({ lo: -2000, hi: 0 });
+  });
+
+  it("collapses to a single point when the square exactly fills the source", () => {
+    expect(panBounds(800, 800)).toEqual({ lo: 0, hi: 0 });
+  });
+});
+
+describe("panning past the edge snaps back (ENG-980 call item 4)", () => {
+  it("a wildly out-of-range pan lands exactly on a bound, on every axis and every source", () => {
+    for (const source of [WIDE, TALL, SQUARE, TINY]) {
+      for (const zoom of [minZoom(source), ZOOM_FILL, 2, maxZoom(source)]) {
+        const size = cropSideFor(source, zoom);
+        const xBounds = panBounds(source.width, size);
+        const yBounds = panBounds(source.height, size);
+
+        const farNeg = cropRect(source, zoom, { x: -999999, y: -999999 });
+        expect(farNeg.x).toBe(xBounds.lo);
+        expect(farNeg.y).toBe(yBounds.lo);
+
+        const farPos = cropRect(source, zoom, { x: 999999, y: 999999 });
+        expect(farPos.x).toBe(xBounds.hi);
+        expect(farPos.y).toBe(yBounds.hi);
+      }
+    }
+  });
+
+  it("at minZoom the source can never be dragged to leave a gap on the flush axis", () => {
+    // WIDE's crop size at minZoom is its WIDTH (4000), so x is flush — the
+    // source's left/right edges always exactly meet the frame, whatever the
+    // pan, and only y (the padded axis) ever moves.
+    for (const pan of [
+      { x: -9999, y: -9999 },
+      { x: 9999, y: 9999 },
+      { x: 500, y: 0 },
+    ]) {
+      const rect = cropRect(WIDE, minZoom(WIDE), pan);
+      expect(rect.x).toBe(0);
+      expect(rect.x + rect.size).toBeGreaterThanOrEqual(WIDE.width);
+    }
+  });
+});
+
+describe("drawPlacement (ENG-980)", () => {
+  it("maps a fully-inside crop 1:1, with no offset and no letterboxing", () => {
+    const rect = { x: 1000, y: 0, size: 2000 };
+    const placement = drawPlacement(WIDE, rect, 1200);
+    expect(placement).toEqual({
+      sx: 1000,
+      sy: 0,
+      sw: 2000,
+      sh: 2000,
+      dx: 0,
+      dy: 0,
+      dw: 1200,
+      dh: 1200,
+    });
+  });
+
+  it("letterboxes a zoomed-out crop: the whole source draws inset on the padded axis", () => {
+    const z = minZoom(WIDE); // fitCropSide(WIDE) = 4000, so the crop is {x:0,y:-1000,size:4000}
+    const rect = cropRect(WIDE, z, centredPan(WIDE, z));
+    const placement = drawPlacement(WIDE, rect, 1200);
+    expect(placement).not.toBeNull();
+    expect(placement!.sx).toBe(0);
+    expect(placement!.sy).toBe(0);
+    expect(placement!.sw).toBe(4000);
+    expect(placement!.sh).toBe(2000);
+    expect(placement!.dx).toBe(0);
+    expect(placement!.dy).toBeGreaterThan(0);
+    expect(placement!.dh).toBeLessThan(1200);
+  });
+
+  it("returns null when the rect does not intersect the source at all", () => {
+    const rect = { x: 5000, y: 5000, size: 200 };
+    expect(drawPlacement(WIDE, rect, 1200)).toBeNull();
   });
 });
 
@@ -190,10 +318,14 @@ describe("outputEdge", () => {
     expect(outputEdge(0)).toBe(1);
   });
 
-  it("holds the no-upscale invariant across every source and zoom", () => {
+  it("holds the no-upscale invariant across every source and zoom, including the new sub-1 zooms", () => {
+    // ENG-980: minZoom(WIDE)/minZoom(TALL) are below 1, so this sweep now
+    // covers the padded, zoomed-out crops too — the case outputEdge had never
+    // been exercised against before.
     for (const source of [WIDE, TALL, SQUARE, TINY]) {
-      for (const zoom of [1, 2, maxZoom(source)]) {
+      for (const zoom of [minZoom(source), ZOOM_FILL, 2, maxZoom(source)]) {
         const rect = cropRect(source, zoom, centredPan(source, zoom));
+        expect(outputEdge(cropSideFor(source, zoom))).toBeLessThanOrEqual(cropSideFor(source, zoom));
         expect(outputEdge(rect.size)).toBeLessThanOrEqual(rect.size);
       }
     }

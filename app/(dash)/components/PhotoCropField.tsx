@@ -3,12 +3,13 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import styles from "./PhotoCropField.module.css";
 import {
-  ZOOM_MIN,
+  ZOOM_FILL,
   centredPan,
   clampZoom,
   cropRect,
   extForMime,
   maxZoom,
+  minZoom,
   outputEdge,
   outputFormat,
   panAfterDrag,
@@ -34,18 +35,33 @@ import { canvasSupported, cropToBlob, loadImage, type LoadedImage } from "./phot
 // pan/zoom crop is a `drawImage` call plus the arithmetic in photoCrop.ts. The
 // nearest off-the-shelf option (react-easy-crop) is ~40 kB for the same result.
 
+/**
+ * ENG-980 — the framing the admin chose, handed back to the form so it can
+ * re-open this dialog on the ORIGINAL file with the crop exactly where they
+ * left it. Apply stopped being a one-way door for the rest of the session.
+ */
+export type CropState = { zoom: number; pan: Point };
+
 export type PickedPhoto = {
   /** The bytes to upload: the cropped output, or the original File as-is. */
   blob: Blob;
   /** Extension the upload path must use — it describes the BYTES, not the pick. */
   ext: string;
   cropped: boolean;
+  /** Undefined when the photo was taken as-is: there is no framing to restore. */
+  crop?: CropState;
 };
 
 type Props = {
   file: File;
   /** Names the subject in the dialog copy, e.g. "trainer" or "horse". */
   subject: string;
+  /**
+   * Framing to resume from, when re-opening a photo already positioned in this
+   * session. Clamped against the real source once it decodes, so a stale state
+   * from a different file degrades to "centred" rather than to a broken view.
+   */
+  initialCrop?: CropState | null;
   onCancel: () => void;
   onApply: (picked: PickedPhoto) => void;
 };
@@ -59,10 +75,16 @@ function originalExt(file: File): string {
   return file.name.split(".").pop() || "jpg";
 }
 
-export default function PhotoCropField({ file, subject, onCancel, onApply }: Props) {
+export default function PhotoCropField({
+  file,
+  subject,
+  initialCrop,
+  onCancel,
+  onApply,
+}: Props) {
   const imageRef = useRef<LoadedImage | null>(null);
   const [image, setImage] = useState<LoadedImage | null>(null);
-  const [zoom, setZoom] = useState(ZOOM_MIN);
+  const [zoom, setZoom] = useState(ZOOM_FILL);
   const [pan, setPan] = useState<Point>({ x: 0, y: 0 });
   const [busy, setBusy] = useState(false);
 
@@ -80,6 +102,13 @@ export default function PhotoCropField({ file, subject, onCancel, onApply }: Pro
   const onApplyRef = useRef(onApply);
   useEffect(() => {
     onApplyRef.current = onApply;
+  });
+
+  // Same reasoning as onApply: both parents build this inline, so depending on
+  // it would re-decode the file (and throw the framing away) on every render.
+  const initialCropRef = useRef(initialCrop);
+  useEffect(() => {
+    initialCropRef.current = initialCrop;
   });
 
   const applyAsIs = useCallback(() => {
@@ -111,8 +140,14 @@ export default function PhotoCropField({ file, subject, onCancel, onApply }: Pro
       }
       imageRef.current = loaded;
       setImage(loaded);
-      setZoom(ZOOM_MIN);
-      setPan(centredPan({ width: loaded.width, height: loaded.height }, ZOOM_MIN));
+
+      const decoded: Size = { width: loaded.width, height: loaded.height };
+      // Resume the session's framing if the form kept one, otherwise start
+      // full-bleed and centred, which is the right default for an avatar.
+      const resume = initialCropRef.current;
+      const startZoom = clampZoom(decoded, resume ? resume.zoom : ZOOM_FILL);
+      setZoom(startZoom);
+      setPan(resume ? resume.pan : centredPan(decoded, startZoom));
     });
 
     return () => {
@@ -160,6 +195,12 @@ export default function PhotoCropField({ file, subject, onCancel, onApply }: Pro
     : { width: 1, height: 1 };
   const rect = cropRect(source, zoom, pan);
   const displayScale = viewportPx / rect.size;
+  const format = outputFormat(file.type);
+  const lowestZoom = minZoom(source);
+  // Below full-bleed the square is bigger than the photo, so the saved image
+  // gains padding. The viewport paints that same padding, so the frame is a
+  // true preview of the bytes rather than a crop of them.
+  const padded = image != null && zoom < ZOOM_FILL - 0.0001;
 
   function onPointerDown(e: React.PointerEvent<HTMLDivElement>) {
     if (!image) return;
@@ -185,6 +226,15 @@ export default function PhotoCropField({ file, subject, onCancel, onApply }: Pro
     setZoom(clamped);
   }
 
+  // Mel's actual ask on the call, as one button: "It needs to be able to zoom
+  // out" until the whole horse is in. Dragging a slider to its exact end to
+  // find the fit is a worse version of the same thing.
+  function fitWholePhoto() {
+    const fitted = clampZoom(source, minZoom(source));
+    setZoom(fitted);
+    setPan(centredPan(source, fitted));
+  }
+
   async function apply() {
     const loaded = imageRef.current;
     if (!loaded) {
@@ -192,9 +242,11 @@ export default function PhotoCropField({ file, subject, onCancel, onApply }: Pro
       return;
     }
     setBusy(true);
-    const format = outputFormat(file.type);
     const blob = await cropToBlob(loaded.el, cropRect(source, zoom, pan), format);
     if (!blob) {
+      // Re-enable the dialog: applyAsIs may be a no-op if the parent keeps it
+      // mounted, and a permanently "Applying…" panel is a dead end.
+      setBusy(false);
       // Encoding failed at the last step. Losing the admin's framing is far
       // better than losing the photo, so fall back rather than dead-end.
       applyAsIs();
@@ -204,7 +256,7 @@ export default function PhotoCropField({ file, subject, onCancel, onApply }: Pro
     // for: toBlob is allowed to fall back to PNG when it cannot honour the
     // request, and a .jpg key over PNG bytes is the divergence photoCrop.ts
     // exists to prevent.
-    onApply({ blob, ext: extForMime(blob.type), cropped: true });
+    onApply({ blob, ext: extForMime(blob.type), cropped: true, crop: { zoom, pan } });
   }
 
   return (
@@ -213,8 +265,9 @@ export default function PhotoCropField({ file, subject, onCancel, onApply }: Pro
       <div className={styles.panel}>
         <h2 className={styles.title}>Position the photo</h2>
         <div className={styles.sub}>
-          Drag the photo to move it and use the slider to zoom. The whole square is saved and is
-          what shows on lists and the {subject}&apos;s profile
+          Drag the photo to move it and use the slider to zoom — zoom out past the edges to fit the
+          whole photo in. The whole square is saved and is what shows on lists and the{" "}
+          {subject}&apos;s profile
           {subject === "horse" ? " — the profile banner shows the middle strip of it" : ""}.
         </div>
 
@@ -222,7 +275,9 @@ export default function PhotoCropField({ file, subject, onCancel, onApply }: Pro
           <>
             <div
               ref={viewportRef}
-              className={styles.viewport}
+              className={`${styles.viewport} ${padded ? styles.padded : ""}`}
+              style={padded && format.mime === "image/jpeg" ? { background: "#FFFFFF" } : undefined}
+              data-padded={padded ? "true" : "false"}
               onPointerDown={onPointerDown}
               onPointerMove={onPointerMove}
               onPointerUp={endDrag}
@@ -250,18 +305,36 @@ export default function PhotoCropField({ file, subject, onCancel, onApply }: Pro
               <input
                 className={styles.zoom}
                 type="range"
-                min={ZOOM_MIN}
+                min={lowestZoom}
                 max={maxZoom(source)}
-                step={0.01}
+                // "any", not a fixed step: the floor is now a per-source float
+                // (1/3 for a 3:1 photo), and a 0.01 grid measured from it puts
+                // BOTH ends slightly out of reach — you could not quite fit the
+                // photo, which is the whole bug.
+                step="any"
                 value={zoom}
                 onChange={(e) => onZoom(Number(e.target.value))}
                 aria-label="Zoom"
                 data-testid="photo-crop-zoom"
               />
+              <button
+                type="button"
+                className={styles.fit}
+                onClick={fitWholePhoto}
+                disabled={busy || lowestZoom >= maxZoom(source)}
+                data-testid="photo-crop-fit"
+              >
+                Fit whole photo
+              </button>
             </div>
             <div className={styles.meta} data-testid="photo-crop-meta">
               Saving {outputEdge(rect.size)}×{outputEdge(rect.size)} from a {source.width}×
               {source.height} photo
+              {padded
+                ? format.mime === "image/png"
+                  ? " — zoomed out, so the space around it is saved transparent"
+                  : " — zoomed out, so the space around it is saved white"
+                : ""}
             </div>
           </>
         ) : (

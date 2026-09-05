@@ -11,15 +11,29 @@
 //   the browser window, and pinning the maths to it would make the same gesture
 //   produce a different stored image on a laptop and an external monitor.
 //
-//   `zoom` 1 means "the largest square that fits inside the source", i.e. the
-//   whole of the shorter edge. That single definition covers the two edge cases
-//   the ticket names without a special case for either: a huge photo starts
-//   fully zoomed out, and a source SMALLER than the viewport is still fully
-//   visible at zoom 1 (the viewport scales the square up for display, but the
-//   stored bytes are never upscaled — see outputEdge).
+//   `zoom` 1 (ZOOM_FILL) means "the largest square that fits INSIDE the source",
+//   i.e. the whole of the shorter edge. That is where a fresh pick starts,
+//   because a full-bleed square is the right default for an avatar.
 //
-//   Because the rect is clamped inside the source, the crop can never include
-//   area the image does not cover, so the output never has empty edges.
+// ENG-980 — the square is no longer trapped inside the source.
+//
+//   ENG-749 also made ZOOM_FILL the hard floor, and that is the bug Mel hit on
+//   the 2 Sep call. On a landscape horse photo the shorter edge is the HEIGHT,
+//   so the tightest the crop could ever get was a full-height square — the ends
+//   of the horse were unreachable at every zoom ("it always zooms it if that's
+//   the biggest"). The floor is now `minZoom`, at which the square is the
+//   source's LONGER edge and the whole photo is inside the frame, padded on the
+//   short axis. Padding is the point: you cannot show all of a 2:1 photo in a
+//   square without it.
+//
+//   Because the square may now be LARGER than the source, the clamp inverts:
+//   rather than keeping the square inside the source, it keeps the source
+//   inside the square. Either way the admin can never strand the photo
+//   half-outside the frame — panning past the edge snaps it back (the call's
+//   fourth ask).
+//
+//   The never-upscale rule is unchanged and still enforced in outputEdge: the
+//   written edge never exceeds the crop's own source-pixel size.
 
 /**
  * Longest edge of the written image. Also the fix for oversized uploads: a
@@ -29,7 +43,12 @@ export const MAX_OUTPUT_EDGE = 1200;
 
 export const JPEG_QUALITY = 0.9;
 
-export const ZOOM_MIN = 1;
+/**
+ * The square exactly fills the frame with the source's shorter edge. Not the
+ * minimum any more (see minZoom) — the starting point, and the boundary below
+ * which the output gains padding.
+ */
+export const ZOOM_FILL = 1;
 
 /** Hard ceiling on magnification, independent of how large the source is. */
 export const ZOOM_CEILING = 4;
@@ -50,9 +69,28 @@ function clamp(v: number, lo: number, hi: number): number {
   return Math.min(Math.max(v, lo), hi);
 }
 
-/** The largest square that fits inside the source: its shorter edge. */
+/** The largest square that fits INSIDE the source: its shorter edge. */
 export function maxCropSide(source: Size): number {
   return Math.max(1, Math.floor(Math.min(source.width, source.height)));
+}
+
+/**
+ * The smallest square that CONTAINS the source: its longer edge. This is the
+ * fully-zoomed-out crop — the whole photo visible, padded on the short axis.
+ */
+export function fitCropSide(source: Size): number {
+  return Math.max(1, Math.ceil(Math.max(source.width, source.height)));
+}
+
+/**
+ * Lower zoom bound for THIS source: the point at which the whole photo is in
+ * frame. It is the aspect ratio — 0.5 for a 2:1 landscape, 1 for a square,
+ * which is correct, since a square is already entirely visible when it fills
+ * the frame and has nothing further to reveal.
+ */
+export function minZoom(source: Size): number {
+  const fit = maxCropSide(source) / fitCropSide(source);
+  return Number.isFinite(fit) && fit > 0 ? Math.min(fit, ZOOM_FILL) : ZOOM_FILL;
 }
 
 /**
@@ -60,11 +98,11 @@ export function maxCropSide(source: Size): number {
  * favicon-sized logo gets ×2, because ×4 would crop it to 24 source pixels.
  */
 export function maxZoom(source: Size): number {
-  return clamp(maxCropSide(source) / MIN_CROP_SIDE, ZOOM_MIN, ZOOM_CEILING);
+  return clamp(maxCropSide(source) / MIN_CROP_SIDE, ZOOM_FILL, ZOOM_CEILING);
 }
 
 export function clampZoom(source: Size, zoom: number): number {
-  return clamp(zoom, ZOOM_MIN, maxZoom(source));
+  return clamp(zoom, minZoom(source), maxZoom(source));
 }
 
 /** Side of the crop square, in source pixels, at a given zoom. */
@@ -73,16 +111,34 @@ export function cropSideFor(source: Size, zoom: number): number {
 }
 
 /**
- * The crop square, clamped so it always lies wholly inside the source. Callers
- * hold an UNCLAMPED pan and let this clamp on read, so that dragging into a
- * corner and back out again does not lose the original position.
+ * How far the crop's origin may travel on one axis, for a square of `size`
+ * against a source edge of `dim`.
+ *
+ * Both orderings are one expression. When the square is SMALLER than the source
+ * the origin runs 0 → dim - size (the window moves over the photo). When it is
+ * LARGER the range is negative, dim - size → 0, which slides the photo around
+ * inside the padded frame. In both cases the extremes are the positions where
+ * the two rectangles are flush, so the source can never be dragged so far that
+ * it leaves a gap it did not have to.
+ */
+export function panBounds(dim: number, size: number): { lo: number; hi: number } {
+  const edge = dim - size;
+  return { lo: Math.min(0, edge), hi: Math.max(0, edge) };
+}
+
+/**
+ * The crop square, clamped so the source and the square always overlap flush.
+ * Callers hold an UNCLAMPED pan and let this clamp on read, so that dragging
+ * into a corner and back out again does not lose the original position.
  */
 export function cropRect(source: Size, zoom: number, pan: Point): CropRect {
   const size = cropSideFor(source, zoom);
+  const x = panBounds(source.width, size);
+  const y = panBounds(source.height, size);
   return {
     size,
-    x: Math.round(clamp(pan.x, 0, Math.max(0, source.width - size))),
-    y: Math.round(clamp(pan.y, 0, Math.max(0, source.height - size))),
+    x: Math.round(clamp(pan.x, x.lo, x.hi)),
+    y: Math.round(clamp(pan.y, y.lo, y.hi)),
   };
 }
 
@@ -130,9 +186,60 @@ export function panForZoom(source: Size, zoom: number, pan: Point, nextZoom: num
  * Edge of the written image. Capped at MAX_OUTPUT_EDGE and never larger than
  * the crop itself: enlarging a 200px crop to 1200px would add no detail and
  * quadruple the bytes, so a small crop stays small.
+ *
+ * This is also the whole of the never-upscale guarantee, and it survives the
+ * ENG-980 zoom-out unchanged: the crop's size is measured in SOURCE pixels
+ * whether or not the square overhangs the photo, so the written edge is still
+ * bounded by real source detail.
  */
 export function outputEdge(cropSize: number): number {
   return Math.max(1, Math.min(Math.round(cropSize), MAX_OUTPUT_EDGE));
+}
+
+/**
+ * Where the source pixels land on the output canvas.
+ *
+ * Only exists because the crop may now overhang the photo. `drawImage` is
+ * specified to clip an out-of-bounds source rect and scale the destination to
+ * match, but browsers have disagreed about that for years, and getting it wrong
+ * shows up as a stretched horse rather than a padded one. So the intersection
+ * is computed here, in a pure function a test can pin, and the canvas half is
+ * handed numbers that are always inside the image.
+ *
+ * Returns null when the two do not overlap at all, which the caller treats as
+ * nothing to draw.
+ */
+export type DrawPlacement = {
+  sx: number;
+  sy: number;
+  sw: number;
+  sh: number;
+  dx: number;
+  dy: number;
+  dw: number;
+  dh: number;
+};
+
+export function drawPlacement(source: Size, rect: CropRect, edge: number): DrawPlacement | null {
+  if (!(rect.size > 0) || !(edge > 0)) return null;
+  const scale = edge / rect.size;
+
+  const sx = Math.max(rect.x, 0);
+  const sy = Math.max(rect.y, 0);
+  const sw = Math.min(rect.x + rect.size, source.width) - sx;
+  const sh = Math.min(rect.y + rect.size, source.height) - sy;
+  if (!(sw > 0) || !(sh > 0)) return null;
+
+  return {
+    sx,
+    sy,
+    sw,
+    sh,
+    dx: (sx - rect.x) * scale,
+    dy: (sy - rect.y) * scale,
+    dw: sw * scale,
+    dh: sh * scale,
+  };
 }
 
 export type OutputFormat = {

@@ -79,6 +79,21 @@
   cursor: grabbing;
 }
 
+/* Zoomed out past the photo's edges, the frame is bigger than the image and the
+   surround is part of what gets saved. A JPEG's white is painted inline; PNG
+   keeps its transparency, and a checkerboard is the only honest way to draw
+   "nothing here" — the same convention every image editor uses. */
+.padded {
+  background-color: var(--white);
+  background-image:
+    linear-gradient(45deg, var(--cream-dark) 25%, transparent 25%),
+    linear-gradient(-45deg, var(--cream-dark) 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, var(--cream-dark) 75%),
+    linear-gradient(-45deg, transparent 75%, var(--cream-dark) 75%);
+  background-size: 16px 16px;
+  background-position: 0 0, 0 8px, 8px -8px, -8px 0;
+}
+
 .image {
   position: absolute;
   transform-origin: top left;
@@ -118,6 +133,36 @@
   flex: 1;
   accent-color: var(--brand-green);
   cursor: pointer;
+}
+
+/* ENG-980 — the slider's far-left end IS "fit the whole photo", but nothing on
+   a range input says so, and Mel found the old floor by dragging and giving up.
+   A named control is the discoverable version of the same gesture. */
+.fit {
+  flex: none;
+  appearance: none;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm, 8px);
+  background: var(--white);
+  color: var(--brand-green);
+  font-family: inherit;
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  padding: 5px 10px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.fit:hover:not(:disabled) {
+  background: var(--cream);
+  border-color: var(--brand-green);
+}
+
+.fit:disabled {
+  opacity: 0.45;
+  cursor: default;
 }
 
 .meta {

@@ -1072,3 +1072,27 @@ ENG-976's body says admin waitlist reads "must go through the admin BFF with the
 That is wrong for this repo: `waitlist_select_admin` (is_admin + AAL2) already grants the read, and
 this file's own first rule forbids a service-role client in admin routes. Build it with
 `requireAdmin()`'s `sb`. The RLS policy is then a second, independent gate behind the route gate.
+
+## `e2e/photo-crop.spec.ts` test 33/34 is RED on `main` (found 4 Sep 2026, ENG-980)
+`horse: the crop step opens and stores a square crop (33, 34)` fails at `waitForPreview` —
+`.preview img` never decodes, `naturalWidth` stays 0 past the 20s poll. **Verified pre-existing**: it
+fails identically on a clean worktree at `origin/main` (6a1f65f) with no ENG-980 changes. The three
+sibling tests in the same file pass, as do the ENG-980 specs, so the crop path itself is fine — it is
+the horse form's preview round-trip through the mock Storage. Do NOT treat it as a regression from a
+photo-crop change; baseline it before you chase it.
+
+## The crop's zoom floor is per-source, not a constant (ENG-980)
+`photoCrop.ts` used to export `ZOOM_MIN = 1` where zoom 1 is "largest square INSIDE the source". That
+made the floor the shorter edge, so a landscape photo could never be pulled back to show its full
+width — the client-reported bug. It is now `ZOOM_FILL = 1` (the starting zoom) plus
+`minZoom(source) = shorter/longer`, and `cropRect` clamps via `panBounds`, which lets the crop origin
+go NEGATIVE when the square is bigger than the source (padded output). If you add crop maths, the
+invariant to preserve is in `outputEdge`: the written edge is never larger than the crop's own
+source-pixel size, so nothing is ever upscaled.
+
+## A form that re-opens a crop must keep the ORIGINAL pick, not the uploaded square
+Apply stores a SQUARE. Re-feeding that square to the crop dialog gives a source whose `minZoom` is 1
+with zero pan slack on both axes, so dragging does nothing — it reads as "the photo is frozen". Both
+forms now hold a `sessionPick` ({file, crop}) and re-open that. Set it ONLY in the upload's SUCCESS
+branch: adopting at pick time means a cancelled pick (or a failed upload) leaves "Reposition"
+pointing at a file the admin backed out of, which silently swaps the stored photo on the next Apply.

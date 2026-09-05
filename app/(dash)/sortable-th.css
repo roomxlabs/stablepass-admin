@@ -1,0 +1,58 @@
+/* Sortable column-header affordance (ENG-963).
+   Lives beside SortableTh.tsx rather than in a screen's own CSS because posts
+   and trainers both render it — and globals.css is a shared-surface file this
+   ticket must not touch. Values are the design-system tokens from
+   06-stage1-design/mockups/web/style.css, referenced (never re-eyeballed). */
+
+.th-sort {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  /* Inherit the uppercase/letter-spaced `.adm-table th` treatment — a sortable
+     header must not look like a different kind of header, only like a
+     clickable one. */
+  color: inherit;
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  text-decoration: none;
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  margin: -3px -6px;
+  padding: 3px 6px;
+}
+
+.th-sort:hover {
+  color: var(--brand-green);
+  background: rgba(40, 93, 80, 0.06);
+}
+
+/* Keyboard users get the same (stronger) affordance as the mouse — the header
+   is only "keyboard-operable" if you can see where you are. */
+.th-sort:focus-visible {
+  outline: 2px solid var(--brand-green);
+  outline-offset: 1px;
+  color: var(--brand-green);
+}
+
+.th-sort.is-active {
+  color: var(--brand-green);
+}
+
+.th-sort-ind {
+  font-size: 9px;
+  line-height: 1;
+  opacity: 0.45;
+  /* Reserve the glyph's width in every state so flipping asc↔desc, or moving
+     the sort to another column, never re-lays-out the header row. */
+  min-width: 7px;
+  text-align: center;
+}
+
+.th-sort.is-active .th-sort-ind {
+  opacity: 1;
+}
+
+.th-sort:hover .th-sort-ind {
+  opacity: 0.8;
+}

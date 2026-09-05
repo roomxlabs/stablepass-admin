@@ -163,6 +163,12 @@ const TRAINER_SEED = [
   { id: "t5", name: "Ciaron Maher", stable_name: "Ciaron Maher Racing", location: "Ballarat, VIC", status: "active", horses: 1, email: "team@maherracing.com", lastPost: 3 * D },
   { id: "t6", name: "Kris Lees", stable_name: "Lees Racing", location: "Newcastle, NSW", status: "active", horses: 1, email: "kris@leesracing.com.au", lastPost: 5 * D },
   { id: "t7", name: "John Thompson", stable_name: "Thompson Stables", location: "Warwick Farm, NSW", status: "onboarding", horses: 1, email: "john@thompsonracing.au", lastPost: null },
+  // ENG-963: the ONLY fixture with a uuid-shaped id. Both scoped lists
+  // (`/horses?trainerId=`, `/posts?trainerId=`) ignore a `trainerId` that is
+  // not a uuid — a deliberate guard, since the column is a uuid in Postgres —
+  // so the short `t1`..`t7` ids can never exercise the scope bar. This row
+  // exists so the two-way trainers ⇄ posts ⇄ horses jump is screenshot-able.
+  { id: "9f1c7a2e-4b3d-4a5f-8c6e-2d1b0a9f8e7d", name: "Gai Waterhouse", stable_name: "Waterhouse & Bott", location: "Randwick, NSW", status: "active", horses: 5, email: "gai@waterhousebott.com.au", lastPost: 4 * H },
 ];
 
 function buildDb(seed) {
@@ -748,7 +754,18 @@ export function startMockSupabase() {
       if (p.startsWith("/rest/v1/bookmark")) { sendTable(res, req.method, [], 612); return; }
       if (p.startsWith("/rest/v1/subscription")) { sendTable(res, req.method, [], 412); return; }
       if (p.startsWith("/rest/v1/race")) { sendTable(res, req.method, DASH_RACES, DASH_RACES.length); return; }
-      if (p.startsWith("/rest/v1/post") && qs.includes("status=eq.published")) {
+      // `poster_time_s` is selected ONLY by the posts library (T7). Without
+      // this exclusion the dashboard branch also swallowed the library's read
+      // whenever the operator picked the "Published" status chip — and the
+      // dashboard's post rows carry no `status`, so `statusMeta(undefined)`
+      // threw and /posts?status=published rendered Next's error page. Nothing
+      // caught it because no spec had ever visited a status-filtered posts URL
+      // (ENG-963).
+      if (
+        p.startsWith("/rest/v1/post") &&
+        qs.includes("status=eq.published") &&
+        !qs.includes("poster_time_s")
+      ) {
         sendTable(res, req.method, DASH_POSTS, 68); // 68 = posts-this-week tile
         return;
       }
@@ -1008,13 +1025,19 @@ export function startMockSupabase() {
         res.end("[]");
         return;
       }
-      const total = POST_FIXTURES.length;
+      // Honour the `status=eq.<s>` chip filter (ENG-963) so a filtered library
+      // screenshot shows the rows that filter actually selects. Absent → all.
+      const wanted = url.search.match(/[?&]status=eq\.([^&]+)/)?.[1];
+      const rows = wanted
+        ? POST_FIXTURES.filter((r) => r.status === decodeURIComponent(wanted))
+        : POST_FIXTURES;
+      const total = rows.length;
       res.writeHead(200, {
         "Content-Type": "application/json",
         "Content-Range": `0-${Math.max(0, total - 1)}/${total}`,
         ...corsHeaders(),
       });
-      res.end(JSON.stringify(POST_FIXTURES));
+      res.end(JSON.stringify(rows));
       return;
     }
 

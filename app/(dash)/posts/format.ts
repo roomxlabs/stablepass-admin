@@ -2,6 +2,8 @@
 // Kept apart from the components so the mapping + filter model are unit-testable
 // without rendering.
 
+import { buildListHref, type SortDir } from "../list-href";
+import { POST_SORT_DEFAULT_DIR, type PostSort } from "@/lib/posts/sort";
 import type { PostRow, PostStatus, PostView, StatusFilter } from "./types";
 
 // Filter chips, in mockup order. The chip key doubles as the `?status=` value
@@ -100,18 +102,45 @@ export function mapPostRow(row: PostRow): PostView {
   };
 }
 
-/** Build a `/posts` URL preserving the active filter + search across nav. */
+/**
+ * Build a `/posts` URL preserving the active filter + search + sort across nav.
+ *
+ * Now a thin wrapper over the shared `buildListHref` (ENG-963) so posts,
+ * horses and trainers drop empty params identically. `sort`/`dir` ride the same
+ * rails as the filters, which is what makes a sorted view refreshable and
+ * shareable.
+ *
+ * `dir` is only emitted alongside a `sort` — `?dir=asc` on its own orders
+ * nothing and would just be noise in a shared link.
+ */
 export function buildPostsHref(p: {
   status?: StatusFilter;
   q?: string;
   horseId?: string;
+  trainerId?: string;
+  sort?: PostSort | "";
+  dir?: SortDir;
   offset?: number;
 }): string {
-  const params = new URLSearchParams();
-  if (p.status && p.status !== "all") params.set("status", p.status);
-  if (p.q) params.set("q", p.q);
-  if (p.horseId) params.set("horseId", p.horseId);
-  if (p.offset && p.offset > 0) params.set("offset", String(p.offset));
-  const s = params.toString();
-  return s ? `/posts?${s}` : "/posts";
+  return buildListHref("/posts", {
+    status: p.status && p.status !== "all" ? p.status : "",
+    q: p.q,
+    horseId: p.horseId,
+    trainerId: p.trainerId,
+    sort: p.sort,
+    dir: p.sort ? p.dir : "",
+    offset: p.offset,
+  });
 }
+
+/**
+ * The columns the Posts table can be sorted by, in render order, with the
+ * direction a first click produces. Kept here (not in the component) so the
+ * header set is unit-testable and stays in step with `lib/posts/sort.ts`.
+ */
+export const POST_SORT_COLUMNS: { column: PostSort; label: string; defaultDir: SortDir }[] = [
+  { column: "horse", label: "Horse / trainer", defaultDir: POST_SORT_DEFAULT_DIR.horse },
+  { column: "status", label: "Status", defaultDir: POST_SORT_DEFAULT_DIR.status },
+  { column: "published", label: "Published", defaultDir: POST_SORT_DEFAULT_DIR.published },
+  { column: "engagement", label: "Engagement", defaultDir: POST_SORT_DEFAULT_DIR.engagement },
+];

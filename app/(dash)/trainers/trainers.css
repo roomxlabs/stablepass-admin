@@ -307,3 +307,16 @@ textarea.adm-input { min-height: 110px; resize: vertical; line-height: 1.55; }
   text-decoration: none;
 }
 .adm-table td a.row-link:hover { text-decoration: underline; }
+
+/* Row count footer (ENG-963) — the Trainers list was the only list screen with
+   no "N rows" line; Horses (.horse-grid-foot) and Posts (.posts-foot) already
+   had one. Same metrics as those two so the three lists end identically. */
+.adm-table-foot {
+  padding: 16px 22px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 13px;
+  color: var(--muted);
+  border-top: 1px solid var(--line);
+}

@@ -2,6 +2,8 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { requireAdminPage } from "@/lib/auth/admin";
 import PostsLibrary from "./PostsLibrary";
 import { mapPostRow, parseStatusFilter } from "./format";
+import { parseSortDir } from "../list-href";
+import { POST_SORT_DEFAULT_DIR, parsePostSort, postsOrder } from "@/lib/posts/sort";
 import type { PostRow, StatusCounts, StatusFilter } from "./types";
 import { HORSE_PHOTO_BUCKET, POST_MEDIA_BUCKET, signPhotoMap } from "@/lib/storage/photos";
 import { muxSignedStreamUrl, muxSignedThumbnailUrl } from "@/lib/mux-playback";
@@ -54,18 +56,43 @@ export default async function PostsPage({
   const status: StatusFilter = parseStatusFilter(sp.status);
   const q = typeof sp.q === "string" ? sp.q.trim() : "";
   const horseId = typeof sp.horseId === "string" ? sp.horseId : "";
+  // A uuid, or nothing — a malformed `?trainerId=` is ignored rather than sent
+  // to Postgres as a filter value (same rule the Horses list applies).
+  const trainerId =
+    typeof sp.trainerId === "string" && /^[0-9a-f-]{36}$/i.test(sp.trainerId) ? sp.trainerId : "";
+  const sort = parsePostSort(sp.sort);
+  const dir = parseSortDir(sp.dir, sort ? POST_SORT_DEFAULT_DIR[sort] : "desc");
   const offset = Math.max(0, parseInt(typeof sp.offset === "string" ? sp.offset : "0", 10) || 0);
 
   const orClause = await qOrClause(sb, q);
 
+  // Name behind a `?trainerId=` scope, for the scope bar. Null when the id
+  // matches nothing (a stale link) — the list still filters, and the bar names
+  // the absence honestly rather than pretending to be unscoped.
+  const trainerLabel = trainerId
+    ? ((
+        await sb.from("trainer").select("display_name,name").eq("id", trainerId).maybeSingle()
+      ).data as { display_name: string | null; name: string | null } | null)
+    : null;
+  const trainerName = trainerLabel?.display_name ?? trainerLabel?.name ?? null;
+
   // Page of rows for the active status filter, with an exact total (M for the
   // "Showing N of M" footer).
-  let pageQuery = sb
-    .from("post")
-    .select(POST_FIELDS, { count: "exact" })
-    .order("created_at", { ascending: false });
+  //
+  // The sort is applied HERE, in the query, not to `rows` after the fact: this
+  // list is offset-paginated, so a client-side sort would only reorder the 20
+  // rows this page happens to hold. `postsOrder` also appends a `created_at`
+  // tiebreaker so paging through equal-valued rows stays stable.
+  let pageQuery = sb.from("post").select(POST_FIELDS, { count: "exact" });
+  for (const o of postsOrder(sort, dir)) {
+    pageQuery = pageQuery.order(o.column, {
+      ascending: o.ascending,
+      ...(o.nullsFirst === undefined ? {} : { nullsFirst: o.nullsFirst }),
+    });
+  }
   if (status !== "all") pageQuery = pageQuery.eq("status", status);
   if (horseId) pageQuery = pageQuery.eq("horse_id", horseId);
+  if (trainerId) pageQuery = pageQuery.eq("source_trainer_id", trainerId);
   if (orClause) pageQuery = pageQuery.or(orClause);
   const { data, count } = await pageQuery.range(offset, offset + PAGE_SIZE - 1);
   // Untyped RLS client → the select string isn't schema-checked; cast the raw
@@ -75,8 +102,13 @@ export default async function PostsPage({
 
   // Chip counts: a status tally within the same horse/search scope (but
   // status-agnostic), so each chip shows how many posts it would reveal.
+  //
+  // Scoped by horse/trainer/search but NOT by sort: ordering a tally changes
+  // nothing about it, and adding an `.order()` here would only cost a sort in
+  // Postgres on a query whose rows are immediately reduced to five integers.
   let countQuery = sb.from("post").select("status");
   if (horseId) countQuery = countQuery.eq("horse_id", horseId);
+  if (trainerId) countQuery = countQuery.eq("source_trainer_id", trainerId);
   if (orClause) countQuery = countQuery.or(orClause);
   const { data: statusRows } = await countQuery;
   const counts = ((statusRows ?? []) as { status: string }[]).reduce<StatusCounts>(
@@ -129,6 +161,10 @@ export default async function PostsPage({
       counts={counts}
       q={q}
       horseId={horseId}
+      trainerId={trainerId}
+      trainerName={trainerName}
+      sort={sort}
+      dir={dir}
       total={total}
       offset={offset}
       limit={PAGE_SIZE}

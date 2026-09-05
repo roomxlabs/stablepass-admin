@@ -97,7 +97,12 @@ export default async function DashboardPage() {
         </div>
       </div>
 
-      <div className="admin-content">
+      {/* `dash-content` scopes R2's mobile rules to this screen. `.adm-table`,
+          `.adm-card` and `.pill` are declared identically in four sibling
+          stylesheets (analytics/posts/trainers) and every one of them is a
+          global sheet once loaded, so an unscoped @media block here would
+          restyle those screens too — and collide with their own R-slices. */}
+      <div className="admin-content dash-content">
         {/* Tiles ------------------------------------------------------ */}
         <div className="adm-stats">
           <div className="adm-stat">
@@ -142,7 +147,7 @@ export default async function DashboardPage() {
                 return (
                   <div className="adm-race-row" key={key}>
                     <div className="time"><LocalTime iso={race.scheduledAt} kind="clock" /></div>
-                    <div>
+                    <div className="info">
                       <div className="horse-name">{runner.name}</div>
                       <div className="horse-meta">
                         {raceMeta(runner.trainer, race.venue, race.raceNumber, race.raceClass)}
@@ -188,7 +193,7 @@ export default async function DashboardPage() {
                       <Icon name="horseHead" />
                     )}
                   </div>
-                  <div>
+                  <div className="info">
                     <div className="horse-name">
                       {h.name}
                       <span className="age">{quietAge(h)}</span>
@@ -241,10 +246,12 @@ export default async function DashboardPage() {
                         <div className="row-sub">{typeLabel(p.type)}</div>
                       </div>
                     </td>
-                    <td>{p.horse ?? "—"}</td>
-                    <td>{p.trainer ?? "—"}</td>
-                    <td>{timeAgo(p.publishedAt)}</td>
-                    <td>
+                    {/* data-label carries the column header into the <720px
+                        stacked-card layout, where <thead> is hidden. */}
+                    <td data-label="Horse">{p.horse ?? "—"}</td>
+                    <td data-label="Trainer">{p.trainer ?? "—"}</td>
+                    <td data-label="Published">{timeAgo(p.publishedAt)}</td>
+                    <td data-label="Engagement">
                       <strong>{fmt(p.likeCount)}</strong> reactions
                     </td>
                     <td className="actions">

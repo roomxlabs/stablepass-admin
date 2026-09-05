@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { supabaseServer } from "@/lib/supabase/server";
 import SearchField from "../SearchField";
-import { listTrainers, timeAgo, type TrainerRow } from "./data";
+import { listTrainers, timeAgo, trainerHorsesHref, type TrainerRow } from "./data";
 import { TRAINER_PHOTO_BUCKET, signPhotoMap } from "@/lib/storage/photos";
 import "./trainers.css";
 
@@ -52,7 +52,7 @@ export default async function TrainersPage({
 
   return (
     <>
-      <div className="admin-topbar">
+      <div className="admin-topbar trainers-screen">
         <h1>Trainers</h1>
         <div className="actions">
           <SearchField
@@ -69,7 +69,7 @@ export default async function TrainersPage({
         </div>
       </div>
 
-      <div className="admin-content">
+      <div className="admin-content trainers-screen">
         <div className="adm-card">
           <div className="adm-filter-bar">
             <Link href={chipHref(undefined, q)} className={!status ? "chip active" : "chip"}>
@@ -128,15 +128,30 @@ export default async function TrainersPage({
                         {row.contactEmail ? <div className="row-sub">{row.contactEmail}</div> : null}
                       </div>
                     </td>
-                    <td>
+                    <td data-label="Stable">
                       {row.stableName ?? "—"}
                       {row.location ? <div className="row-sub">{row.location}</div> : null}
                     </td>
-                    <td className="nowrap">
-                      <strong>{row.horseCount}</strong> {row.horseCount === 1 ? "horse" : "horses"}
+                    <td className="nowrap" data-label="Horses">
+                      {(() => {
+                        const label = (
+                          <>
+                            <strong>{row.horseCount}</strong> {row.horseCount === 1 ? "horse" : "horses"}
+                          </>
+                        );
+                        const href = trainerHorsesHref(row.id, row.horseCount);
+                        // Justin, 2 Sep 2026: the count opens that trainer's horses.
+                        return href ? (
+                          <Link href={href} className="row-link" data-testid="trainer-horses-link">
+                            {label}
+                          </Link>
+                        ) : (
+                          label
+                        );
+                      })()}
                     </td>
-                    <td className="nowrap">{timeAgo(row.lastPostAt)}</td>
-                    <td className="nowrap">
+                    <td className="nowrap" data-label="Last post">{timeAgo(row.lastPostAt)}</td>
+                    <td className="nowrap" data-label="Status">
                       {row.status === "active" ? (
                         <span className="pill green dot">Active</span>
                       ) : (

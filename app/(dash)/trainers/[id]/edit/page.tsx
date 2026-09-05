@@ -60,7 +60,7 @@ export default async function EditTrainerPage({
 
   return (
     <>
-      <div className="admin-topbar">
+      <div className="admin-topbar trainers-screen">
         <h1 className="adm-crumb">
           <Link href="/trainers">Trainers</Link>
           <span className="sep">›</span>
@@ -70,7 +70,7 @@ export default async function EditTrainerPage({
           <Link href="/trainers" className="adm-topbar-link">Cancel</Link>
         </div>
       </div>
-      <div className="admin-content">
+      <div className="admin-content trainers-screen trainers-form-screen">
         <TrainerForm mode="edit" trainer={trainer} contacts={contacts} />
         {/* Outside TrainerForm — that component is one <form>, and a delete
             must never be reachable by submitting it. */}

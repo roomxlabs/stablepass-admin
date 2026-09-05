@@ -59,7 +59,7 @@ export default function PostAnalytics({ data }: { data: PostAnalyticsData }) {
         </div>
       </div>
 
-      <div className="admin-content">
+      <div className="admin-content analytics-screen">
         {/* Post header */}
         <div className="adm-card">
           <div className="post-hero" data-testid="post-hero">

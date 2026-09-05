@@ -988,6 +988,26 @@ export default function ComposeScreen({
 
   const primaryLabel =
     mode === "publish" ? "Publish now" : mode === "schedule" ? "Schedule" : "Save as draft";
+
+  // R4 (ENG-246): the primary action now renders TWICE — in the publish panel
+  // and in the phone-only sticky bar — so its label, its disabled rule and its
+  // handler are hoisted to one place. Duplicating the three expressions inline
+  // is how the two copies drift into disagreeing about when publishing is
+  // allowed; this keeps the behaviour byte-identical to before by construction.
+  const primaryDisabled = isEdit
+    ? busy
+    : !canAct || busy || (mode === "schedule" && !canSchedule);
+  const primaryText = busy
+    ? isEdit
+      ? "Saving…"
+      : "Working…"
+    : isEdit
+      ? "Save changes"
+      : primaryLabel;
+  const onPrimary = () => {
+    if (isEdit) saveEdit();
+    else runAction(mode);
+  };
   // Counts what will be PUBLISHED (uploaded), not what was picked — and says so
   // when they differ, so a failed upload is visible in the rail rather than
   // inflating the count (ENG-748 C1).
@@ -1007,7 +1027,12 @@ export default function ComposeScreen({
     <>
       <div className="admin-topbar">
         <h1>{isEdit ? "Edit post" : "Compose post"}</h1>
-        <div className="actions">
+        {/* R4 (ENG-246): hidden below 720px. The sticky bar carries the same
+            actions there, and two visible controls with the SAME accessible
+            name ("Save changes", or "Schedule" when that mode is selected) is
+            both a screen-reader wart and a strict-mode landmine for any future
+            phone-width selector. */}
+        <div className={`actions ${styles.topActions}`}>
           <Link href="/posts" className={styles.cancelLink}>
             Cancel
           </Link>
@@ -1743,12 +1768,10 @@ export default function ComposeScreen({
                   type="button"
                   className="btn btn-primary btn-block"
                   data-testid="primary-action"
-                  onClick={isEdit ? saveEdit : () => runAction(mode)}
-                  disabled={
-                    isEdit ? busy : !canAct || busy || (mode === "schedule" && !canSchedule)
-                  }
+                  onClick={onPrimary}
+                  disabled={primaryDisabled}
                 >
-                  {busy ? (isEdit ? "Saving…" : "Working…") : isEdit ? "Save changes" : primaryLabel}
+                  {primaryText}
                 </button>
                 <button
                   type="button"
@@ -1862,6 +1885,43 @@ export default function ComposeScreen({
             </div>
           </div>
         </div>
+      </div>
+
+      {/* R4 (ENG-246) — phone-only sticky action bar. The topbar is
+          `position: static` below the shell breakpoint, so on a phone the
+          primary action scrolls out of reach behind three form steps and a
+          preview rail. This pins Cancel + the primary action to the bottom of
+          the viewport; it is `display: none` above 720px, so desktop is
+          untouched. It carries NO logic of its own — same handler, same
+          disabled rule, same label as the panel button. */}
+      <div className={styles.mobileBar} data-testid="compose-mobile-bar">
+        <Link href="/posts" className={`btn ${styles.btnLight} ${styles.mobileBarCancel}`}>
+          Cancel
+        </Link>
+        <button
+          type="button"
+          className={`btn ${isEdit && initial?.status === "draft" ? styles.btnLight : "btn-primary"} ${styles.mobileBarPrimary}`}
+          data-testid="mobile-primary-action"
+          onClick={onPrimary}
+          disabled={primaryDisabled}
+        >
+          {primaryText}
+        </button>
+        {/* Edit-mode "Publish now" has no equivalent anywhere else on the
+            screen — it lives only in the topbar, which is hidden here — so the
+            bar has to carry it or a draft becomes unpublishable on a phone.
+            Same handler and same disabled rule as the topbar button. */}
+        {isEdit && initial?.status === "draft" ? (
+          <button
+            type="button"
+            className={`btn btn-primary ${styles.mobileBarPrimary}`}
+            data-testid="mobile-publish-draft"
+            onClick={publishDraftNow}
+            disabled={busy}
+          >
+            {busy ? "Working…" : "Publish now"}
+          </button>
+        ) : null}
       </div>
 
       <PreviewModal open={previewOpen} onClose={() => setPreviewOpen(false)} data={previewData} />

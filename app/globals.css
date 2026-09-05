@@ -359,12 +359,39 @@ a { color: inherit; text-decoration: none; }
      slide-in drawer (.admin-mobile-bar / .admin-drawer). Shell chrome
      only — owned by this file.
 
-   CONTENT-STACKING breakpoint — max-width: 719px  (i.e. "< 720px")
+   CONTENT-STACKING breakpoint — max-width: 899px  (i.e. "< 900px")
      The convention every screen uses to collapse its own multi-column
      content to a single column. Each screen ticket implements that in
      its OWN scoped stylesheet (dashboard.css, posts.css, horses.css,
      trainers.css, compose.module.css) — do NOT add per-screen stacking
      rules here, or sibling screen tickets collide on this file.
+
+     ENG-962 RAISED THIS FROM 719px TO MATCH THE SHELL. It used to be
+     719px, which left a dead 720-899px band: the sidebar was already
+     gone (so the content well is only ~734px at an iPad-portrait 768px)
+     while every screen still rendered its DESKTOP layout. A 900px-wide
+     posts table then sat inside that 734px well. `.admin-content` below
+     is `overflow-x: auto`, so the DOCUMENT never scrolled sideways — but
+     the table's own wrapper, `.adm-card`, is `overflow: hidden` (see
+     posts.css / horses.css), and THAT is what clipped the action column
+     off-screen with no way to reach it. Keep the two numbers equal: the
+     moment the sidebar goes, the content has to stack with it.
+
+     STATUS: posts.css, trainers.css and analytics.css are on 899px.
+     dashboard.css, horses.css and compose.module.css are still on 719px
+     — their layouts happen to fit the 720-899px band, so they are not
+     broken, but they are NOT yet on the convention. Moving them is
+     ENG-987. Until then this number describes the target, not every
+     file.
+
+     A stacking block MUST be scoped to its own screen class
+     (.posts-screen / .trainers-screen / .analytics-screen /
+     .dash-content). Route CSS persists across soft navigations inside
+     (dash), so an UNSCOPED `.adm-table thead { display: none }` from one
+     screen strips the header off another screen's table while that
+     screen's own label rules stay dormant at a different breakpoint.
+     ENG-962 hit exactly this: posts.css was the one unscoped screen, and
+     widening it to 899px broke the dashboard table after /posts -> /.
 
    TAP TARGETS — at shell-breakpoint widths, shared controls (.btn,
      .input, .admin-nav a, .admin-hamburger, .signout-btn) are >= 44px.

@@ -56,7 +56,7 @@ export default function PostsLibrary({
         </div>
       </div>
 
-      <div className="admin-content">
+      <div className="admin-content posts-screen">
         <div className="adm-card">
           <div className="adm-filter-bar">
             {STATUS_FILTERS.map((f) => (

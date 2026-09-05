@@ -1095,3 +1095,350 @@ stale baselines from earlier tickets). That churn buries a shell/CSS diff and ma
 "zero desktop regression" claim unreviewable.
 Do-this: before committing, `git checkout -- e2e/__screenshots__/` and re-add only the PNGs your ticket
 owns.
+
+## `POST /__control {empty:true}` does NOT empty the dashboard (ENG-244)
+**Symptom:** the R2 empty-state spec flipped the mock to `empty` and still found zero `.adm-empty`
+nodes — the page rendered 3 race rows, 3 quiet horses, 4 recent posts and "Reactions 3,420".
+**Cause:** `setEmpty()` only clears `DB.{trainer,horse,post,trainer_contact}` and sets
+`ANALYTICS_EMPTY`. The dashboard's race-day races, its reaction/save counters and its
+recently-published read are served by handlers that never consult either. The only tile that
+actually zeroes is Members (the subscription read). The ENG-244 ticket body asserted "mock
+`__control {empty}` covers this" — it does not, and that claim is now three tickets old.
+**Do this:** an empty-dashboard proof needs `e2e/mock-supabase.mjs` taught the empty branch for
+those handlers — but that file is Do-NOT-touch on every screen slice of the responsive epic (it is
+shared with R3–R6), so ENG-244 instead swapped the rendered rows for the page's own `.adm-empty`
+markup in the DOM before screenshotting. Real CSS, synthetic data; see the comment above
+`EMPTY_COPY` in `e2e/dashboard.spec.ts`. If a later ticket owns the mock, fix it there properly.
+
+## A plain `.css` import in the App Router is a GLOBAL sheet — scope every responsive block (ENG-244)
+**Symptom / risk:** `.adm-table`, `.adm-card` and `.pill` are declared with identical values in
+`dashboard.css`, `analytics.css`, `posts.css` and `trainers.css`. Each is imported by its own page,
+but a plain (non-module) `.css` import is global once loaded, and the client keeps loaded sheets
+across soft navigation. An unscoped `@media (max-width: 719px) { .adm-table { display: block } }`
+in `dashboard.css` therefore restyles the posts, trainers and analytics tables too — silently, and
+only after you have visited the dashboard first, which is exactly the path a human tester takes.
+**Do this:** give the screen's own `.admin-content` a screen-specific class (`dash-content`) and
+scope every new responsive rule under it. Costs one class, removes the whole class of cross-screen
+leak — and it is what keeps the parallel R-slices of the responsive epic from colliding on shared
+primitive names they do not own.
+
+## Follow R1's `r<N>-*` screenshot naming, not the numeric prefix (ENG-244)
+The `NN-` prefixes in `e2e/__screenshots__/` are one workspace-wide sequence that new tickets keep
+colliding on (see the ENG-748 note above). ENG-243 sidestepped it entirely with `r1-mobile-*.png`;
+ENG-244 followed with `r2-mobile-*.png`. Responsive-epic slices should keep doing this — the
+per-slice prefix sorts together, never collides, and needs no high-water-mark check.
+
+## The e2e harness binds FIXED ports — only ONE worktree can run Playwright at a time (ENG-244)
+**Symptom:** `npx playwright test` dies instantly with
+`Error: listen EADDRINUSE: address already in use 127.0.0.1:8787`, or with
+`http://127.0.0.1:3002/signin is already used`. Killing whatever holds the port makes your run
+start — and silently corrupts a sibling's run.
+**Cause:** `e2e/global-setup.ts` starts `mock-supabase.mjs` on a hard-coded **8787** and
+`playwright.config.ts` starts `next start` on a hard-coded **3002**, with
+`reuseExistingServer: false`. Those are process-wide, not worktree-scoped, so two loop workers in
+`.claude/worktrees/eng-244` and `.claude/worktrees/eng-246` fight over the same two ports. Observed
+live: ENG-244 and ENG-246 ran e2e concurrently and each killed the other's mock server.
+**Do this:** before running e2e, check for a sibling —
+`ps aux | grep "worktrees/eng-.*playwright" | grep -v <your ticket>` — and WAIT for it rather than
+killing the port holder. Serialize e2e across stablepass-admin worktrees the way the BE loop
+serializes on its shared Supabase stack. A crashed run also orphans the mock server; if the port is
+held with no playwright process alive, that orphan is yours to kill (`lsof -nP -iTCP:8787`).
+
+## `r1-mobile-shell.png` captures the DASHBOARD — a screen slice invalidates it (ENG-244)
+**Symptom:** ENG-244 changed only dashboard CSS, yet `e2e/__screenshots__/r1-mobile-shell.png`
+(owned by `shell.spec.ts`, R1's file) came back 320x2436 instead of the committed 320x2018 — a 418px
+delta, i.e. exactly this ticket's stacking.
+**Cause:** `e2e/shell.spec.ts:78-98` sets 320x700, signs in, navigates to **`/`** and takes a
+`fullPage` shot. The shell spec's "mobile shell" evidence is therefore a picture of the dashboard
+with the shell around it, so ANY dashboard change re-renders it.
+**Do this:** don't blanket-revert `e2e/__screenshots__/` and call it clean — that leaves a knowingly
+wrong baseline on the branch. Diff the PNG **dimensions** (`struct.unpack('>II', png[16:24])`) to
+tell a real invalidation from the usual `Date.now()` fixture churn, then refresh just that file and
+declare the one-file widening in the PR. R3-R6 will each hit this too, for the same reason.
+## Ports 8787 + 3002 are HARDCODED, so only ONE admin e2e run can exist at a time (ENG-245)
+**Symptom:** `npx playwright test` dies with `EADDRINUSE 127.0.0.1:8787` from `global-setup`, or —
+worse — it *runs* and every test fails with `ERR_CONNECTION_REFUSED at http://127.0.0.1:3002/signin`.
+**Cause:** `e2e/mock-supabase.mjs:1089` listens on a literal `8787` and `playwright.config.ts` pins
+`3002`; neither reads an env var, and `mock-supabase.mjs` is do-not-touch in most screen tickets. With
+several worktrees in the loop, a sibling run owns the ports. The refused-connection variant is the
+nastier one: Playwright's readiness probe hits the SIBLING's server on 3002, declares the webServer up,
+starts your tests, and then that server exits from under you.
+**Do this:** serialize by hand. Poll for BOTH listeners to be gone
+(`lsof -nP -iTCP:8787 -sTCP:LISTEN`, same for 3002 — plain `lsof -i :8787` also matches a stray
+ESTABLISHED client socket and will never go quiet), and **`npm run build` BEFORE the wait**, not inside
+it: the webServer command is `npm run build && npm run start`, so a cold build leaves a ~90s window in
+which a sibling grabs the port and you lose the race every time. Warm `.next` shrinks it to seconds.
+Retry on `EADDRINUSE|ERR_CONNECTION_REFUSED`; it took 2 attempts here. Also note a sandboxed `lsof`
+sees NOTHING — it will report a busy port as free, so check ports with the sandbox disabled.
+
+## A `scrollWidth <= clientWidth` gate on `documentElement` is HOLLOW on any `(dash)` screen (ENG-245)
+**Symptom:** the epic's machine-checked "no horizontal scroll at 320px" passes on a screen whose card
+is visibly cropped.
+**Cause:** two ancestors swallow the overflow before the document sees it — `app/globals.css`'s
+`.admin-content { overflow-x: auto }` below 900px (ENG-243 added it deliberately, "so a too-wide child
+scrolls inside the content well rather than making the whole document scroll sideways") and the screen
+card's own `overflow: hidden`. Content wider than the viewport is clipped, and
+`documentElement.scrollWidth` still reports 320.
+**Do this:** assert `el.scrollWidth <= el.clientWidth + 1` over `html`, `.admin-content`, the screen's
+`.adm-card` AND each row/card element. A `boundingBox().width <= 320` check does not rescue it either:
+a grid container's box stays at its containing block's width while overflowing tracks paint outside it.
+Every R2/R4-R6 responsive slice inherits this trap.
+
+## Pin CSS by "nothing redeclares it LATER", not "it appears once" (ENG-245)
+The `compose-css.test.ts` `rule()` helper (ENG-558) asserts a selector is declared exactly once in the
+file. That is wrong for a responsive stylesheet, where a desktop rule plus its `@media` override is the
+normal, correct shape — the check reds on every legitimate override. Invert it: assert the block you
+are reading is the **LAST** own-line declaration of that selector in the whole file, and separately
+assert nothing follows the media block (`CSS.slice(mediaEnd).trim() === ""`). That is the property the
+cascade actually cares about, and it catches an override appended after the media query — which the
+scoped-to-the-media-block version silently missed (verified by mutation). It still cannot see a
+duplicate hidden in a comma list or arriving at higher specificity; those need the e2e layout checks.
+
+## `min-height` on a flex item does not centre its text (ENG-245)
+Giving `td.actions a, td.actions button { min-height: 44px }` a 44px tap target inside a
+`display:flex` container blockifies the items, and the container's `align-items: center` centres the
+item's BOX, not the text inside it. Invisible on a borderless text button, obvious on a bordered chip
+(`button.destructive` = Delete): a 44px red rectangle with the label stuck to the top edge. Always pair
+the tap-target `min-height` with `display: inline-flex; align-items: center` on the element itself —
+which is what `.chip` and `.posts-foot .pager a` in this repo already do.
+## The Playwright harness is a MACHINE-WIDE singleton — one admin e2e run at a time (ENG-246, 31 Aug 2026)
+`e2e/global-setup.ts` starts the mock Supabase on a hardcoded `127.0.0.1:8787` (`mock-supabase.mjs`
+line ~1089) and `playwright.config.ts` starts Next on `:3002`. Neither is overridable by env, so two
+worktree workers running `npx playwright test` at the same time fight over both ports. Symptoms, all of
+which look like a broken diff and are not: `EADDRINUSE 127.0.0.1:8787` from global-setup;
+`http://127.0.0.1:3002/signin is already used`; `net::ERR_CONNECTION_REFUSED` mid-suite; and a bare
+`exit 137` when the other worker's `lsof -ti:3002 | xargs kill -9` cleanup reaps YOUR server.
+The ENG-247 trick of a temp config on a spare port only moves the Next port — `:8787` still collides,
+and the inline `signIn()` helpers hardcode `waitForURL("http://127.0.0.1:3002/")`, so the spare-port
+config breaks every spec that signs in.
+Do-this: serialise. Poll until BOTH ports are free, run, and retry the whole invocation on 137 /
+EADDRINUSE / ERR_CONNECTION_REFUSED rather than reading it as a failure. Never `kill -9` a process on
+3002/8787 you did not start — check `ps` for a sibling worktree path first.
+
+## `next start` on a half-built `.next` says "Could not find a production build" (ENG-246)
+An interrupted `npm run build` (e.g. a Playwright run aborted while its `webServer` command was
+building) leaves a `.next/` with a manifest and a `lock` file but **no `BUILD_ID`**, and every later
+run fails at the server, looking like a config problem. Do-this: `rm -rf .next && npm run build`, then
+confirm `.next/BUILD_ID` exists before blaming `playwright.config.ts`.
+
+## A `fullPage` screenshot paints a `position: fixed` bar TWICE (ENG-246)
+Compose's new phone action bar is fixed to the viewport bottom. `page.screenshot({ fullPage: true })`
+on the scrolling mobile page painted it (and the shell's sticky header) part-way down the tall image —
+evidence showing the bar somewhere it never appears. The same trap the `17-compose-voice` shot already
+worked around for the sidebar/topbar.
+Do-this: for a pinned element, shoot the VIEWPORT (no `fullPage`); for the whole column in one frame,
+`setViewportSize({ width: <phone>, height: 1600 })` and shoot that.
+## The committed desktop baselines are STALE — A/B two captures, never PNG-vs-HEAD (ENG-247)
+Extends the entry above. Reverting the churn is right, but do NOT then diff your capture against the
+committed PNG to decide whether you regressed the desktop: several baselines have not been retaken
+since feature work merged, so they differ from what the **base branch itself** renders — by image
+HEIGHT, not just pixels (`07-add-horse` 2052 committed vs 2139 from base; `08-edit-horse` 2052 vs
+2367). Measured that way a pixel-neutral change reads as a 13-17% regression.
+Do-this: capture the same baselines twice — once with your diff stashed, once with it applied — and
+compare those two. `magick identify -format '%wx%h'` first (a height delta is a real layout change),
+then `magick compare -metric AE base.png mine.png null:`. ENG-247's form baselines came back AE=0 that
+way while reading as a huge diff against the committed file. `05-horses-list` still shows its
+documented ~17k-px "Winx card" jitter in a 250x319 bbox — quantify the bbox before calling it real.
+
+## Playwright's `webServer` readiness probe false-positives here — start `next start` by hand (ENG-247)
+**Symptom, two flavours, both bogus:** `Error: http://127.0.0.1:3002/signin is already used` with
+nothing listening (`lsof`, `curl` and a `net.createServer()` bind all say the port is free), or the
+suite starts and the first `page.goto` dies on `ERR_CONNECTION_REFUSED` ~1s in because Playwright
+declared the server ready before `next start` had bound.
+**Do this:** `npm run build`, start the server yourself with the mock env
+(`NEXT_PUBLIC_SUPABASE_URL=http://127.0.0.1:8787 npx next start -p 3002`), poll `curl` until it really
+returns 200, then run `playwright test -c <temp config>` where the temp config spreads
+`playwright.config.ts` **minus `webServer`**. Keep it untracked and delete it before committing.
+Do NOT retarget the temp config at another port: `signIn()` in horses/shell/dashboard/... hard-codes
+`waitForURL("http://127.0.0.1:3002/")` and every spec then times out.
+Related: start the server and run the suite in ONE shell call — a server left running across calls
+gets reaped, and the next run fails as CONNECTION_REFUSED for no visible reason.
+## The Playwright harness is NOT concurrency-safe across worktrees (ENG-248)
+**Symptom:** a *pre-existing* trainers/horses/posts spec goes red for no reason, or `EADDRINUSE`
+on 8787, while another loop worker is running its own suite in a sibling worktree.
+**Cause:** every worktree hardcodes the same two ports — 3002 (`playwright.config.ts` webServer) and
+8787 (`e2e/mock-supabase.mjs`) — and `/__control` is shared **global mutable state**, so two
+concurrent runs flip each other's `setEmpty()` dataset mid-test.
+**Do this:** serialize `npm run e2e` across stablepass-admin worktrees, exactly like the
+one-worker-at-a-time rule for stablepass-be. Check `lsof -nP -iTCP:3002 -sTCP:LISTEN` (and 8787)
+before starting, and re-run before believing a red in a spec your diff does not touch.
+
+## `position: sticky; bottom: 0` does NOT work inside `.admin-content` (ENG-248)
+`app/globals.css` gives `.admin-content` `overflow-x: auto` at the shell breakpoint (<=899px). A
+non-`visible` value on one axis forces the other to compute to `auto`, so `.admin-content` becomes a
+dual-axis **scrollport** whose height is content-driven and therefore never scrolls vertically — a
+sticky bottom child resolves against it and never engages while the document scrolls. Use
+`position: fixed` for a mobile bottom action bar and reserve its height with a `padding-bottom` on
+the screen wrapper. No ancestor forms a fixed containing block (the only `transform` in globals.css
+is on `.admin-drawer`, a sibling), and the z-index lanes are bar 40 < backdrop 90 < drawer 100.
+
+## A `documentElement`-only no-h-scroll check is not a gate (ENG-248)
+Two blind spots, both real in this app: (1) `.admin-content`'s `overflow-x: auto` swallows an
+over-wide child, so the document stays innocent while the screen is visibly broken; (2) a
+`position: fixed` element contributes to **no** scrollable-overflow region at all, so overflow inside
+a fixed bottom bar reads as `{doc:0, well:0}`. Measure `documentElement`, `.admin-content`,
+`.admin-topbar` **and** any fixed bar — see `overflow()` in `e2e/trainers.spec.ts`.
+
+## Screen-scoped CSS files share class names — scope new media queries to the screen (ENG-248)
+`trainers.css`, `horses.css`, `posts.css` each define `.adm-card` / `.adm-table` / `.pill` etc., and
+an App-Router imported stylesheet is **global once its chunk loads** (verified: after a client-side
+nav from `/trainers` to `/posts`, the trainers media blocks are still in `document.styleSheets`). So
+an unscoped `@media (max-width: 719px) .adm-table {…}` in one screen's file silently restyles the
+others. Put a screen class (`trainers-screen`) on that screen's `.admin-topbar` + `.admin-content`
+wrappers and scope every new rule under it — the `(dash)` layout is R1's file, so there is no shared
+ancestor inside a screen ticket's surface to hang it on.
+## Two screens' stylesheets both declaring `.cell-label` tie on specificity (ENG-881)
+The responsive epic's table→card transform re-attaches column headings inline as
+`<span class="cell-label">`, hidden on desktop. ENG-245 (posts) and ENG-881 (analytics) each
+ship that pattern in their OWN scoped stylesheet. Both wrote the bare `.cell-label { display:
+none }` for desktop and `.cell-label { display: block }` inside their 719px block — all (0,1,0).
+App Router route stylesheets PERSIST across soft navigations inside the `(dash)` layout, so on a
+phone "visit /analytics then navigate to /posts" can leave analytics' desktop `display: none`
+winning on source order and stripping the posts cards' headings.
+**Cause:** equal specificity across two persisted stylesheets = navigation-order-dependent cascade.
+**Do NOT "fix" it by raising specificity** (`.adm-table .cell-label`, (0,2,0)) — that out-specifies
+the sibling's mobile rule and hides its labels outright, which is worse.
+**Do this:** confine each declaration to its own breakpoint — `@media (min-width: 720px) {
+.cell-label { display: none } }` for the desktop half, never a bare top-level rule. Then neither
+sheet says anything about `.cell-label` outside the range it owns. Pinned in `analytics-css.test.ts`
+("confines the desktop hide to a min-width query").
+
+## A leaf-node PII scan goes blind the moment you nest a span in the cell (ENG-881)
+`AnalyticsScreen.test.tsx`'s guardrail found member emails with
+`querySelectorAll("td, div, span").filter(el => el.children.length === 0 && /@/.test(el.textContent))`.
+Adding one `<span class="cell-label">` per metric cell made every `<td class="num">` a non-leaf, so
+the filter silently stopped scanning them — the suite stayed green while the guardrail's reach
+shrank. **Do this:** scan an element's OWN direct text nodes
+(`[...el.childNodes].filter(n => n.nodeType === 3)`), not `children.length === 0`. Mutation-check it:
+put an email in a metric cell and confirm the test goes red.
+
+## `:first-of-type` is element-type, not class (ENG-881)
+`.adm-grid-2:first-of-type` means "the first `div` among its siblings that also has `.adm-grid-2`" —
+in `.admin-content` the first div is `.adm-stats`, so the selector matched ZERO elements and the
+Playwright assertion built on it was dead-red rather than wrong-red. Use
+`page.locator(".adm-grid-2").first()`.
+
+## The analytics trials card overflows its desktop grid track by 5px (pre-existing, unfixed)
+At 1280px the "Members on trial" card reports `scrollWidth 403 > clientWidth 398` and is clipped by
+`.adm-card { overflow: hidden }` — a 4-column table with 22px gutters in the narrow half of the
+1.4fr/1fr grid. It predates ENG-881 and that ticket's acceptance demanded desktop stay pixel-equal,
+so it was deliberately NOT fixed. A desktop no-horizontal-scroll assertion must therefore scope to
+`html` + `.admin-content`; `e2e/analytics.spec.ts` pins the card-level count at exactly 1 so a new
+overflow still fails. Worth fixing under its own ticket.
+
+## A responsive block on SHARED `.adm-*` classes bleeds to every (dash) screen (ENG-881)
+The `.adm-table` / `.adm-stats` / `.adm-stat` / `.adm-grid-2` / `.adm-card-head` classes are the shared
+design system, not any one screen's. The dashboard (`app/(dash)/page.tsx`) uses ALL FIVE and
+`dashboard.css` declares zero media queries; `trainers.css` and `horses.css` likewise. App Router keeps
+a route's CSS chunk in the document after a soft navigation inside `(dash)` — **verified**: after
+`/analytics` → drawer → `/`, an `analytics-screen` rule was still live in `document.styleSheets`.
+So an unscoped `@media (max-width: 719px) { .adm-table tbody tr { display: grid } }` in ONE screen's
+stylesheet silently restyles the dashboard's tables into unlabelled card grids for anyone who
+navigates there from that screen on a phone. Green suites see none of it.
+**Do this:** put a screen-owned root class on the screen's own `.admin-content`
+(`<div className="admin-content analytics-screen">`) and prefix every `.adm-*` rule in the media block
+with it — ENG-245 got the same protection for free by keying to `tr.row-link`. Pin it with a test that
+parses the media block and asserts every selector line carries the scope
+(`analytics-css.test.ts` → "scopes EVERY mobile rule"). **Strip CSS comments before that assertion** —
+the prose names the very selectors under test, so a raw substring check asserts the commentary.
+**Exception:** `.admin-topbar` is a SIBLING of `.admin-content`, so nothing in it can take a descendant
+scope. Scope those by content instead (`:has(> .period-toggle)`), and leave a genuinely
+single-use class like `.period-toggle` unscoped — but check it really is single-use first.
+
+## A no-horizontal-scroll helper passes for a scope that matches NOTHING (ENG-881)
+`for (const el of document.querySelectorAll(sel)) if (overflow) return false` returns "clean" when the
+selector matched zero elements, so a renamed class or a screen without that element quietly shrinks the
+gate and stays green. **Do this:** return per-scope match COUNTS alongside the verdict and assert each
+scope measured ≥1. Corollary: keep a separate scope list per screen/state — the per-post analytics
+screen has no `.adm-table` at all, and the all-zeros state renders `.chart-empty` instead of the tables.
+
+## The content-stacking breakpoint is 899px, NOT 720px (raised by ENG-962)
+
+**Symptom:** a screen looks right at 390px and at 1280px, but at iPad-portrait
+768px its table is cut off mid-column and the action buttons (Unpublish/Delete,
+Edit) are unreachable — with no scrollbar to get to them.
+
+**Cause:** the shell drops its sidebar at `max-width: 899px`, so at 768px the
+content well is only ~734px. Every screen originally scoped its own stacking to
+`max-width: 719px`, which left a dead **720-899px band** rendering the DESKTOP
+layout inside a phone-width well.
+
+**Know WHICH box clips — this is easy to get wrong.** `.admin-content` is
+`overflow-x: auto` below 900px (`app/globals.css`), so the DOCUMENT never
+scrolls sideways. The box that actually clips is the table's wrapper,
+**`.adm-card { overflow: hidden }`** (posts.css / horses.css). That is why a
+`scrollWidth <= clientWidth` check on `documentElement` passes while the screen
+is visibly broken.
+
+**Do this:** scope per-screen stacking to `@media (max-width: 899px)`, equal to
+the shell's collapse point. The convention block in `app/globals.css` is the
+source of truth — keep the two numbers equal. If a table genuinely must stay a
+table, give it `overflow-x: auto` so the columns stay reachable
+(`.analytics-screen .adm-card` does this for the two-up desktop cards).
+
+## `scrollWidth <= innerWidth` is NOT sufficient to prove a screen fits
+
+Because `.admin-content` clips, the document width stays honest while content is
+unreachable. `e2e/shell.spec.ts`'s sweep therefore asserts BOTH: (a) the document
+does not scroll sideways, and (b) no element with `overflow-x: hidden|clip` has
+`scrollWidth > clientWidth` (content the operator cannot reach). Check (b) is the
+one that catches the real regressions — verified by reverting the posts fix and
+watching it fail with "900px in a 734px box". `overflow-x: visible` is
+deliberately not a failure (SVG chart labels paint outside their box and stay
+readable).
+
+## A grid/flex item's automatic minimum size is its MIN-CONTENT
+
+**Symptom (ENG-962, compose @390):** after picking a photo, the compose column
+was 384px inside a 358px well. A 1x1 test fixture does NOT reproduce it.
+
+**Cause:** a picked 1600px-wide photo reports a 640px min-content even while it
+renders at 358px, and that floor propagates up every grid/flex ancestor whose
+`min-width` is `auto` (the default). Add `min-width: 0` to break the chain
+(`.grid > *`, `.uploadZone.filled`) plus `max-width: 100%` on the media itself.
+
+**Testing note:** any e2e proving a media-overflow fix must upload a REAL,
+large-dimension file — `e2e/fixtures/wide-1600x900.png` exists for this. A 1x1
+placeholder reports a 1px intrinsic width and proves nothing about aspect or
+min-content.
+
+## e2e/mock-supabase.mjs must answer for EVERY dash route
+
+The responsive sweep visits every `(dash)` route, so a route whose table the mock
+does not handle 500s in e2e while rendering fine in production (`/waitlist` did
+exactly this: `(e ?? []).map is not a function` from an unhandled
+`GET /rest/v1/waitlist`). When a new dash screen lands from `main`, add its
+fixture + handler here — including the `select=id` count probe, which is a
+separate request from the list read.
+
+## A stacking block MUST be scoped to its screen class, or it leaks
+
+**Symptom (ENG-962):** the DASHBOARD table lost its header row at 768px — but
+only after the operator had visited `/posts` first. Hard-reloading `/` was fine.
+
+**Cause:** route CSS persists across soft navigations inside `(dash)`. posts.css
+was the epic's ONE stylesheet whose stacking block was unscoped (PostsLibrary.tsx
+rendered a bare `<div className="admin-content">` while trainers/analytics/
+dashboard all carry `.trainers-screen` / `.analytics-screen` / `.dash-content`).
+Its `.adm-table thead { display: none }` therefore applied to every screen's
+shared `.adm-table`. While both blocks sat at 719px this was self-correcting —
+the other screen's own card rules fired at the same width. Raising posts.css to
+899px opened a 180px band where the leak was destructive: header hidden, and the
+other screen's `td[data-label]::before` labels still dormant at 719px.
+
+**Do this:** scope every stacking rule to the screen's own class, and scope the
+class on the screen's `.admin-content`. `posts-css.test.ts` now has a guard
+(`every rule carries the screen scope`) that fails on any unscoped rule inside
+the media block; the desktop design-system base above it is deliberately global.
+`e2e/shell.spec.ts` has the behavioural counterpart, which soft-navigates
+`/posts` -> `/` and asserts the dashboard header survives.
+
+**Testing note:** a sweep that reaches every route with `page.goto()` is
+structurally blind to this — a hard navigation drops the other screen's CSS. Any
+cross-screen CSS assertion needs a real in-app soft navigation.
+
+## `window.innerWidth` is the wrong denominator for an overflow assertion
+
+It INCLUDES the vertical scrollbar, so up to ~15px of genuine horizontal overflow
+passes. Use `document.documentElement.clientWidth`, which excludes it — the
+`hasNoHorizontalScroll()` helper in `e2e/shell.spec.ts` has always done this.

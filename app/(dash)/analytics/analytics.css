@@ -219,3 +219,217 @@
 /* Topbar action buttons sized per the mockups */
 .btn-sm { padding: 7px 14px; font-size: 12.5px; }
 .btn-md { padding: 8px 16px; font-size: 13.5px; }
+
+/* ====================================================================
+   R2b · responsive (ENG-881) — analytics at the epic's 720px
+   content-stacking breakpoint.
+
+   Same CSS-only transform ENG-245 used on the posts library: the screens
+   keep ONE markup tree, so the card and the table render from the same
+   view model. The only markup this needs is a `.cell-label` per cell
+   that loses its <thead> heading (a 6-column engagement table read as an
+   unlabelled card is a column of naked integers) and a `data-testid` per
+   row so the e2e can measure the card.
+
+   EVERYTHING below is scoped to `.analytics-screen` — the class this
+   screen puts on its own `.admin-content`. That is not belt-and-braces:
+   `.adm-table`, `.adm-stats`, `.adm-stat`, `.adm-grid-2` and
+   `.adm-card-head` are SHARED design-system classes, and the dashboard
+   (`app/(dash)/page.tsx`) uses all five while `dashboard.css` declares
+   no media query of its own. App Router keeps a route's CSS chunk in the
+   document after a soft navigation inside `(dash)`, so an unscoped
+   `.adm-table tbody tr { display: grid }` here would reach `/` — turning
+   the dashboard's tables into unlabelled card grids the moment someone
+   navigated there from `/analytics` on a phone. ENG-245 avoided the same
+   trap by keying its row rule to `tr.row-link`; a root class is the same
+   idea for a screen whose rows have no such hook. `.cell-label` is
+   scoped for the same reason AND confined to a min-width query, because
+   posts.css declares that bare selector at equal specificity.
+
+   720px is the epic's CONTENT breakpoint. The shell's own drawer
+   breakpoint (899px) belongs to ENG-243 and is untouched here — and note
+   the shell gives `.admin-content` `overflow-x: auto` under 900px, so an
+   overflow here would be absorbed by the content well rather than moving
+   the document. The e2e therefore measures the cards, not just `html`.
+   ==================================================================== */
+
+/* Column headings re-attached inline; card mode only (see AnalyticsScreen). */
+@media (min-width: 900px) {
+  .analytics-screen .cell-label { display: none; }
+
+  /* ENG-962: a two-up card body is ~398px, but "Members on trial" needs 403px
+     of min-content (table-layout: auto cannot shrink a table below that) and
+     `.adm-card` clips its overflow — which is how the gate saw ENDS truncated
+     to "7 Se..." and the SAVES column missing, with no way to scroll to
+     either. Scrolling the card keeps every column reachable; `auto` (not
+     `scroll`) means no scrollbar on the cards that already fit.
+
+     Scoped to >=900px deliberately: below that the stacking block has already
+     turned these tables into cards, and this file's own guard test forbids a
+     `.analytics-screen` rule sitting outside a media block.
+
+     Trade-off, accepted: the scroll container is the whole card, so the head
+     scrolls with the table rather than staying pinned. The overflow here is
+     5px (403 vs 398), so that movement is imperceptible — and the table is a
+     direct sibling of `.adm-card-head` with no wrapper to scroll instead, so
+     pinning the head would mean changing AnalyticsScreen.tsx's markup, which
+     is outside this ticket's surface. Revisit if a column ever pushes a card
+     far enough that the head visibly drifts. */
+  .analytics-screen .adm-card { overflow-x: auto; }
+}
+
+@media (max-width: 899px) {
+  /* Period toggle: a date control, so it goes full-width and splits its
+     three options evenly rather than sitting as a 210px pill.
+
+     The shell's `.admin-topbar .actions` is a content-sized flex item, so
+     `width: 100%` on the toggle alone resolves against a 191px box and
+     does nothing. This is the one rule that cannot take the
+     `.analytics-screen` prefix — the topbar is a SIBLING of
+     `.admin-content`, not a descendant. `:has(> .period-toggle)` scopes
+     it just as tightly by content instead: `.period-toggle` is rendered
+     in exactly one place in the app, so no other screen's topbar can
+     match, and the per-post screen's own `.actions` (Open in posts
+     library) is deliberately excluded. globals.css stays untouched;
+     ENG-243 owns it.
+
+     `.period-toggle` itself takes no `.analytics-screen` prefix for the
+     same structural reason — it is inside the topbar, not inside
+     `.admin-content` — and it does not need one: the class is rendered in
+     exactly one component in the app, so it cannot collide the way the
+     shared `.adm-*` classes can. */
+  .admin-topbar .actions:has(> .period-toggle) {
+    flex: 1 1 100%;
+    min-width: 0;
+  }
+  .period-toggle {
+    display: flex;
+    width: 100%;
+  }
+  .period-toggle a {
+    flex: 1 1 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 44px;
+    padding: 6px 8px;
+  }
+
+  /* Tiles: two up. Five 1fr tiles at 320px would be 44px wide each; two
+     leaves ~110px of content per tile, which the 24px figure fits. */
+  .analytics-screen .adm-stats,
+  .analytics-screen .adm-stats.five {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+    margin-bottom: 18px;
+  }
+  .analytics-screen .adm-stat {
+    padding: 14px;
+    min-width: 0;
+  }
+  /* An odd last tile takes the full width rather than leaving a ragged
+     half-row (the 5-up summary set, and the trials card's 3 metrics). */
+  .analytics-screen .adm-stat:last-child:nth-child(odd) { grid-column: 1 / -1; }
+  .analytics-screen .adm-stat .label,
+  .analytics-screen .adm-stat .delta { overflow-wrap: anywhere; }
+  .analytics-screen .adm-stat .num { font-size: 24px; }
+
+  /* Chart/table pairs stack. */
+  .analytics-screen .adm-grid-2,
+  .analytics-screen .adm-grid-2.even {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 16px;
+  }
+  .analytics-screen .adm-mt { margin-top: 16px; }
+
+  /* Card head: the title block and its action (Download CSV) wrap onto
+     separate lines instead of squeezing the heading to nothing. */
+  .analytics-screen .adm-card-head {
+    flex-wrap: wrap;
+    gap: 10px;
+    padding: 14px 16px;
+  }
+  .analytics-screen .adm-card-head h2 { font-size: 17px; }
+  .analytics-screen .adm-card-head .btn { min-height: 44px; }
+
+  /* Rows → cards. The table elements simply stop being table elements. */
+  .analytics-screen .adm-table thead { display: none; }
+  .analytics-screen .adm-table,
+  .analytics-screen .adm-table tbody,
+  .analytics-screen .adm-table tr,
+  .analytics-screen .adm-table td { display: block; }
+  .analytics-screen .adm-table tbody { padding: 12px; }
+  .analytics-screen .adm-table tbody tr {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+    padding: 14px;
+    margin-bottom: 10px;
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    background: var(--white);
+  }
+  .analytics-screen .adm-table tbody tr:last-child { margin-bottom: 0; }
+  .analytics-screen .adm-table tbody tr:hover td { background: transparent; }
+
+  .analytics-screen .adm-table td {
+    min-width: 0;
+    padding: 0;
+    border-bottom: none;
+  }
+  .analytics-screen .adm-table th:first-child,
+  .analytics-screen .adm-table td:first-child { padding-left: 0; }
+  .analytics-screen .adm-table th:last-child,
+  .analytics-screen .adm-table td:last-child { padding-right: 0; }
+
+  /* The name/sub cell is the card's title: full width, above the metrics. */
+  .analytics-screen .adm-table tbody td:first-child {
+    grid-column: 1 / -1;
+    padding-bottom: 10px;
+    border-bottom: 1px solid var(--line);
+  }
+  /* An odd trailing metric spans rather than leaving a ragged half-row. */
+  .analytics-screen .adm-table tbody td:last-child:nth-child(even) {
+    grid-column: 1 / -1;
+  }
+  .analytics-screen .adm-table td .row-name,
+  .analytics-screen .adm-table td .row-sub { overflow-wrap: anywhere; }
+
+  /* Each metric becomes a labelled block. Right-alignment is a column
+     affordance and reads as a mistake once the cell is a card tile. */
+  .analytics-screen .adm-table td.num,
+  .analytics-screen .adm-table th.num { text-align: left; }
+  .analytics-screen .adm-table tbody td .cell-label {
+    display: block;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin-bottom: 3px;
+    overflow-wrap: anywhere;
+  }
+
+  /* Charts + notes: reclaim the desktop 18-22px gutters. */
+  .analytics-screen .chart-wrap { padding: 6px 12px 14px; }
+  .analytics-screen .chart-note { padding: 0 14px 12px; }
+  .analytics-screen .chart-empty { padding: 28px 16px; }
+  .analytics-screen .aggregate-note { overflow-wrap: anywhere; }
+
+  /* Per-post screen (10-post-analytics). */
+  .analytics-screen .post-hero {
+    padding: 14px 16px;
+    flex-wrap: wrap;
+  }
+  .analytics-screen .post-hero h2 {
+    font-size: 18px;
+    overflow-wrap: anywhere;
+  }
+  .analytics-screen .post-hero .meta { overflow-wrap: anywhere; }
+  .analytics-screen .emoji-bars { padding: 4px 14px 14px; }
+  .analytics-screen .emoji-row {
+    grid-template-columns: 72px minmax(0, 1fr) 40px;
+    gap: 8px;
+  }
+  .analytics-screen .emoji-row .lbl { overflow-wrap: anywhere; }
+}

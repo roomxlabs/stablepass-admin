@@ -63,7 +63,9 @@ export default async function EditHorsePage({
       <HorseForm mode="edit" horseId={id} trainers={trainers} initial={initial} />
       {/* Sits OUTSIDE HorseForm because that component is one big <form> and a
           delete must never be reachable by submitting it. */}
-      <div className="admin-content" style={{ paddingTop: 0 }}>
+      {/* `horse-form-tail`: on mobile this block sits under the form's fixed
+          save bar, so horses.css gives it the bar's clearance (ENG-247). */}
+      <div className="admin-content horse-form-tail" style={{ paddingTop: 0 }}>
         <DangerDelete
           testId="delete-horse"
           endpoint={`/api/admin/horses/${id}`}

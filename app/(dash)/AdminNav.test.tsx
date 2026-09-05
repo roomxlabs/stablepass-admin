@@ -92,10 +92,25 @@ describe("AdminMobileNav drawer", () => {
 
   it("renders the same nav items as the sidebar", () => {
     const { drawer } = renderDrawer();
-    for (const label of ["Dashboard", "Analytics", "Compose", "Posts", "Horses", "Trainers"]) {
-      expect(screen.getByRole("link", { name: new RegExp(label) })).toBeTruthy();
-    }
-    expect(drawer.querySelectorAll("a").length).toBe(6);
+    // The full ordered label set, not just a count: a count-only assertion would
+    // stay green if a future nav change swapped one item for another, which is
+    // exactly the drift this guards. Scoped to `.admin-nav` so an unrelated link
+    // added to the drawer foot doesn't fail a nav test. Labels are hardcoded on
+    // purpose — importing PRIMARY/LIBRARY would assert the source against itself.
+    // NOTE: this reads full anchor text; once the nav badges land (see AdminNav.tsx)
+    // the labels will need a label-only hook rather than textContent.
+    const labels = Array.from(drawer.querySelectorAll(".admin-nav a"), (link) =>
+      link.textContent?.replace(/\s+/g, " ").trim(),
+    );
+    expect(labels).toEqual([
+      "Dashboard",
+      "Analytics",
+      "Compose",
+      "Posts",
+      "Horses",
+      "Trainers",
+      "Waitlist",
+    ]);
   });
 
   it("closes when a nav link is tapped, returning focus to the hamburger", () => {

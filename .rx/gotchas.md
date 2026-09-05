@@ -1096,3 +1096,34 @@ with zero pan slack on both axes, so dragging does nothing — it reads as "the 
 forms now hold a `sessionPick` ({file, crop}) and re-open that. Set it ONLY in the upload's SUCCESS
 branch: adopting at pick time means a cancelled pick (or a failed upload) leaves "Reposition"
 pointing at a file the admin backed out of, which silently swaps the stored photo on the next Apply.
+
+## A status pre-check is not a guard — scope the UPDATE too (ENG-950)
+**Symptom:** `POST /posts/:id/publish` read the row, checked `status`, computed "is this the first
+publish?" from `published_at`, then wrote with `.eq("id", id)` alone. Two concurrent publishes both
+read `published_at: null`, both wrote, and **both fanned out a `new_post` push to every opted-in
+member**. Reachable by an operator double-click *and* by an admin publish racing the be
+`scheduled-post-publisher` cron on a post whose `scheduled_for` has just come due — the cron's own
+write is correctly guarded (`.eq("status","scheduled").lte(...)`), so it is the admin side that
+interleaves.
+**Cause:** read-then-write TOCTOU. The pre-check proves the state was legal a moment ago, not that it
+still is at write time. A `published_at`-null flag computed before the write inherits the same
+staleness.
+**Do this:** re-assert the precondition on the mutation itself —
+`.update(...).eq("id", id).in("status", ["draft","scheduled"]).select(...).maybeSingle()` — and treat
+0 rows as "someone else won" (409, and do NOT fire the side effect). `DELETE` in
+`app/api/admin/posts/[id]/route.ts` already does exactly this and says why in a comment; publish
+simply omitted it. **Audit the other transition routes** (`schedule`, `unpublish`, `republish`) — they
+have the same read-then-`.eq("id", id)`-write shape, and any of them that grows a side effect grows
+this bug. Note a unit test cannot catch it: it only fails once you script the fake's mutate to return
+0 rows, so write that test deliberately.
+
+## Nullable `title`/`body` silently kill an admin push (ENG-950)
+**Symptom:** publishing a caption-less photo post from admin sent no notification, while the be cron
+publishing the identical post did. No error surfaced — the operator saw `200 {notificationsSent: 0}`.
+**Cause:** `post.title`/`post.body` are nullable columns; `push-dispatch` 422s on empty title/body,
+and a best-effort dispatch helper swallows that to 0. The cron has fallbacks
+(`buildNewPostEvent` in `scheduled-post-publisher`); admin passed the raw columns through.
+**Do this:** any new admin caller of `push-dispatch` must reuse the cron's fallbacks verbatim —
+`title?.trim() || "New post"`, `body?.trim() || title?.trim() || "A new update is available."` —
+or the two publish paths diverge for the same row. More generally: when admin duplicates a fan-out
+the be cron already does, diff the two payload builders, don't just match the ticket's field list.

@@ -1234,3 +1234,28 @@ mutation record) and ENG-993's comparator pinning exercise the same recording. R
 ENG-993's full comparator set with ENG-950's rationale for `in` folded into it. **The one resolution
 that must never be taken here is restoring any `() => b` no-op to make the suite green** — that is the
 precise defect this ticket exists to remove, and it would silently un-pin every conditional write.
+## The e2e mock's dashboard branch shadowed the posts library's STATUS-FILTERED read (ENG-963)
+Symptom: `/posts?status=published` rendered Next's error page (`TypeError: Cannot read properties
+of undefined (reading 'label')`) while every spec stayed green. Cause: `e2e/mock-supabase.mjs`'s
+dashboard block matches ANY `/rest/v1/post` read carrying `status=eq.published` and answers with
+`DASH_POSTS` — rows with no `status` column — so `statusMeta(undefined).label` threw in
+`rows.map(mapPostRow)`. It went unnoticed for months because no spec had ever visited a
+status-filtered posts URL, and `page.waitForURL()`/`toHaveURL()` are perfectly happy with an error
+page. Do-this: (1) the dashboard branch now excludes the library read via `!qs.includes("poster_time_s")`
+(a library-only column) — keep a similar discriminator when adding any new `/rest/v1/post` branch;
+(2) after a `waitForURL`, ALWAYS assert something rendered (`.adm-table tbody tr` visible), or a 500
+passes as a pass.
+
+## Screenshot fixtures: trainer ids `t1`..`t7` are NOT uuids, so no scoped list can be captured
+`/horses?trainerId=` and `/posts?trainerId=` both ignore a `trainerId` that fails
+`/^[0-9a-f-]{36}$/i` (deliberate — the column is a uuid in Postgres). The TRAINER_SEED ids are `t1`…,
+so a spec using them silently renders the UNSCOPED list and the scope bar never appears. ENG-963 added
+ONE uuid-id fixture (`9f1c7a2e-…`, Gai Waterhouse) for exactly this. Reuse it rather than adding
+another. Give it no `marketing_visible` — `trainers.spec.ts` asserts the On-site badge count is 2.
+
+## `git stash pop` in a worktree silently drops the TRACKED half when screenshots differ
+Re-running the e2e suite rewrites `e2e/__screenshots__/*.png`, so a later `git stash pop` conflicts on
+those binaries, restores only the UNTRACKED (new) files and leaves every tracked edit in the stash —
+while printing something that reads like success. If you stash to measure a baseline, run
+`git checkout -- e2e/__screenshots__` before popping, and verify with a `grep -c` on a symbol you
+added rather than trusting the pop's output.

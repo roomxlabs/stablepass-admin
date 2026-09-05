@@ -5,6 +5,7 @@
 // gate (requireAdmin / requireAdminPage) — these helpers never construct a
 // client and never touch a service-role key. Aggregates only; no owner PII.
 import type { SupabaseClient } from "@supabase/supabase-js";
+import { getAdminUserIds, countMemberRows } from "@/lib/analytics/admin-exclusion";
 
 const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
 const HOUR_MS = 60 * 60 * 1000;
@@ -59,10 +60,19 @@ function daysSince(iso: string | null, now: Date): number | null {
   return Math.max(0, Math.floor((now.getTime() - new Date(iso).getTime()) / (24 * HOUR_MS)));
 }
 
+// `countMemberRows`'s `shape` callback is typed against the pre-`.select()`
+// builder, which doesn't expose `.gte` — cast through this minimal shape
+// rather than `any` at the call site (mirrors lib/analytics/queries.ts).
+type Filterable = { gte(column: string, value: string): Filterable };
+function filterable(q: unknown): Filterable {
+  return q as Filterable;
+}
+
 export async function getAnalytics(sb: SupabaseClient, now: Date = new Date()): Promise<Analytics> {
   const weekAgo = weekAgoIso(now);
+  const adminIds = await getAdminUserIds(sb);
 
-  const [postsRes, reactionsRes, savesRes, membersRes, horsesRes, recentPostsRes] =
+  const [postsRes, reactions, saves, membersRes, horsesRes, recentPostsRes] =
     await Promise.all([
       // Posts published in the last 7 days.
       sb
@@ -70,16 +80,11 @@ export async function getAnalytics(sb: SupabaseClient, now: Date = new Date()): 
         .select("id", { count: "exact", head: true })
         .eq("status", "published")
         .gte("published_at", weekAgo),
-      // Reactions created in the last 7 days.
-      sb
-        .from("reaction")
-        .select("post_id", { count: "exact", head: true })
-        .gte("created_at", weekAgo),
-      // Saves (bookmarks) created in the last 7 days.
-      sb
-        .from("bookmark")
-        .select("post_id", { count: "exact", head: true })
-        .gte("created_at", weekAgo),
+      // Reactions created in the last 7 days — member-only (ENG-984), via
+      // lib/analytics/admin-exclusion.ts.
+      countMemberRows(sb, "reaction", (q) => filterable(q).gte("created_at", weekAgo), adminIds),
+      // Saves (bookmarks) created in the last 7 days — member-only (ENG-984).
+      countMemberRows(sb, "bookmark", (q) => filterable(q).gte("created_at", weekAgo), adminIds),
       // Members = subscriptions currently in trial or active, excluding
       // operator accounts (see isStaff above). Row fetch instead of a head
       // count so the staff filter can apply; the embed carries no PII.
@@ -127,8 +132,8 @@ export async function getAnalytics(sb: SupabaseClient, now: Date = new Date()): 
 
   return {
     postsThisWeek: postsRes.count ?? 0,
-    reactions: reactionsRes.count ?? 0,
-    saves: savesRes.count ?? 0,
+    reactions,
+    saves,
     members: ((membersRes.data ?? []) as SubscriptionWithUser[]).filter((r) => !isStaff(r.user))
       .length,
     quietHorses,

@@ -197,6 +197,13 @@ function setEmpty(empty) {
   ANALYTICS_EMPTY = empty;
 }
 
+// ENG-984. Whether the mock reports the operator account as staff. Defaults to
+// TRUE (the shipped behaviour: operators are excluded from analytics). The
+// analytics-admin-exclusion spec flips it to false to capture the "before"
+// screenshot from the SAME seeded rows, so the only variable between the two
+// pictures is the exclusion itself.
+let EXCLUDE_ADMIN = true;
+
 // ---- Analytics fixtures (ENG-276 / A4) --------------------------------------
 // Seeded, fake data only. Shapes are the snake_case rows the A3 RPCs return
 // (see lib/analytics/queries.ts), NOT the camelCase response types.
@@ -253,6 +260,150 @@ const TRIALS_BY_MONTH = [
 const CLICKS_BY_TRAINER = TRAINER_ENGAGEMENT.map((t) => ({
   trainer_id: t.trainer_id, name: t.name, clicks: t.website_clicks, last_click: null,
 }));
+
+// ---- ENG-984: row-level engagement fixtures ---------------------------------
+// The analytics BFF no longer takes its engagement NUMBERS from the admin_*
+// RPCs (those count operator activity too — see lib/analytics/admin-exclusion.ts).
+// It now reads the raw engagement tables and tallies them with staff removed,
+// so this mock has to serve ROWS for those tables rather than a pre-baked
+// aggregate. The RPCs are still called for the skeleton (entity ids, names,
+// post/horse counts), so their fixtures above stay exactly as they were.
+//
+// Every row carries a `user_id`, and roughly a third of them belong to
+// ADMIN_USER_ID — that is the point: it is what makes the before/after
+// screenshots differ. Fake members only, no real data.
+const MEMBER_IDS = ["m-0001", "m-0002", "m-0003", "m-0004"];
+
+// Posts spread across all four seeded trainers/horses so no engagement row in
+// the table renders as an empty zero row.
+const ENGAGEMENT_POSTS = [
+  { id: "pa1", source_trainer_id: "t1", horse_id: "h1" },
+  { id: "pa2", source_trainer_id: "t2", horse_id: "h2" },
+  { id: "pa3", source_trainer_id: "t3", horse_id: "h3" },
+  { id: "pa4", source_trainer_id: "t4", horse_id: "h4" },
+];
+
+// Picking posts round-robin gave every trainer an near-identical row
+// (219/221/220/219 opens), which reads as fake just as badly as the skew an
+// LCG produced. This weighting is a 40/30/20/10 split, so the engagement
+// tables have a believable head and tail.
+const POST_WEIGHTS = [0, 0, 0, 0, 1, 1, 1, 2, 2, 3];
+function weightedPost(n) {
+  return ENGAGEMENT_POSTS[POST_WEIGHTS[n % POST_WEIGHTS.length]];
+}
+
+// Fully deterministic (no PRNG) so the screenshots are byte-stable across runs.
+//
+// An LCG was tried here first and produced badly skewed fixtures: its low bits
+// cycle, so `seed % 4` mapped almost every row onto the SAME post and the
+// engagement table read 892 / 8 / 0 / 0 across the four trainers. Index
+// arithmetic spreads the rows evenly and is easier to reason about anyway.
+//
+// `adminEvery` = 1 in N rows is the operator's. Tuned so removing staff makes a
+// clearly visible dent without emptying the charts.
+function engagementRow(seq, post, isAdmin, stamp, extra) {
+  return {
+    user_id: isAdmin ? ADMIN_USER_ID : MEMBER_IDS[seq % MEMBER_IDS.length],
+    post_id: post.id,
+    // The engagement read asks for `post:post_id(id,source_trainer_id,horse_id)`.
+    post: { id: post.id, source_trainer_id: post.source_trainer_id, horse_id: post.horse_id },
+    ...stamp,
+    ...(extra ?? {}),
+  };
+}
+
+// Per-day open volumes, shaped like the mockup (two race-day peaks) rather than
+// a flat line — a uniform bar chart reads as obviously fake.
+const DAY_VOLUMES = [48, 62, 40, 73, 54, 94, 78, 46, 60, 38, 68, 56, 90, 72];
+// Weighted so 6-8am and 6-8pm AEST dominate, matching the "Opens by time of
+// day" panel's intended shape (those are UTC 20-21 and UTC 08-09).
+const HOUR_WEIGHTS = [20, 20, 21, 8, 8, 9, 22, 0, 2, 12];
+
+const IMPRESSION_ROWS = (() => {
+  const rows = [];
+  let seq = 0;
+  DAY_VOLUMES.forEach((volume, dayIdx) => {
+    const daysAgo = DAY_VOLUMES.length - 1 - dayIdx;
+    for (let k = 0; k < volume; k++) {
+      const d = new Date(Date.now() - daysAgo * 864e5);
+      d.setUTCHours(HOUR_WEIGHTS[(dayIdx + k) % HOUR_WEIGHTS.length], (k * 7) % 60, 0, 0);
+      rows.push(
+        engagementRow(
+          seq,
+          weightedPost(dayIdx + k),
+          k % 3 === 0,
+          { seen_at: d.toISOString() },
+        ),
+      );
+      seq++;
+    }
+  });
+  return rows;
+})();
+
+const REACTION_EMOJI = ["👍", "❤️", "👏", "🔥", "🐎", "💪", "🙏"];
+const REACTION_ROWS = Array.from({ length: 420 }, (_, i) =>
+  engagementRow(
+    i,
+    weightedPost(i),
+    i % 3 === 0,
+    { created_at: new Date(Date.now() - (i % 14) * 864e5).toISOString() },
+    { emoji: REACTION_EMOJI[(i * 3) % REACTION_EMOJI.length] },
+  ),
+);
+
+const BOOKMARK_ROWS = Array.from({ length: 160 }, (_, i) =>
+  engagementRow(i, weightedPost(i), i % 4 === 0, {
+    created_at: new Date(Date.now() - (i % 14) * 864e5).toISOString(),
+  }),
+);
+
+// Website clicks are per-trainer, not per-post. Weighted rather than evenly
+// round-robined so the clicks table doesn't render four identical numbers.
+const CLICK_WEIGHTS = [
+  { trainer_id: "t1", clicks: 96 },
+  { trainer_id: "t2", clicks: 64 },
+  { trainer_id: "t3", clicks: 41 },
+  { trainer_id: "t4", clicks: 18 },
+];
+const TRAINER_CLICK_ROWS = CLICK_WEIGHTS.flatMap((t) =>
+  Array.from({ length: t.clicks }, (_, i) => ({
+    user_id: i % 3 === 0 ? ADMIN_USER_ID : MEMBER_IDS[i % MEMBER_IDS.length],
+    trainer_id: t.trainer_id,
+    clicked_at: new Date(Date.now() - (i % 14) * 864e5).toISOString(),
+  })),
+);
+
+// "Reach" for the per-post screen = follows of that post's horse.
+const FOLLOW_ROWS = Array.from({ length: 210 }, (_, i) => ({
+  user_id: i % 7 === 0 ? ADMIN_USER_ID : `m-follow-${i}`,
+  horse_id: ENGAGEMENT_POSTS[i % ENGAGEMENT_POSTS.length].horse_id,
+}));
+
+// Serves the engagement tables the analytics BFF now reads directly. Returns
+// null when the path is not one of them, so the caller falls through to the
+// pre-existing handlers untouched.
+function engagementRowsFor(pathname, search) {
+  const rows = (all) => {
+    if (ANALYTICS_EMPTY) return [];
+    // The mock does not implement PostgREST filtering; the only filter that
+    // changes WHICH rows come back (rather than just how many) is the per-post
+    // screen's post_id, and getting that wrong would attribute every open in
+    // the fixture set to one post.
+    const m = /[?&]post_id=eq\.([^&]+)/.exec(search);
+    return m ? all.filter((r) => r.post_id === decodeURIComponent(m[1])) : all;
+  };
+  if (pathname.startsWith("/rest/v1/impression")) return rows(IMPRESSION_ROWS);
+  if (pathname.startsWith("/rest/v1/reaction")) return rows(REACTION_ROWS);
+  if (pathname.startsWith("/rest/v1/bookmark")) return rows(BOOKMARK_ROWS);
+  if (pathname.startsWith("/rest/v1/trainer_website_click")) return rows(TRAINER_CLICK_ROWS);
+  if (pathname.startsWith("/rest/v1/follow")) {
+    if (ANALYTICS_EMPTY) return [];
+    const m = /[?&]horse_id=eq\.([^&]+)/.exec(search);
+    return m ? FOLLOW_ROWS.filter((r) => r.horse_id === decodeURIComponent(m[1])) : FOLLOW_ROWS;
+  }
+  return null;
+}
 
 // Subscription rows for the trials list. `user` is the embedded select alias.
 // Fake members only — never real subscriber data.
@@ -610,14 +761,21 @@ export function startMockSupabase() {
     // Also clears the audit log so each spec starts from a clean slate.
     if (req.method === "POST" && url.pathname === "/__control") {
       let empty = false;
+      let excludeAdmin = true;
       try {
-        empty = JSON.parse(rawBody || "{}").empty === true;
+        const body = JSON.parse(rawBody || "{}");
+        empty = body.empty === true;
+        // Absent means "leave the shipped behaviour on" — only an explicit
+        // false turns the exclusion off (ENG-984 before/after capture).
+        excludeAdmin = body.excludeAdmin !== false;
       } catch {
         empty = false;
+        excludeAdmin = true;
       }
       setEmpty(empty);
+      EXCLUDE_ADMIN = excludeAdmin;
       AUDIT_LOG.length = 0;
-      sendJson(res, 200, { ok: true, empty });
+      sendJson(res, 200, { ok: true, empty, excludeAdmin });
       return;
     }
 
@@ -718,20 +876,19 @@ export function startMockSupabase() {
       return;
     }
 
-    // Saves + reach counts for the per-post screen (head:true count queries —
-    // the total rides Content-Range, so an absent header renders 0).
-    if ((req.method === "GET" || req.method === "HEAD") && url.search.includes("post_id=eq.")) {
-      if (url.pathname.startsWith("/rest/v1/bookmark")) {
-        sendTable(res, req.method, [], ANALYTICS_EMPTY ? 0 : 28);
+    // ENG-984 — the engagement tables are now read as ROWS, not as head:true
+    // counts, because the BFF has to see each row's user_id to drop operator
+    // activity before it tallies. This block MUST stay above the per-post and
+    // dashboard handlers below: those answer /rest/v1/{reaction,bookmark,follow}
+    // with an empty body and a Content-Range count, which was right when the
+    // caller wanted a count and is now exactly wrong — an empty row array would
+    // tally to zero and every engagement number on the screen would read 0.
+    if (req.method === "GET" || req.method === "HEAD") {
+      const engRows = engagementRowsFor(url.pathname, url.search);
+      if (engRows !== null) {
+        sendTable(res, req.method, engRows, engRows.length);
         return;
       }
-    }
-    if (
-      (req.method === "GET" || req.method === "HEAD") &&
-      url.pathname.startsWith("/rest/v1/follow")
-    ) {
-      sendTable(res, req.method, [], ANALYTICS_EMPTY ? 0 : 204);
-      return;
     }
 
     // Dashboard (ENG-174 / T4) reads. These run BEFORE the generic DB-backed
@@ -744,8 +901,13 @@ export function startMockSupabase() {
     if (req.method === "GET" || req.method === "HEAD") {
       const p = url.pathname;
       const qs = url.search;
-      if (p.startsWith("/rest/v1/reaction")) { sendTable(res, req.method, [], 3420); return; }
-      if (p.startsWith("/rest/v1/bookmark")) { sendTable(res, req.method, [], 612); return; }
+      // ENG-984: the reaction/bookmark head-count stubs that used to live here
+      // (3420 / 612) are gone. The dashboard's reactions + saves tiles now go
+      // through countMemberRows(), which reads rows and tallies the non-staff
+      // ones, so those tables are served with real rows by the engagement
+      // handler higher up. Leaving the stubs here would have been harmless only
+      // because they are now unreachable — which is precisely why they are
+      // removed rather than left to rot behind a shadowing branch.
       if (p.startsWith("/rest/v1/subscription")) { sendTable(res, req.method, [], 412); return; }
       if (p.startsWith("/rest/v1/race")) { sendTable(res, req.method, DASH_RACES, DASH_RACES.length); return; }
       if (p.startsWith("/rest/v1/post") && qs.includes("status=eq.published")) {
@@ -1162,6 +1324,29 @@ export function startMockSupabase() {
 
     if (req.method === "GET" && url.pathname.startsWith("/rest/v1/app_user")) {
       const accept = req.headers["accept"] ?? "";
+
+      // ENG-984: TWO different reads hit app_user and they must not be
+      // conflated.
+      //
+      //  (a) the admin GATE           -> ?select=is_admin&id=eq.<uid>, .single()
+      //  (b) the analytics EXCLUSION  -> ?select=id&is_admin=eq.true, list
+      //
+      // (b) is `getAdminUserIds()` in lib/analytics/admin-exclusion.ts asking
+      // "whose rows are staff rows". It needs the ID, and this handler used to
+      // answer every app_user read with `is_admin` and no `id` at all — so the
+      // exclusion set would have been a set of `undefined` and NOTHING would
+      // ever have been excluded. Keyed on the `is_admin=eq.true` filter, which
+      // only the exclusion read carries.
+      if (url.search.includes("is_admin=eq.true")) {
+        // EXCLUDE_ADMIN=false is the "before" half of the before/after
+        // screenshots: the operator account exists and is generating activity,
+        // but is not reported as staff, so every operator row gets counted —
+        // exactly the screen the client was looking at when he asked
+        // "can we have it that it doesn't include us?".
+        sendJson(res, 200, EXCLUDE_ADMIN ? [{ id: ADMIN_USER_ID }] : []);
+        return;
+      }
+
       if (accept.includes("pgrst.object")) {
         sendJson(res, 200, { is_admin: true });
       } else {

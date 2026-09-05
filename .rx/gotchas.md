@@ -1096,3 +1096,28 @@ with zero pan slack on both axes, so dragging does nothing — it reads as "the 
 forms now hold a `sessionPick` ({file, crop}) and re-open that. Set it ONLY in the upload's SUCCESS
 branch: adopting at pick time means a cancelled pick (or a failed upload) leaves "Reposition"
 pointing at a file the admin backed out of, which silently swaps the stored photo on the next Apply.
+
+## The `admin_*` analytics RPCs count OPERATOR activity — only trials was ever fixed (ENG-984)
+All nine SECURITY DEFINER analytics RPCs in stablepass-be (`20260719120000_analytics.sql`) aggregate
+`impression`/`reaction`/`bookmark`/`trainer_website_click` with no `is_admin` filter. Only
+`admin_trials_by_month` excludes staff (ENG-314's `20260721120000_trials_exclude_admin.sql`).
+The comment in `lib/analytics/queries.ts` saying "the by-month RPC applies the same exclusion BE-side"
+was true of trials ONLY and read as if it covered everything — that is how opens/engagement/clicks
+/per-post stayed contaminated for months. **Any new analytics number must go through
+`lib/analytics/admin-exclusion.ts` (`memberRows`/`countMemberRows`), not straight to an RPC.** The
+RPCs are still fine for structure/content columns (ids, names, posts/horses counts) — those are not
+user activity. The exclusion is applied in TS, not pushed down as `not.in.(...)`, partly so it stays
+unit-testable and partly because the supabase fake's builder has **no `.not()` method**.
+
+## The e2e mock answered every `app_user` read with `is_admin` and no `id` (ENG-984)
+`e2e/mock-supabase.mjs` had one `app_user` handler returning `{ is_admin: true }` for everything. The
+admin GATE wants exactly that (`?select=is_admin&id=eq.<uid>`, `.single()`), but an ID-based read
+(`?select=id&is_admin=eq.true`) got rows with no `id` — so an exclusion set built from it is a set of
+`undefined` and silently excludes NOTHING, while every test still looks green. The handler is now
+keyed on the `is_admin=eq.true` filter. If you add an app_user read shape, check this handler first.
+
+## Don't build mock fixtures out of an LCG's low bits (ENG-984)
+A `seed = (seed * 1103515245 + 12345) & 0x7fffffff` generator with `% 4` put ~every row on the same
+post: the engagement table screenshotted as 892 / 8 / 0 / 0 across four trainers. LCG low bits cycle.
+Fixtures here are deterministic index arithmetic with an explicit weight table instead — and note that
+a perfectly even spread looks just as fake (219/221/220/219), so weight it.

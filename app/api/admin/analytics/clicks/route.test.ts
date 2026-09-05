@@ -11,7 +11,7 @@ import { GET } from "./route";
 
 function asAdmin() {
   state.user = { id: "u1" };
-  state.tables.app_user = { select: { single: { is_admin: true } } };
+  state.tables.app_user = { select: { single: { is_admin: true }, rows: [{ id: "admin-1" }] } };
 }
 function asNonAdmin() {
   state.user = { id: "u1" };
@@ -40,18 +40,51 @@ describe("GET /api/admin/analytics/clicks", () => {
     expect(r.status).toBe(400);
   });
 
-  it("returns clicks by trainer for an admin", async () => {
+  it("returns member-only clicks by trainer for an admin (ENG-984)", async () => {
     asAdmin();
     state.rpcs.admin_clicks_by_trainer = {
       data: [{ trainer_id: "t1", name: "Chris Waller", clicks: 22, last_click: "2026-07-15T00:00:00.000Z" }],
+    };
+    state.tables.trainer_website_click = {
+      select: {
+        rows: [
+          { user_id: "member-1", trainer_id: "t1", clicked_at: "2026-07-10T00:00:00.000Z" },
+          { user_id: "member-2", trainer_id: "t1", clicked_at: "2026-07-15T00:00:00.000Z" },
+          { user_id: "admin-1", trainer_id: "t1", clicked_at: "2026-07-16T00:00:00.000Z" },
+        ],
+      },
     };
 
     const r = await GET(new Request("http://localhost/api/admin/analytics/clicks?period=7d"));
     expect(r.status).toBe(200);
     const j = await r.json();
+    // 2 member clicks (admin's excluded), lastClick is the later MEMBER click —
+    // the admin's later click must not surface as lastClick either.
     expect(j.data).toEqual({
-      trainers: [{ trainerId: "t1", name: "Chris Waller", clicks: 22, lastClick: "2026-07-15T00:00:00.000Z" }],
+      trainers: [{ trainerId: "t1", name: "Chris Waller", clicks: 2, lastClick: "2026-07-15T00:00:00.000Z" }],
     });
+  });
+
+  it("drops a trainer whose only clicks were the admin's (RPC saw non-zero, member count is zero)", async () => {
+    asAdmin();
+    state.rpcs.admin_clicks_by_trainer = {
+      data: [
+        { trainer_id: "t1", name: "Chris Waller", clicks: 22, last_click: "2026-07-15T00:00:00.000Z" },
+        { trainer_id: "t2", name: "Gai Waterhouse", clicks: 5, last_click: "2026-07-10T00:00:00.000Z" },
+      ],
+    };
+    state.tables.trainer_website_click = {
+      select: {
+        rows: [
+          { user_id: "member-1", trainer_id: "t1", clicked_at: "2026-07-10T00:00:00.000Z" },
+          { user_id: "admin-1", trainer_id: "t2", clicked_at: "2026-07-10T00:00:00.000Z" },
+        ],
+      },
+    };
+
+    const r = await GET(new Request("http://localhost/api/admin/analytics/clicks"));
+    const j = await r.json();
+    expect(j.data.trainers.map((t: { trainerId: string }) => t.trainerId)).toEqual(["t1"]);
   });
 
   it("passes a null p_since for period=all", async () => {
@@ -66,6 +99,9 @@ describe("GET /api/admin/analytics/clicks", () => {
     asAdmin();
     state.rpcs.admin_clicks_by_trainer = {
       data: [{ trainer_id: "t1", name: "Chris Waller", clicks: 22, last_click: null }],
+    };
+    state.tables.trainer_website_click = {
+      select: { rows: [{ user_id: "member-1", trainer_id: "t1", clicked_at: "2026-07-01T00:00:00.000Z" }] },
     };
     const r = await GET(new Request("http://localhost/api/admin/analytics/clicks"));
     const j = await r.json();

@@ -3,7 +3,16 @@
 // come off Postgres RPCs (see the A1 migration) or direct table reads gated
 // by admin SELECT policies. Aggregates only; per-endpoint PII rules are
 // documented on each helper below.
+//
+// MEMBER-ONLY NUMBERS (ENG-984): every user-activity metric (opens,
+// reactions, saves, website clicks, reach) is recomputed member-only from the
+// raw engagement tables via `lib/analytics/admin-exclusion.ts`, rather than
+// trusted from the `admin_*` RPCs, which count every row including
+// operators'. STRUCTURE/CONTENT fields (entity ids, names, `posts`/`horses`
+// counts) still come straight off the RPCs — see `admin-exclusion.ts` for the
+// full rationale.
 import type { SupabaseClient } from "@supabase/supabase-js";
+import { getAdminUserIds, memberRows, countMemberRows } from "./admin-exclusion";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -28,8 +37,6 @@ export function periodSince(p: Period): string | null {
 
 // ---- Row types (snake_case, exactly as they come off PostgREST) ------------
 
-type OpensByDayRow = { day: string; opens: number | string };
-type OpensByHourRow = { hour: number | string; opens: number | string };
 type TrainerEngagementRow = {
   trainer_id: string;
   name: string;
@@ -59,8 +66,6 @@ type TopPostRow = {
   saves: number | string;
 };
 type TrialsByMonthRow = { month: string; started: number | string; converted: number | string };
-type PostOpensByDayRow = { day: string; opens: number | string };
-type PostReactionRow = { emoji: string; count: number | string };
 type ClicksByTrainerRow = {
   trainer_id: string;
   name: string;
@@ -166,73 +171,226 @@ function unwrap<T>(res: { data: T; error: { message: string } | null }, what: st
   return res.data;
 }
 
+// `memberRows`/`countMemberRows` (admin-exclusion.ts) type their `shape`
+// callback's parameter as the pre-`.select()` `PostgrestQueryBuilder`, which
+// doesn't expose filter methods — the real (post-`.select()`) builder does.
+// Cast through this minimal shape rather than `any` at every call site.
+type Filterable = {
+  gte(column: string, value: string): Filterable;
+  eq(column: string, value: string): Filterable;
+};
+function filterable(q: unknown): Filterable {
+  return q as Filterable;
+}
+
 // ---- Opens --------------------------------------------------------------------
 
+type ImpressionRow = { user_id: string | null; seen_at: string };
+
 export async function getOpens(sb: SupabaseClient, since: string | null): Promise<Opens> {
-  const [byDayRows, byHourRows] = await Promise.all([
-    callRpc<OpensByDayRow>(sb, "admin_opens_by_day", { p_since: since }),
-    callRpc<OpensByHourRow>(sb, "admin_opens_by_hour", { p_since: since }),
-  ]);
+  const adminIds = await getAdminUserIds(sb);
+  // Member-only (ENG-984): the `admin_opens_by_*` RPCs counted every open
+  // including operators'. Bucketed here in TS, in UTC, to match the RPCs'
+  // `at time zone 'UTC'` bucketing exactly.
+  const rows = await memberRows<ImpressionRow>(
+    sb,
+    "impression",
+    "user_id,seen_at",
+    (q) => (since ? filterable(q).gte("seen_at", since) : q),
+    adminIds,
+  );
+
+  const byDayMap = new Map<string, number>();
+  const byHourMap = new Map<number, number>();
+  for (const r of rows) {
+    const d = new Date(r.seen_at);
+    const day = d.toISOString().slice(0, 10);
+    byDayMap.set(day, (byDayMap.get(day) ?? 0) + 1);
+    const hour = d.getUTCHours();
+    byHourMap.set(hour, (byHourMap.get(hour) ?? 0) + 1);
+  }
 
   return {
-    byDay: byDayRows.map((r) => ({ day: r.day, opens: Number(r.opens) })),
-    byHour: byHourRows.map((r) => ({ hour: Number(r.hour), opens: Number(r.opens) })),
+    byDay: Array.from(byDayMap.entries())
+      .map(([day, opens]) => ({ day, opens }))
+      .sort((a, b) => (a.day < b.day ? -1 : a.day > b.day ? 1 : 0)),
+    byHour: Array.from(byHourMap.entries())
+      .map(([hour, opens]) => ({ hour, opens }))
+      .sort((a, b) => a.hour - b.hour),
   };
 }
 
 // ---- Engagement -----------------------------------------------------------------
 
+type EngagementPostEmbed = { id: string; source_trainer_id: string | null; horse_id: string | null };
+type EngagementRow = {
+  user_id: string | null;
+  post: EngagementPostEmbed | EngagementPostEmbed[] | null;
+};
+type ClickRow = { user_id: string | null; trainer_id: string | null };
+
+type Tally = { opens: number; reactions: number; saves: number };
+function bumpTally(map: Map<string, Tally>, id: string | null, field: keyof Tally): void {
+  if (id == null) return;
+  const t = map.get(id) ?? { opens: 0, reactions: 0, saves: 0 };
+  t[field] += 1;
+  map.set(id, t);
+}
+
 export async function getEngagement(sb: SupabaseClient, since: string | null): Promise<Engagement> {
+  const adminIds = await getAdminUserIds(sb);
+
+  // Member-only (ENG-984): trainer/horse/post STRUCTURE (ids, names, `posts`/
+  // `horses` counts) still comes off the RPC skeleton — that's content, not
+  // member activity. `opens`/`reactions`/`saves`/`websiteClicks` are
+  // recomputed member-only from the raw tables below and substituted in.
+  // p_limit 100 (not 10) so re-ranking topPosts by member opens can't miss a
+  // post that only looked top because of admin opens.
   const [trainerRows, horseRows, topPostRows] = await Promise.all([
     callRpc<TrainerEngagementRow>(sb, "admin_trainer_engagement", { p_since: since }),
     callRpc<HorseEngagementRow>(sb, "admin_horse_engagement", { p_since: since }),
-    callRpc<TopPostRow>(sb, "admin_top_posts", { p_since: since, p_limit: 10 }),
+    callRpc<TopPostRow>(sb, "admin_top_posts", { p_since: since, p_limit: 100 }),
   ]);
 
-  return {
-    trainers: trainerRows.map((r) => ({
+  const postEmbed = "post:post_id(id,source_trainer_id,horse_id)";
+  const [imps, reacts, saves, clicks] = await Promise.all([
+    memberRows<EngagementRow>(
+      sb,
+      "impression",
+      `user_id,${postEmbed}`,
+      (q) => (since ? filterable(q).gte("seen_at", since) : q),
+      adminIds,
+    ),
+    memberRows<EngagementRow>(
+      sb,
+      "reaction",
+      `user_id,${postEmbed}`,
+      (q) => (since ? filterable(q).gte("created_at", since) : q),
+      adminIds,
+    ),
+    memberRows<EngagementRow>(
+      sb,
+      "bookmark",
+      `user_id,${postEmbed}`,
+      (q) => (since ? filterable(q).gte("created_at", since) : q),
+      adminIds,
+    ),
+    memberRows<ClickRow>(
+      sb,
+      "trainer_website_click",
+      "user_id,trainer_id",
+      (q) => (since ? filterable(q).gte("clicked_at", since) : q),
+      adminIds,
+    ),
+  ]);
+
+  const trainerTally = new Map<string, Tally>();
+  const horseTally = new Map<string, Tally>();
+  const postTally = new Map<string, Tally>();
+
+  function tallyRows(rows: EngagementRow[], field: keyof Tally): void {
+    for (const r of rows) {
+      const post = one(r.post);
+      if (!post) continue;
+      bumpTally(trainerTally, post.source_trainer_id, field);
+      bumpTally(horseTally, post.horse_id, field);
+      bumpTally(postTally, post.id, field);
+    }
+  }
+  tallyRows(imps, "opens");
+  tallyRows(reacts, "reactions");
+  tallyRows(saves, "saves");
+
+  const clicksByTrainer = new Map<string, number>();
+  for (const r of clicks) {
+    if (r.trainer_id == null) continue;
+    clicksByTrainer.set(r.trainer_id, (clicksByTrainer.get(r.trainer_id) ?? 0) + 1);
+  }
+
+  const zeroTally: Tally = { opens: 0, reactions: 0, saves: 0 };
+
+  const trainers = trainerRows.map((r) => {
+    const t = trainerTally.get(r.trainer_id) ?? zeroTally;
+    return {
       trainerId: r.trainer_id,
       name: r.name,
       horses: Number(r.horses),
       posts: Number(r.posts),
-      opens: Number(r.opens),
-      reactions: Number(r.reactions),
-      saves: Number(r.saves),
-      websiteClicks: Number(r.website_clicks),
-    })),
-    horses: horseRows.map((r) => ({
+      opens: t.opens,
+      reactions: t.reactions,
+      saves: t.saves,
+      websiteClicks: clicksByTrainer.get(r.trainer_id) ?? 0,
+    };
+  });
+
+  const horses = horseRows.map((r) => {
+    const t = horseTally.get(r.horse_id) ?? zeroTally;
+    return {
       horseId: r.horse_id,
       name: r.name,
       trainerName: r.trainer_name,
       posts: Number(r.posts),
-      opens: Number(r.opens),
-      reactions: Number(r.reactions),
-      saves: Number(r.saves),
-    })),
-    topPosts: topPostRows.map((r) => ({
-      postId: r.post_id,
-      title: r.title,
-      horseName: r.horse_name,
-      type: r.type,
-      opens: Number(r.opens),
-      reactions: Number(r.reactions),
-      saves: Number(r.saves),
-    })),
-  };
+      opens: t.opens,
+      reactions: t.reactions,
+      saves: t.saves,
+    };
+  });
+
+  const topPosts = topPostRows
+    .map((r) => {
+      const t = postTally.get(r.post_id) ?? zeroTally;
+      return {
+        postId: r.post_id,
+        title: r.title,
+        horseName: r.horse_name,
+        type: r.type,
+        opens: t.opens,
+        reactions: t.reactions,
+        saves: t.saves,
+      };
+    })
+    .sort((a, b) => b.opens - a.opens || (a.postId < b.postId ? -1 : a.postId > b.postId ? 1 : 0))
+    .slice(0, 10);
+
+  return { trainers, horses, topPosts };
 }
 
 // ---- Clicks -----------------------------------------------------------------
 // Aggregates only — never include a user-level field (guardrail: no owner PII).
 
+type TrainerClickRow = { user_id: string | null; trainer_id: string | null; clicked_at: string };
+
 export async function getClicks(sb: SupabaseClient, since: string | null): Promise<Clicks> {
-  const rows = await callRpc<ClicksByTrainerRow>(sb, "admin_clicks_by_trainer", { p_since: since });
+  const adminIds = await getAdminUserIds(sb);
+  // `name` (and the trainer's presence in the list) still comes off the RPC —
+  // it inner-joins clicks so a trainer with zero MEMBER clicks must be
+  // dropped below, even though the RPC saw it as non-zero. `clicks` and
+  // `lastClick` are recomputed member-only (ENG-984).
+  const rpcRows = await callRpc<ClicksByTrainerRow>(sb, "admin_clicks_by_trainer", { p_since: since });
+  const memberClickRows = await memberRows<TrainerClickRow>(
+    sb,
+    "trainer_website_click",
+    "user_id,trainer_id,clicked_at",
+    (q) => (since ? filterable(q).gte("clicked_at", since) : q),
+    adminIds,
+  );
+
+  const byTrainer = new Map<string, { clicks: number; lastClick: string | null }>();
+  for (const r of memberClickRows) {
+    if (r.trainer_id == null) continue;
+    const cur = byTrainer.get(r.trainer_id) ?? { clicks: 0, lastClick: null };
+    cur.clicks += 1;
+    if (cur.lastClick == null || r.clicked_at > cur.lastClick) cur.lastClick = r.clicked_at;
+    byTrainer.set(r.trainer_id, cur);
+  }
+
   return {
-    trainers: rows.map((r) => ({
-      trainerId: r.trainer_id,
-      name: r.name,
-      clicks: Number(r.clicks),
-      lastClick: r.last_click,
-    })),
+    trainers: rpcRows
+      .map((r) => {
+        const m = byTrainer.get(r.trainer_id) ?? { clicks: 0, lastClick: null };
+        return { trainerId: r.trainer_id, name: r.name, clicks: m.clicks, lastClick: m.lastClick };
+      })
+      .filter((r) => r.clicks > 0),
   };
 }
 
@@ -251,6 +409,8 @@ function daysLeft(trialEndsAt: string | null): number {
   return Math.max(0, Math.ceil((Date.parse(trialEndsAt) - Date.now()) / DAY_MS));
 }
 
+// Already member-only as of ENG-314 (the by-month RPC excludes admins in SQL,
+// and the subscriptions list is filtered below) — left untouched by ENG-984.
 export async function getTrials(sb: SupabaseClient): Promise<Trials> {
   const [byMonthRows, subsRes] = await Promise.all([
     callRpc<TrialsByMonthRow>(sb, "admin_trials_by_month"),
@@ -317,21 +477,40 @@ export async function getPostAnalytics(sb: SupabaseClient, postId: string): Prom
   const horse = one(row.horse);
   const trainer = one(row.trainer);
 
-  const [opensByDayRows, reactionRows, savesRes, reachRes] = await Promise.all([
-    callRpc<PostOpensByDayRow>(sb, "admin_post_opens_by_day", { p_post_id: postId }),
-    callRpc<PostReactionRow>(sb, "admin_post_reactions", { p_post_id: postId }),
-    sb.from("bookmark").select("*", { count: "exact", head: true }).eq("post_id", postId),
+  // Member-only (ENG-984): opens, reactions, saves and reach are recomputed
+  // from the raw engagement tables via admin-exclusion.ts, replacing the
+  // `admin_post_opens_by_day` / `admin_post_reactions` RPCs and the raw
+  // bookmark/follow head-counts, all of which counted operator activity.
+  const adminIds = await getAdminUserIds(sb);
+  const [opensRows, reactionRows, saves, reach] = await Promise.all([
+    memberRows<ImpressionRow>(sb, "impression", "user_id,seen_at", (q) => filterable(q).eq("post_id", postId), adminIds),
+    memberRows<{ user_id: string | null; emoji: string }>(
+      sb,
+      "reaction",
+      "user_id,emoji",
+      (q) => filterable(q).eq("post_id", postId),
+      adminIds,
+    ),
+    countMemberRows(sb, "bookmark", (q) => filterable(q).eq("post_id", postId), adminIds),
     row.horse_id
-      ? sb.from("follow").select("*", { count: "exact", head: true }).eq("horse_id", row.horse_id)
-      : Promise.resolve({ data: null, error: null, count: 0 }),
+      ? countMemberRows(sb, "follow", (q) => filterable(q).eq("horse_id", row.horse_id as string), adminIds)
+      : Promise.resolve(0),
   ]);
 
-  const opensByDay = opensByDayRows.map((r) => ({ day: r.day, opens: Number(r.opens) }));
-  const reactionsByEmoji = reactionRows.map((r) => ({ emoji: r.emoji, count: Number(r.count) }));
-  const opens = opensByDay.reduce((sum, r) => sum + r.opens, 0);
+  const byDayMap = new Map<string, number>();
+  for (const r of opensRows) {
+    const day = new Date(r.seen_at).toISOString().slice(0, 10);
+    byDayMap.set(day, (byDayMap.get(day) ?? 0) + 1);
+  }
+  const opensByDay = Array.from(byDayMap.entries())
+    .map(([day, opens]) => ({ day, opens }))
+    .sort((a, b) => (a.day < b.day ? -1 : a.day > b.day ? 1 : 0));
 
-  unwrap(savesRes, "post saves count");
-  unwrap(reachRes, "post reach count");
+  const emojiMap = new Map<string, number>();
+  for (const r of reactionRows) emojiMap.set(r.emoji, (emojiMap.get(r.emoji) ?? 0) + 1);
+  const reactionsByEmoji = Array.from(emojiMap.entries()).map(([emoji, count]) => ({ emoji, count }));
+
+  const opens = opensByDay.reduce((sum, r) => sum + r.opens, 0);
 
   return {
     post: {
@@ -344,8 +523,8 @@ export async function getPostAnalytics(sb: SupabaseClient, postId: string): Prom
     },
     opensByDay,
     reactionsByEmoji,
-    saves: savesRes.count ?? 0,
+    saves,
     opens,
-    reach: reachRes.count ?? 0,
+    reach,
   };
 }

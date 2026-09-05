@@ -2,6 +2,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import HorseForm, { type Trainer } from "./HorseForm";
+import { setSaveToastHoldMs } from "../Toast";
+
+// ENG-964 deferred the post-save `router.push` behind a real ~900ms timer so
+// the success toast is seen. These suites assert navigation through RTL's
+// default 1000ms `waitFor`, which would leave ~40ms of headroom — green when
+// idle, flaky under load, and ~13s of dead wall-clock. Drop the hold here.
+setSaveToastHoldMs(0);
 
 // ENG-749 — the crop step, mirrored from TrainerForm.test.tsx. The assertion
 // that matters throughout is on the BODY handed to Storage, not the path: a

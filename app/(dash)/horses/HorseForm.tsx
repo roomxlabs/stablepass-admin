@@ -8,6 +8,7 @@ import { signPhoto } from "@/lib/storage/photos";
 import { SHARES_WEBSITE_REQUIRED } from "@/lib/horses/shares-for-sale";
 import { trainerHasWebsite } from "@/lib/trainers/website-url";
 import PhotoCropField, { type CropState, type PickedPhoto } from "../components/PhotoCropField";
+import ToastRegion, { saveToastHoldMs, useToast } from "../Toast";
 import { HORSE_SEXES, TRAINING_STATUSES, dollarsToCents, horseSexLabel, humanizeTrainingStatus } from "./format";
 
 // Shared add/edit form — screens/07-add-horse.html (re-cut 18 Aug 2026). In
@@ -103,6 +104,17 @@ export default function HorseForm({ mode, trainers, horseId, initial = {} }: Pro
     trainingStatus: initial.trainingStatus ?? "spelling",
     sharesForSale: initial.sharesForSale ?? false,
   });
+  const { toasts, showToast, dismissToast } = useToast();
+  // The post-save navigation is deferred so the success toast is visible; the
+  // handle is cleared on unmount so a manual navigation mid-hold can't fire a
+  // stray push afterwards.
+  const navTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(
+    () => () => {
+      if (navTimer.current) clearTimeout(navTimer.current);
+    },
+    [],
+  );
   const [submitting, setSubmitting] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -317,10 +329,24 @@ export default function HorseForm({ mode, trainers, horseId, initial = {} }: Pro
         if (!statsRes.ok) throw new Error((await statsRes.json())?.error?.message ?? "Stats update failed");
       }
 
-      router.push("/horses");
-      router.refresh();
+      // Saving used to be silent: the screen simply became the horses list, and
+      // an admin who missed the change had no confirmation the write landed.
+      // Announce it, hold briefly so the toast is seen, THEN navigate (ENG-964).
+      showToast(
+        mode === "create" ? "Horse added to the library." : "Horse saved.",
+        "success",
+      );
+      navTimer.current = setTimeout(() => {
+        router.push("/horses");
+        router.refresh();
+      }, saveToastHoldMs());
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Something went wrong.");
+      const message = err instanceof Error ? err.message : "Something went wrong.";
+      // Kept inline as well: the banner sits next to the fields and persists,
+      // while the toast is what a screen reader actually hears (`.form-error`
+      // carries no role, so before this the failure was announced to nobody).
+      setError(message);
+      showToast(message, "error");
       setSubmitting(false);
     }
   }
@@ -714,6 +740,7 @@ export default function HorseForm({ mode, trainers, horseId, initial = {} }: Pro
           </div>
         </div>
       </div>
+      <ToastRegion toasts={toasts} onDismiss={dismissToast} />
     </form>
   );
 }

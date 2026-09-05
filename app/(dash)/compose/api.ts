@@ -33,7 +33,7 @@ export async function createDraft(input: {
   sourceTrainerId: string;
   title?: string;
   body?: string;
-  /** ENG-745 — one of the 13 presets, or null for no category. */
+  /** ENG-745 — one of the presets in `lib/posts/labels.ts`, or null for no category. */
   label?: string | null;
   /**
    * ENG-748 — how many photo upload targets to mint (1..10). Photo posts only;

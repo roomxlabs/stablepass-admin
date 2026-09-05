@@ -713,8 +713,36 @@ commit. Harmless here (same behaviour, 575 px / 0.026% apart) but it breaks prov
 tell it explicitly not to run `npm run e2e` / `npx playwright`. If it already ran, re-shoot from the
 clean tree before committing and say so.
 
+## A cross-repo "contract" test asserts PRESENCE, not equality (ENG-989)
+**Symptom:** `lib/posts/labels.test.ts` went red on EVERY admin PR — "expected 13, got 14" — with
+nothing in the PR touching labels. It stayed red for days because it looks like someone else's bug.
+**Cause:** it pinned admin's preset array byte-equal to a list in **stablepass-be**, which moved
+twice without admin (a 14th preset `Trainer Comments` on 26 Aug, then ENG-978 replacing the closed
+`post_label_preset` CHECK with a `post_label` LOOKUP TABLE + `post_label_name_fk`). A cross-repo
+equality assertion makes the OTHER repo's normal progress your red build.
+**Do this:** for any cross-repo contract guard, assert the other side's set is **PRESENT** (and in
+its relative order), never that it is exhaustive — the far side is a floor that grows. Reserve
+equality for something the far side has pinned immutable. Corollaries learned here:
+- **Point the guard at the CURRENT enforcement.** It was reading `20260819120001_post_label.sql`,
+  which still parses and still says 13 — inert history. A migration file that still exists is not
+  evidence it still describes the schema.
+- **The freshness predicate must key on the NEW thing** (`\`Trainer Comments\``), not on something
+  every old rev also has (`\`Stable Update\``), or the rev-fallback chain "succeeds" on a stale
+  checkout and you debug a phantom drift.
+- **Error codes move with the constraint.** CHECK → FK changed rejection from `23514` to `23503`
+  and the constraint name from `post_label_preset` to `post_label_name_fk`. Match on code AND name,
+  and keep the old pair so a not-yet-migrated local stack still reports correctly.
+- **A count in a string is a landmine.** `LABEL_ERROR_MESSAGE` interpolates `.length`, but two route
+  tests asserted the literal `"13 presets"` — so the sync broke `app/api/**` tests that no ticket
+  surface mentioned. Grep the repo for the bare number before changing any list length.
+- **Losing a DB constraint can silently demote a guardrail.** The dropped CHECK was guardrail 6's
+  (no betting terms) database-level enforcement; the admin-side test over the array is now the ONLY
+  automated control. When a far-side change removes a preventive control, say so where the detective
+  one lives.
+
 ## A cross-repo "contract" test must read git REVS, not the sibling's working tree (ENG-745)
-**Symptom:** `lib/posts/labels.test.ts` — which pins admin's 13 post-label presets against
+**Symptom (ENG-745; the equality it describes was later replaced — see the ENG-989 entry above):**
+`lib/posts/labels.test.ts` — which pins admin's post-label presets against
 stablepass-be's `docs/specs/api-contract.md` + the `post_label_preset` migration — failed with
 "cannot reach the preset source of truth", pointing at a path that was *correct*.
 **Cause:** the sibling repo was checked out on `main`, where the round-6 label work does not exist

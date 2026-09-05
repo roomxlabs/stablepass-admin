@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { makeFakeClient, blankState, type FakeState } from "@/lib/testing/supabase-fake";
+import { POST_LABEL_PRESETS } from "@/lib/posts/labels";
 
 const state: FakeState = blankState();
 
@@ -124,12 +125,12 @@ describe("PATCH /api/admin/posts/:id — edit fields", () => {
     expect(r.status).toBe(400);
     const j = await r.json();
     expect(j.error.code).toBe("validation_failed");
-    expect(j.error.message).toContain("13 presets");
+    expect(j.error.message).toContain(`${POST_LABEL_PRESETS.length} presets`);
   });
 
   // `post` carries several CHECKs (type, status, aspect_ratio, label) and they
   // all raise 23514. Matching the bare CODE made every one of them report
-  // "label must be one of the 13 presets" — including a bad `type`, which is
+  // "label must be one of the presets" — including a bad `type`, which is
   // editable through FIELD_MAP with no validation, so it is reachable today.
   it("a 23514 from a DIFFERENT constraint keeps its own message", async () => {
     asAdmin();
@@ -147,7 +148,7 @@ describe("PATCH /api/admin/posts/:id — edit fields", () => {
     expect(j.error.code).toBe("update_failed");
     expect(j.error.message).toContain("post_type_check");
     // The operator must not be sent hunting for a label they never touched.
-    expect(j.error.message).not.toContain("13 presets");
+    expect(j.error.message).not.toContain(`${POST_LABEL_PRESETS.length} presets`);
   });
 });
 

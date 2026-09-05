@@ -151,27 +151,25 @@ export default async function HorsesPage({
   // `name` / `newest` were already ordered by Postgres inside fetchHorses.
   // `followers` (an embedded count) and `lastpost` (not a column on `horse` at
   // all) can only be ordered here — which is exact, not a per-page
-  // approximation, because this grid is unpaginated and `all` holds every row.
-  // Ties break on display name so the order is total and stable across loads.
-  const filtered =
-    sort === "followers" || sort === "lastpost"
-      ? [...unsorted].sort(
-          (a, b) =>
-            compareValues(
-              sort === "followers"
-                ? embedCount(a.follows)
-                : lastPostAt?.get(a.id)
-                  ? new Date(lastPostAt.get(a.id)!).getTime()
-                  : null,
-              sort === "followers"
-                ? embedCount(b.follows)
-                : lastPostAt?.get(b.id)
-                  ? new Date(lastPostAt.get(b.id)!).getTime()
-                  : null,
-              "desc",
-            ) || compareValues(a.display_name, b.display_name, "asc"),
-        )
-      : unsorted;
+  // approximation, because this grid is UNPAGINATED (hotfix, 25 Aug 2026) and
+  // `all` holds every row the operator can read.
+  const sortedInJs = sort === "followers" || sort === "lastpost";
+  const sortValue = (h: HorseRow): number | null => {
+    if (sort === "followers") return embedCount(h.follows);
+    const at = lastPostAt?.get(h.id);
+    return at ? new Date(at).getTime() : null;
+  };
+  // Both JS sorts read biggest/most-recent first, and `compareValues` sinks
+  // nulls in either direction — a horse that has never been posted about is
+  // unknown, not "the least recent". Ties break on name so the order is total
+  // and identical across reloads.
+  const filtered = sortedInJs
+    ? [...unsorted].sort(
+        (a, b) =>
+          compareValues(sortValue(a), sortValue(b), "desc") ||
+          compareValues(a.display_name, b.display_name, "asc"),
+      )
+    : unsorted;
 
   const total = filtered.length;
   // Private bucket: turn each stored photo path into a signed URL for display.

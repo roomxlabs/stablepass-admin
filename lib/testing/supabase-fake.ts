@@ -57,6 +57,25 @@ export type FakeState = {
        */
       filters: { column: string; value: any; op?: string }[];
     }[];
+    /**
+     * Result-SHAPING calls (`.order()` / `.range()`), per table (ENG-993).
+     *
+     * These are not filters — they cannot make a mutation conditional — so
+     * they must not land in `mutations[].filters`. They are recorded here
+     * instead of being dropped, so that no method which *filters or shapes a
+     * result* discards its arguments, and so a paging/sort assertion has
+     * something to read.
+     *
+     * `args` has fixed arity: `.order("created_at")` records
+     * `["created_at", undefined]`, not `["created_at"]`.
+     *
+     * Scope note — this is NOT a claim that the fake records everything.
+     * `select()` still drops its column list (and `{ count, head }`), `or()`
+     * keeps only the expression, and `insert`/`update`/`delete` ignore their
+     * options argument. Those are unused by the assertions this fake supports;
+     * add recording when a test actually needs to prove one.
+     */
+    modifiers: { table: string; kind: "order" | "range"; args: any[] }[];
     /** Storage signed-upload targets requested, so "text makes no Storage call" is provable. */
     storage: { bucket: string; path: string }[];
   };
@@ -96,19 +115,46 @@ function makeBuilder(state: FakeState, table: string): Builder {
   let op: "select" | "mutate" = "select";
   // Shared with the recorded mutation (same array reference), so `.eq()` calls
   // chained AFTER .delete()/.update() are still captured.
-  const filters: { column: string; value: any; op?: string }[] = [];
+  //
+  // ENG-993: re-seeded (copied) by `recordMutation` on every mutation, so that
+  // two mutations off ONE `from()` builder don't share one array. They used to,
+  // which meant a `.is(...)` guard belonging to the SECOND write also appeared
+  // on the first — i.e. the aliasing could make a precondition assertion pass
+  // for a write that never carried it. That false PASS is the exact failure
+  // mode this ticket exists to remove, so it must not survive in the fix.
+  let filters: { column: string; value: any; op?: string }[] = [];
   const script = () => state.tables[table] ?? {};
+  // Snapshot the filters accumulated so far into a FRESH array, hand that to
+  // the mutation record, and keep chaining into it — so filters chained after
+  // the mutation still land on it, while an earlier mutation's record stays
+  // frozen at what it actually carried.
+  const recordMutation = (
+    op: "insert" | "update" | "delete" | "upsert",
+    payload: any,
+    options?: any,
+  ) => {
+    filters = [...filters];
+    const record: {
+      table: string;
+      op: "insert" | "update" | "delete" | "upsert";
+      payload: any;
+      options?: any;
+      filters: { column: string; value: any; op?: string }[];
+    } = { table, op, payload, filters };
+    if (options !== undefined) record.options = options;
+    state.calls.mutations.push(record);
+  };
   const pick = (): ScriptResult => (op === "mutate" ? script().mutate : script().select) ?? {};
   const b: Builder = {
     select: () => b,
     insert: (payload?: any) => {
       op = "mutate";
-      state.calls.mutations.push({ table, op: "insert", payload, filters });
+      recordMutation("insert", payload);
       return b;
     },
     update: (payload?: any) => {
       op = "mutate";
-      state.calls.mutations.push({ table, op: "update", payload, filters });
+      recordMutation("update", payload);
       return b;
     },
     // Mirrors `insert` exactly (same op-flip, same script table), but records
@@ -116,38 +162,81 @@ function makeBuilder(state: FakeState, table: string): Builder {
     // calling this instead of `.insert()` (ENG-748), so it has to be provable.
     upsert: (payload?: any, options?: any) => {
       op = "mutate";
-      state.calls.mutations.push({ table, op: "upsert", payload, options, filters });
+      recordMutation("upsert", payload, options);
       return b;
     },
     delete: () => {
       op = "mutate";
-      state.calls.mutations.push({ table, op: "delete", payload: undefined, filters });
+      recordMutation("delete", undefined);
       return b;
     },
     eq: (column?: any, value?: any) => {
       filters.push({ column, value });
       return b;
     },
-    neq: () => b,
-    is: () => b,
-    in: () => b,
-    ilike: () => b,
+    // ENG-993: every comparator below records its filter. They used to be
+    // `() => b` — pure no-ops — which meant the chain's preconditions were
+    // invisible to a test, so a conditional mutation passed its tests with the
+    // guard DELETED. `.update(...).eq("id", x).is("col", null)` and
+    // `.update(...).eq("id", x)` recorded identically, i.e. the only thing
+    // stopping a lost-update race was untested and un-pinnable. Each records
+    // `op` (unlike `eq`, which stays bare for back-compat with the existing
+    // `toEqual([{ column, value }])` assertions) so a test can prove WHICH
+    // comparator guarded the write, not merely that some filter was present.
+    neq: (column?: any, value?: any) => {
+      filters.push({ column, value, op: "neq" });
+      return b;
+    },
+    is: (column?: any, value?: any) => {
+      filters.push({ column, value, op: "is" });
+      return b;
+    },
+    in: (column?: any, value?: any) => {
+      filters.push({ column, value, op: "in" });
+      return b;
+    },
+    ilike: (column?: any, value?: any) => {
+      filters.push({ column, value, op: "ilike" });
+      return b;
+    },
     or: (expr: string) => { state.calls.or.push(expr); return b; },
-    order: () => b,
-    range: () => b,
-    gt: () => b,
-    // Records its filter (unlike the other range comparators, which stay
-    // no-ops) because ENG-748's trailing-set trim is a `.delete().eq(post_id)
-    // .gte(sort_order, n)` — without this a test asserting "the tail was
-    // trimmed from the right ordinal" has nothing to read the `n` off, and a
-    // trim that dropped the whole set (gte 0) would look identical to a
-    // correct one.
+    // `order` and `range` are NOT filters — they shape/paginate a result set
+    // and can never make a mutation conditional, so they are deliberately not
+    // pushed into `filters` (doing so would corrupt the "which row did this
+    // write target" assertions). They are still recorded, on `calls.modifiers`,
+    // rather than dropped (ENG-993). See the `modifiers` doc comment for what
+    // this fake still does NOT record (`select` columns, `or` options, and the
+    // insert/update/delete options arg).
+    order: (column?: any, options?: any) => {
+      state.calls.modifiers.push({ table, kind: "order", args: [column, options] });
+      return b;
+    },
+    range: (from?: any, to?: any) => {
+      state.calls.modifiers.push({ table, kind: "range", args: [from, to] });
+      return b;
+    },
+    gt: (column?: any, value?: any) => {
+      filters.push({ column, value, op: "gt" });
+      return b;
+    },
+    // Records its filter because ENG-748's trailing-set trim is a
+    // `.delete().eq(post_id).gte(sort_order, n)` — without this a test
+    // asserting "the tail was trimmed from the right ordinal" has nothing to
+    // read the `n` off, and a trim that dropped the whole set (gte 0) would
+    // look identical to a correct one. (It was the ONLY comparator doing this
+    // until ENG-993 made the rest follow the same idiom.)
     gte: (column?: any, value?: any) => {
       filters.push({ column, value, op: "gte" });
       return b;
     },
-    lt: () => b,
-    lte: () => b,
+    lt: (column?: any, value?: any) => {
+      filters.push({ column, value, op: "lt" });
+      return b;
+    },
+    lte: (column?: any, value?: any) => {
+      filters.push({ column, value, op: "lte" });
+      return b;
+    },
     single: async () => ({ data: pick().single ?? null, error: pick().error ?? null }),
     maybeSingle: async () => ({ data: pick().single ?? null, error: pick().error ?? null }),
     then: (resolve, reject) => {
@@ -234,6 +323,6 @@ export function blankState(): FakeState {
     functions: {},
     rpcs: {},
     storage: {},
-    calls: { functions: [], or: [], from: [], rpc: [], mutations: [], storage: [] },
+    calls: { functions: [], or: [], from: [], rpc: [], mutations: [], modifiers: [], storage: [] },
   };
 }

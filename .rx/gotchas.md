@@ -1096,3 +1096,26 @@ with zero pan slack on both axes, so dragging does nothing — it reads as "the 
 forms now hold a `sessionPick` ({file, crop}) and re-open that. Set it ONLY in the upload's SUCCESS
 branch: adopting at pick time means a cancelled pick (or a failed upload) leaves "Reposition"
 pointing at a file the admin backed out of, which silently swaps the stored photo on the next Apply.
+
+## `lib/testing/supabase-fake.ts` is the fake for ROUTES — not every module (ENG-993, 5 Sep 2026)
+`lib/mux-playback.ts` does **not** use it: it declares its own narrow `PlaybackDb` interface and
+`mux-playback.test.ts` hand-rolls a matching fake. So "fix the shared fake" did **not** by itself pin
+that module's guard — the shared fake only reaches it via `app/api/admin/posts/[id]/preview/route.ts`,
+which passes the real `sb`. **Before claiming a call site is unprotected by the shared fake, check
+whether the module even takes the Supabase client** — several take a narrow structural interface
+instead, and each of those has its own fake with its own blind spots.
+
+Comparator recording idiom (post-ENG-993): `eq` records `{column, value}` **bare** — four existing
+tests do `toEqual([{column, value}])`, so adding an `op` to `eq` would break them. Every other
+comparator records `{column, value, op}`. `order`/`range` are result-shaping, never filters, and go to
+`calls.modifiers` — putting them in `filters` corrupts "which row did this write target".
+
+Mutation records **snapshot** their filters (`filters = [...filters]` at push). They used to share one
+array per builder, so two mutations off one `from()` cross-contaminated and a guard on the SECOND
+write showed up on the first — a false PASS on exactly the precondition assertions this fake exists to
+support. Keep the snapshot if you touch `makeBuilder`.
+
+## Branch drift between `main` and `feature/launch-v1` (ENG-993)
+A ticket written off one branch can describe code that differs on its declared base. ENG-993 said `in`
+was already fixed (true on `main` via ENG-950/PR #78) but it was still a no-op on `feature/launch-v1`.
+**Read the actual file on the ticket's `Base branch:`, not the ticket's description of it.**

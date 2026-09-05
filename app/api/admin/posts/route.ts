@@ -4,7 +4,7 @@ import { ok, fail } from "@/lib/api/envelope";
 import { createMuxDirectUpload, MuxError } from "@/lib/mux";
 import { isLabelCheckViolation, LABEL_ERROR_MESSAGE, normalisePostLabel } from "@/lib/posts/labels";
 import { MAX_PHOTOS, uploadSlotPath } from "@/lib/posts/media";
-import { POST_SORT_DEFAULT_DIR, parsePostSort, postsOrder } from "@/lib/posts/sort";
+import { POST_SORT_DEFAULT_DIR, parsePostSort, postsOrder, postsSelect } from "@/lib/posts/sort";
 
 const POST_MEDIA_BUCKET = "post-media"; // T15 private bucket (photo/voice)
 // ENG-611: widened from video|photo. `post.type`'s CHECK has permitted all of
@@ -48,7 +48,13 @@ export async function GET(req: Request) {
     .select(
       // `label` (ENG-745) is selected so the posts library can render the
       // category chip; that rendering is a later slice, this only carries it.
-      "id,horse_id,type,status,title,body,label,like_count,published_at,scheduled_for,created_at,horse:horse_id(display_name,racing_name),trainer:source_trainer_id(name)",
+      // `postsSelect` makes the horse embed `!inner` for the horse-name sort
+      // only — PostgREST will not order parent rows by an embedded column
+      // otherwise. Every other sort gets this string unchanged.
+      postsSelect(
+        "id,horse_id,type,status,title,body,label,like_count,published_at,scheduled_for,created_at,horse:horse_id(display_name,racing_name),trainer:source_trainer_id(name)",
+        sort,
+      ),
       { count: "exact" },
     );
   for (const o of postsOrder(sort, dir)) {

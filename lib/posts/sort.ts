@@ -65,6 +65,27 @@ const ORDER_COLUMN: Record<PostSort, string> = {
 const NULLABLE: Partial<Record<PostSort, true>> = { published: true, engagement: true };
 
 /**
+ * The posts select string, adjusted for the active sort.
+ *
+ * Ordering the PARENT rows by an embedded column requires the embed to be an
+ * INNER join — `supabase-js` says so in its own `.order()` docs ("you can order
+ * referenced tables, but it only affects the ordering of the parent table if
+ * you use `!inner`"), and without it PostgREST is free to order nothing at all.
+ * So the `horse` embed becomes `!inner` for exactly the one sort that needs it.
+ *
+ * No rows are lost by the inner join: `post.horse_id` is NOT NULL (every post
+ * type, `text` included, requires a horse — see the create route), so every row
+ * has a horse to join to.
+ *
+ * Every other sort gets the select string UNCHANGED, byte for byte, so the
+ * default query is exactly the one that shipped before this ticket.
+ */
+export function postsSelect(select: string, sort: PostSort | ""): string {
+  if (sort !== "horse") return select;
+  return select.replace("horse:horse_id(", "horse:horse_id!inner(");
+}
+
+/**
  * The ordered list of `.order()` calls for a `?sort=`/`?dir=` pair.
  *
  * ALWAYS ends with `created_at desc` as a tiebreaker. Without it, rows sharing

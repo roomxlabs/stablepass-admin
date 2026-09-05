@@ -140,7 +140,16 @@ function builtinsFromLabelTableMigration(sql: string): string[] {
   const at = sql.indexOf("insert into public.post_label");
   if (at === -1) throw new Error("Could not find the post_label seed INSERT in the migration.");
   const stmt = sql.slice(at, sql.indexOf(";", at));
-  return [...stmt.matchAll(/\(\s*'((?:[^']|'')*)'\s*,\s*true\s*,/g)].map((m) => m[1].replace(/''/g, "'"));
+  const rows = [...stmt.matchAll(/\(\s*'((?:[^']|'')*)'\s*,\s*true\s*,\s*(\d+)\s*\)/g)].map((m) => ({
+    name: m[1].replace(/''/g, "'"),
+    sortOrder: Number(m[2]),
+  }));
+  if (rows.length === 0) throw new Error("Parsed no builtin rows out of the post_label seed INSERT.");
+  // Sort by sort_order, NOT by the order the rows happen to appear in the file.
+  // `sort_order` is what drives be's picker order, and admin's array order feeds
+  // the compose picker — today the two coincide, but a row appended with an
+  // interleaved sort_order would otherwise assert the wrong order.
+  return rows.sort((a, b) => a.sortOrder - b.sortOrder).map((r) => r.name);
 }
 
 /**
@@ -162,7 +171,13 @@ function driftAgainst(builtins: readonly string[], admin: readonly string[]) {
 
 describe("post label presets — drift guard against stablepass-be", () => {
   it("contains every preset documented in docs/specs/api-contract.md, in order", () => {
-    const doc = readBeFile("docs/specs/api-contract.md", (t) => t.includes("`Stable Update`"));
+    // The predicate must reject a rev that PREDATES the change, or the fallback
+    // chain "succeeds" on a stale doc and the only thing left standing between
+    // it and a green guard is the >= 14 literal below. be's
+    // origin/feature/round6-v1 doc satisfies "`Stable Update`" with only 13
+    // presets, so key it on the newest builtin instead: a stale rev is then
+    // skipped and the loop falls through to a fresh one.
+    const doc = readBeFile("docs/specs/api-contract.md", (t) => t.includes("`Trainer Comments`"));
     const documented = presetsFromContractDoc(doc);
 
     // Non-vacuity floor: the parse must actually have found the list. ENG-978's

@@ -16,6 +16,12 @@
  * adds a category by INSERTing a row — no migration. The live allowed set is
  * whatever `post_label` holds.
  *
+ * KNOWN GAP (deliberate, out of scope for ENG-989): admin cannot yet POST with
+ * a runtime-added label. `normalisePostLabel` rejects anything outside this
+ * array and both routes turn that into a 400 before the database is reached, so
+ * the `23503` backstop below is unreachable through admin's own surface. The
+ * picker reading `post_label` live is a separate ticket (see ENG-979).
+ *
  * So the 14 names below are be's **seeded builtins** — the floor every client
  * may assume, pinned permanently by be's `post_label_immutable_builtin` trigger
  * (a builtin cannot be renamed or deleted). They are NOT the whole set. The
@@ -91,6 +97,15 @@ export const LABEL_FK_CONSTRAINT = "post_label_name_fk";
  *  - `23514` + `post_label_preset` — the old CHECK. Kept so this still reports
  *    correctly against a database that has not yet run ENG-978's migration
  *    (a stale local/preview stack), rather than silently mapping it to a 500.
+ *
+ * CAVEAT (dead today, live the moment a label-management screen exists): the
+ * match is a substring over message+details, so it also claims the OPPOSITE
+ * direction of the same FK — `update or delete on table "post_label" violates
+ * foreign key constraint "post_label_name_fk" on table "post"`, i.e. deleting a
+ * label that posts still reference. That would be reported to the operator as
+ * "label must be one of the N presets", which is wrong. No admin route writes
+ * `post_label` today, so it is unreachable; whoever builds that screen must
+ * narrow this.
  *
  * The code alone is NOT enough to blame the label, in either era. `post` carries
  * several CHECKs (`type`, `status`, `post_aspect_ratio_positive`) and several

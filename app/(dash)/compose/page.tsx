@@ -18,6 +18,7 @@ import {
   signPhotoMap,
 } from "@/lib/storage/photos";
 import { resolveVideoPlayback } from "@/lib/mux-playback";
+import { orderLabels } from "@/lib/posts/labels";
 
 /**
  * The types Compose can load for editing — the same four it can create.
@@ -69,7 +70,7 @@ export default async function ComposePage({
   // separate badge regressions pass the entire suite. That function owns the
   // `race_date` filter and the "a failed read is not 'nobody races today'"
   // branch, and data.test.ts pins both.
-  const [horsesRes, trainersRes, racing] = await Promise.all([
+  const [horsesRes, trainersRes, racing, labelsRes] = await Promise.all([
     sb
       .from("horse")
       .select(
@@ -82,6 +83,11 @@ export default async function ComposePage({
     // generated DB types, matching supabase-js's builder generics against a
     // hand-written structural type makes tsc unroll them (TS2589).
     loadRacingHorseIds(sb as unknown as RaceQueryClient, aestToday()),
+    // ENG-979 — the live editorial categories. Read here, server-side, so the
+    // picker is populated in the FIRST paint: a client fetch on mount would
+    // leave the field empty for a beat, and an operator who opens Compose and
+    // sees no categories has no reason to wait for a second one to arrive.
+    sb.from("post_label").select("name,is_builtin,sort_order"),
   ]);
 
   const racingToday = racing.ids;
@@ -152,5 +158,29 @@ export default async function ComposePage({
     }
   }
 
-  return <ComposeScreen horses={signedHorses} trainers={trainers} initial={initial} />;
+  // Builtins first in be's seeded order, then admin-added ones alphabetically.
+  // Literally the SAME function `GET /api/admin/post-labels` calls, not a
+  // matching copy — so the picker cannot reshuffle between a server render and
+  // the route's view of the list.
+  //
+  // A failed/empty read falls through to `undefined`, and ComposeScreen's
+  // default (the 14 immutable builtins) takes over. Those rows cannot be
+  // deleted, so "no rows came back" always means the READ failed, never that
+  // the vocabulary is genuinely empty — and offering the guaranteed floor beats
+  // offering nothing.
+  const labelRows = (labelsRes.data ?? []) as {
+    name: string;
+    is_builtin: boolean;
+    sort_order: number;
+  }[];
+  const labels = labelRows.length ? orderLabels(labelRows).map((r) => r.name) : undefined;
+
+  return (
+    <ComposeScreen
+      horses={signedHorses}
+      trainers={trainers}
+      initial={initial}
+      labels={labels}
+    />
+  );
 }

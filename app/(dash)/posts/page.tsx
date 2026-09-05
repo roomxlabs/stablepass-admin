@@ -16,7 +16,7 @@ import "./posts.css";
 
 const PAGE_SIZE = 20;
 const POST_FIELDS =
-  "id,horse_id,type,status,title,body,media_url,mux_playback_id,poster_url,poster_time_s,like_count,published_at,scheduled_for,created_at," +
+  "id,horse_id,type,status,title,label,body,media_url,mux_playback_id,poster_url,poster_time_s,like_count,published_at,scheduled_for,created_at," +
   "horse:horse_id(display_name,racing_name,photo_url),trainer:source_trainer_id(name)";
 
 // Resolve free-text `q` into a PostgREST OR clause across post title/body plus
@@ -28,7 +28,13 @@ async function qOrClause(sb: SupabaseClient, q: string): Promise<string | null> 
   const text = q.replace(/[(),]/g, " ").trim();
   if (!text) return null;
   const like = `%${text}%`;
-  const ors = [`title.ilike.${like}`, `body.ilike.${like}`];
+  // ENG-979 — `label` is searched alongside `title`, and it has to be: the
+  // library now NAMES each row by its label, and a new post has no title at
+  // all. Without this, typing the name you can see in the list returns
+  // nothing — which undercuts the whole point of the ticket (Mel could not
+  // tell her posts apart). `title` stays in the clause so pre-ENG-979 posts,
+  // which are named by their title, remain findable by it.
+  const ors = [`title.ilike.${like}`, `label.ilike.${like}`, `body.ilike.${like}`];
   const [{ data: horses }, { data: trainers }] = await Promise.all([
     sb
       .from("horse")

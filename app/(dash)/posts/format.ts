@@ -74,7 +74,26 @@ export function mapPostRow(row: PostRow): PostView {
   const engaged = row.status === "published" || row.status === "unpublished";
   return {
     id: row.id,
-    title: row.title?.trim() || "Untitled post",
+    // ENG-979 — the LABEL names the row, not the old free-text title.
+    //
+    // Compose now offers ONE field (a picker over `post_label` + Add new), so
+    // `label` is what an operator actually sets on a new post and `title` is a
+    // legacy column with no input behind it. Mel's complaint was that the
+    // library said "Untitled post" for posts she had named, so she could not
+    // tell them apart without opening each one.
+    //
+    // `title` is kept as a DISPLAY-ONLY fallback, deliberately. Posts written
+    // before this ticket carry a typed `title` and a null `label`; reading
+    // label-only would have regressed those rows to "Untitled post" — the very
+    // symptom this ticket exists to remove — and the only alternative was a
+    // backfill, which is a data write the human owner has not approved (the
+    // ticket says to ask first, and Mel has live posts in this state). A read
+    // fallback fixes the symptom, writes nothing, and leaves the backfill
+    // decision open. See the PR body.
+    //
+    // So "Untitled post" now survives only for a post with NO label and NO
+    // title — genuinely unnamed, rather than merely unlabelled.
+    title: row.label?.trim() || row.title?.trim() || "Untitled post",
     excerpt: (row.body ?? "").trim(),
     horseName: horse?.display_name || horse?.racing_name || "Unassigned",
     trainerName: trainer?.name ?? null,

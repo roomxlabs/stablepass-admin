@@ -254,3 +254,36 @@ describe("PostsLibrary — Published column renders in the browser TZ (via Local
     expect(container.querySelector("time")!.getAttribute("datetime")).toBe(publishedAt);
   });
 });
+
+// ---------------------------------------------------------------------------
+// ENG-979 — the row's name, rendered.
+//
+// `format.test.ts` pins the mapping decision; these pin that the decision
+// actually reaches the screen. Both matter: the row name is also the row's
+// accessible name ("Open <title>"), so a regression here is a screen-reader
+// regression as well as a visual one.
+// ---------------------------------------------------------------------------
+// NOTE ON SCOPE: `renderOne` takes a Partial<PostView>, i.e. the ALREADY-MAPPED
+// row, so nothing here can prove which column the name came from — that is
+// `format.test.ts`'s job and it pins it properly. These assert only that
+// whatever `mapPostRow` produced actually reaches the screen, including the
+// accessible name, which is a separate regression surface.
+describe("ENG-979 · the mapped row name reaches the screen", () => {
+  it("renders the mapped name as the row's visible name", () => {
+    const { container } = renderOne({ id: "lab", title: "Trackwork" });
+    expect(container.textContent).toContain("Trackwork");
+    expect(container.textContent).not.toContain("Untitled post");
+  });
+
+  it("renders the empty-state name when the mapper produced one", () => {
+    const { container } = renderOne({ id: "none", title: "Untitled post" });
+    expect(container.textContent).toContain("Untitled post");
+  });
+
+  it("uses the row name as the row's ACCESSIBLE name too", () => {
+    // The row's aria-label is `Open ${title}`, so a change to the naming rule
+    // is a screen-reader change as well as a visual one.
+    renderOne({ id: "lab", title: "Trackwork" });
+    expect(screen.getByLabelText("Open Trackwork")).toBeTruthy();
+  });
+});

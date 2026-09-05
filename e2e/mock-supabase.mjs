@@ -95,13 +95,13 @@ const HORSE_FIXTURES = HORSE_SEED.map((h) => ({
 // statuses so the row-action variants render. photo_url is null so the neutral
 // thumb fallback shows (no external asset needed).
 const POST_FIXTURES = [
-  { id: "p1", horse_id: "h1", type: "video", status: "published", title: "Last fast gallop before Saturday", body: "He's spot-on. Track was rolling and he came home strong.", like_count: 142, published_at: "2026-07-11T04:10:00Z", scheduled_for: null, created_at: "2026-07-11T04:00:00Z", horse: { display_name: "Mahogany", racing_name: "MAHOGANY (AUS)", photo_url: null }, trainer: { name: "Chris Waller" } },
-  { id: "p2", horse_id: "h3", type: "photo", status: "published", title: "Track session — three furlongs strong", body: "Morning at Caulfield, going was good.", like_count: 89, published_at: "2026-07-11T00:10:00Z", scheduled_for: null, created_at: "2026-07-11T00:00:00Z", horse: { display_name: "Black Caviar", racing_name: "BLACK CAVIAR (AUS)", photo_url: null }, trainer: { name: "Peter Moody" } },
-  { id: "p3", horse_id: "h4", type: "video", status: "scheduled", title: "Saturday preview — race morning walk", body: "Set to go live race morning, 6:00am.", like_count: 0, published_at: null, scheduled_for: "2026-07-18T20:00:00Z", created_at: "2026-07-10T22:00:00Z", horse: { display_name: "Northern Star", racing_name: null, photo_url: null }, trainer: { name: "Peter Moody" } },
-  { id: "p4", horse_id: "h2", type: "text", status: "published", title: "Routine day — barrier trial complete", body: "Pleased with the way he finished off.", like_count: 56, published_at: "2026-07-10T09:00:00Z", scheduled_for: null, created_at: "2026-07-10T09:00:00Z", horse: { display_name: "Verry Elleegant", racing_name: "VERRY ELLEEGANT (NZ)", photo_url: null }, trainer: { name: "Chris Waller" } },
-  { id: "p5", horse_id: "h6", type: "photo", status: "draft", title: "Quiet day in the box", body: "Draft, waiting on photo from Chris.", like_count: 0, published_at: null, scheduled_for: null, created_at: "2026-07-10T06:00:00Z", horse: { display_name: "Winx", racing_name: "WINX (AUS)", photo_url: null }, trainer: { name: "Chris Waller" } },
-  { id: "p6", horse_id: "h1", type: "video", status: "published", title: "Track gallop — pack work", body: "Group session from Rosehill.", like_count: 118, published_at: "2026-07-09T05:00:00Z", scheduled_for: null, created_at: "2026-07-09T05:00:00Z", horse: { display_name: "Mahogany", racing_name: "MAHOGANY (AUS)", photo_url: null }, trainer: { name: "Chris Waller" } },
-  { id: "p7", horse_id: "h1", type: "photo", status: "unpublished", title: "Stable life — Mahogany on the walker", body: "Cool-down after morning work.", like_count: 34, published_at: "2026-07-08T05:00:00Z", scheduled_for: null, created_at: "2026-07-08T05:00:00Z", horse: { display_name: "Mahogany", racing_name: "MAHOGANY (AUS)", photo_url: null }, trainer: { name: "Chris Waller" } },
+  { id: "p1", horse_id: "h1", type: "video", status: "published", label: "Trackwork", title: "Last fast gallop before Saturday", body: "He's spot-on. Track was rolling and he came home strong.", like_count: 142, published_at: "2026-07-11T04:10:00Z", scheduled_for: null, created_at: "2026-07-11T04:00:00Z", horse: { display_name: "Mahogany", racing_name: "MAHOGANY (AUS)", photo_url: null }, trainer: { name: "Chris Waller" } },
+  { id: "p2", horse_id: "h3", type: "photo", status: "published", label: "Owner Update", title: "Track session — three furlongs strong", body: "Morning at Caulfield, going was good.", like_count: 89, published_at: "2026-07-11T00:10:00Z", scheduled_for: null, created_at: "2026-07-11T00:00:00Z", horse: { display_name: "Black Caviar", racing_name: "BLACK CAVIAR (AUS)", photo_url: null }, trainer: { name: "Peter Moody" } },
+  { id: "p3", horse_id: "h4", type: "video", status: "scheduled", label: "Race Preview", title: "Saturday preview — race morning walk", body: "Set to go live race morning, 6:00am.", like_count: 0, published_at: null, scheduled_for: "2026-07-18T20:00:00Z", created_at: "2026-07-10T22:00:00Z", horse: { display_name: "Northern Star", racing_name: null, photo_url: null }, trainer: { name: "Peter Moody" } },
+  { id: "p4", horse_id: "h2", type: "text", status: "published", label: null, title: "Routine day — barrier trial complete", body: "Pleased with the way he finished off.", like_count: 56, published_at: "2026-07-10T09:00:00Z", scheduled_for: null, created_at: "2026-07-10T09:00:00Z", horse: { display_name: "Verry Elleegant", racing_name: "VERRY ELLEEGANT (NZ)", photo_url: null }, trainer: { name: "Chris Waller" } },
+  { id: "p5", horse_id: "h6", type: "photo", status: "draft", label: null, title: null, body: "Draft, waiting on photo from Chris.", like_count: 0, published_at: null, scheduled_for: null, created_at: "2026-07-10T06:00:00Z", horse: { display_name: "Winx", racing_name: "WINX (AUS)", photo_url: null }, trainer: { name: "Chris Waller" } },
+  { id: "p6", horse_id: "h1", type: "video", status: "published", label: "Race Day \u00b7 Today", title: "Track gallop — pack work", body: "Group session from Rosehill.", like_count: 118, published_at: "2026-07-09T05:00:00Z", scheduled_for: null, created_at: "2026-07-09T05:00:00Z", horse: { display_name: "Mahogany", racing_name: "MAHOGANY (AUS)", photo_url: null }, trainer: { name: "Chris Waller" } },
+  { id: "p7", horse_id: "h1", type: "photo", status: "unpublished", label: "Stable Update", title: "Stable life — Mahogany on the walker", body: "Cool-down after morning work.", like_count: 34, published_at: "2026-07-08T05:00:00Z", scheduled_for: null, created_at: "2026-07-08T05:00:00Z", horse: { display_name: "Mahogany", racing_name: "MAHOGANY (AUS)", photo_url: null }, trainer: { name: "Chris Waller" } },
 ];
 
 const ADMIN_USER = {
@@ -449,6 +449,33 @@ const HORSE_EMBED = { id: "h1", display_name: "Mahogany", racing_name: "Mahogany
 //
 // Text posts on purpose: `text` short-circuits the media branch in page.tsx, so
 // neither Storage signing nor Mux playback resolution has to be mocked.
+// ENG-979 — be's `post_label` rows. The 14 builtins are pinned immutable in the
+// real database; two admin-added rows are seeded so the picker's ordering rule
+// (builtins first in sort_order, then added ones alphabetically) is visible in
+// the screenshot rather than merely asserted in a unit test. MUTABLE: Add-new
+// pushes onto it, so a spec can prove a created label survives into the next
+// compose without a deploy.
+const POST_LABEL_FIXTURES = [
+  { id: "pl-1", name: "Stable Update", is_builtin: true, sort_order: 1 },
+  { id: "pl-2", name: "Pre Race Report", is_builtin: true, sort_order: 2 },
+  { id: "pl-3", name: "Post Race Report", is_builtin: true, sort_order: 3 },
+  { id: "pl-4", name: "Trackwork", is_builtin: true, sort_order: 4 },
+  { id: "pl-5", name: "Trial", is_builtin: true, sort_order: 5 },
+  { id: "pl-6", name: "Race Replay", is_builtin: true, sort_order: 6 },
+  { id: "pl-7", name: "Race Result", is_builtin: true, sort_order: 7 },
+  { id: "pl-8", name: "Race Day \u00b7 Today", is_builtin: true, sort_order: 8 },
+  { id: "pl-9", name: "Pre Training Update", is_builtin: true, sort_order: 9 },
+  { id: "pl-10", name: "Spelling Update", is_builtin: true, sort_order: 10 },
+  { id: "pl-11", name: "Breaking In Update", is_builtin: true, sort_order: 11 },
+  { id: "pl-12", name: "Race Preview", is_builtin: true, sort_order: 12 },
+  { id: "pl-13", name: "Jockey Comments", is_builtin: true, sort_order: 13 },
+  { id: "pl-14", name: "Trainer Comments", is_builtin: true, sort_order: 14 },
+  // Admin-added (is_builtin false, sort_order 0) — these must collate AFTER
+  // every builtin and alphabetically among themselves.
+  { id: "pl-15", name: "Owner Update", is_builtin: false, sort_order: 0 },
+  { id: "pl-16", name: "Float Trip", is_builtin: false, sort_order: 0 },
+];
+
 const COMPOSE_EDIT_POSTS = [
   { id: "ce1", type: "text", status: "draft", title: "Barrier trial complete", body: "Pleased with the way he finished off.", label: "Trial", source_trainer_id: "t1", scheduled_for: null, media_url: null, mux_playback_id: null, horse: HORSE_EMBED },
   { id: "ce2", type: "text", status: "draft", title: "Quiet day in the box", body: "Nothing much to report today.", label: null, source_trainer_id: "t1", scheduled_for: null, media_url: null, mux_playback_id: null, horse: HORSE_EMBED },
@@ -1016,6 +1043,59 @@ export function startMockSupabase() {
       });
       res.end(JSON.stringify(POST_FIXTURES));
       return;
+    }
+
+    // /rest/v1/post_label (ENG-979) — be's lookup table, which since ENG-978 is
+    // what `post.label` foreign-keys to and therefore what Compose's picker
+    // reads. Its own branch, ahead of the generic reader, because Add-new has
+    // to WRITE here and the generic reader is read-only.
+    //
+    // The insert deliberately enforces the case/whitespace-insensitive
+    // uniqueness rule as well as the byte-exact `unique(name)` Postgres has.
+    // Only the byte-exact one is real; folding here is what lets the e2e prove
+    // the ROUTE's fold, rather than the mock quietly accepting a second
+    // "trackwork" and the assertion passing for the wrong reason.
+    if (url.pathname === "/rest/v1/post_label") {
+      const fold = (n) => n.trim().replace(/\s+/g, " ").toLowerCase();
+      if (req.method === "GET") {
+        sendJson(res, 200, POST_LABEL_FIXTURES);
+        return;
+      }
+      if (req.method === "POST") {
+        // Use the ALREADY-DRAINED `rawBody`, never a second drainBody(req):
+        // the stream has ended by now, so a fresh listener never sees "end"
+        // and the handler hangs forever with no response and no error — the
+        // request just sits there. Every other write branch in this file reads
+        // `rawBody` for the same reason.
+        let parsed = {};
+        try {
+          parsed = JSON.parse(rawBody || "{}");
+        } catch {
+          parsed = {};
+        }
+        const rows = Array.isArray(parsed) ? parsed : [parsed];
+        const name = String(rows[0]?.name ?? "");
+        const clash = POST_LABEL_FIXTURES.find((l) => fold(l.name) === fold(name));
+        if (clash) {
+          // What Postgres raises for `unique(name)`. The route catches 23505
+          // and re-reads, so this exercises its race path too.
+          sendJson(res, 409, {
+            code: "23505",
+            message: 'duplicate key value violates unique constraint "post_label_name_key"',
+          });
+          return;
+        }
+        const created = {
+          id: `pl-${POST_LABEL_FIXTURES.length + 1}`,
+          name,
+          is_builtin: false,
+          sort_order: 0,
+        };
+        POST_LABEL_FIXTURES.push(created);
+        const accept = req.headers["accept"] ?? "";
+        sendJson(res, 201, accept.includes("pgrst.object") ? created : [created]);
+        return;
+      }
     }
 
     // /rest/v1/waitlist (ENG-976) — its OWN branch, ahead of the generic reader,

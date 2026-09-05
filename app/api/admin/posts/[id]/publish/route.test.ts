@@ -168,6 +168,22 @@ describe("POST /api/admin/posts/:id/publish", () => {
     const j = await r.json();
     expect(j.error.code).toBe("invalid_status");
     expect(invokeCalls).toHaveLength(0);
+
+    // THE GUARD ITSELF. The three assertions above are necessary but not
+    // sufficient: they are all satisfied by `mutate: { single: null }`, which
+    // the fake returns from the script regardless of what the chain filtered
+    // on. Without this assertion, deleting `.in("status", [...])` from the
+    // route leaves this very test — the one named for the race — green, so the
+    // fix for the double-notify bug would be pinned by nothing. Asserting the
+    // UPDATE actually carried its status precondition is what makes "0 rows"
+    // mean "another request won the flip" rather than "the script said null".
+    const update = state.calls.mutations.find((m) => m.table === "post" && m.op === "update");
+    expect(update?.filters).toEqual(
+      expect.arrayContaining([
+        { column: "id", value: "p1" },
+        { column: "status", value: ["draft", "scheduled"], op: "in" },
+      ]),
+    );
   });
 
   it("caption-less post (null title/body) still notifies with generic fallback text", async () => {

@@ -130,7 +130,19 @@ function makeBuilder(state: FakeState, table: string): Builder {
     },
     neq: () => b,
     is: () => b,
-    in: () => b,
+    // Records its filter (ENG-950). A conditional UPDATE is the repo's idiom
+    // for closing a TOCTOU race — `.update(...).eq("id", id).in("status",
+    // ["draft","scheduled"])` is what makes two concurrent publishes resolve
+    // to one winner instead of both dispatching a push to every member. While
+    // this was a no-op the guard was pinned by NOTHING: deleting `.in(...)`
+    // from the route left the whole publish suite green, because the mutate
+    // result comes from the script and never depended on the filter. Recording
+    // it is what lets a test prove the write carried its precondition — the
+    // same reason `eq` and `gte` record theirs.
+    in: (column?: any, values?: any) => {
+      filters.push({ column, value: values, op: "in" });
+      return b;
+    },
     ilike: () => b,
     or: (expr: string) => { state.calls.or.push(expr); return b; },
     order: () => b,

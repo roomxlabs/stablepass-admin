@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { createVerify, generateKeyPairSync } from "node:crypto";
+import { makeFakeClient, blankState } from "@/lib/testing/supabase-fake";
 
 const findMuxAssetByPassthrough = vi.fn<(p: string) => Promise<{ assetId: string; playbackId: string } | null>>();
 vi.mock("@/lib/mux", () => ({
@@ -107,6 +108,31 @@ describe("resolveVideoPlayback", () => {
         eq: ["id", "post_1"],
         is: ["mux_playback_id", null],
       },
+    ]);
+  });
+
+  // ENG-993 — the guard pinned through the SHARED fake, not just the bespoke
+  // one above. `app/api/admin/posts/[id]/preview` reaches this same reconcile
+  // with the real `supabase-fake` client, where `.is()` used to be a pure
+  // no-op: the precondition that stops a concurrent webhook write being
+  // clobbered vanished before any assertion could see it. This test reads the
+  // recorded filter, so deleting `.is("mux_playback_id", null)` from
+  // `resolveVideoPlayback` turns it RED.
+  it("records the only-if-null precondition on the shared supabase fake (lost-update guard)", async () => {
+    findMuxAssetByPassthrough.mockResolvedValue({ assetId: "as_1", playbackId: "pb_2" });
+    const state = blankState();
+    const sb = makeFakeClient(state) as unknown as PlaybackDb;
+
+    await resolveVideoPlayback(sb, { id: "post_1", mux_playback_id: null });
+
+    const update = state.calls.mutations.find((m) => m.op === "update" && m.table === "post");
+    expect(update).toBeDefined();
+    expect(update!.payload).toEqual({ mux_asset_id: "as_1", mux_playback_id: "pb_2" });
+    // Both the row selector AND the precondition must be on the chain. The
+    // `is` entry is the assertion that fails if the guard is removed.
+    expect(update!.filters).toEqual([
+      { column: "id", value: "post_1" },
+      { column: "mux_playback_id", value: null, op: "is" },
     ]);
   });
 

@@ -387,7 +387,7 @@ describe("POST /api/admin/posts — create draft", () => {
     expect(r.status).toBe(400);
     const j = await r.json();
     expect(j.error.code).toBe("validation_failed");
-    expect(j.error.message).toContain("13 presets");
+    expect(j.error.message).toContain(`${POST_LABEL_PRESETS.length} presets`);
   });
 
   // Scoped by constraint NAME: `post` also CHECKs type/status/aspect_ratio and
@@ -410,7 +410,7 @@ describe("POST /api/admin/posts — create draft", () => {
     const j = await r.json();
     expect(j.error.code).toBe("insert_failed");
     expect(j.error.message).toContain("post_aspect_ratio_positive");
-    expect(j.error.message).not.toContain("13 presets");
+    expect(j.error.message).not.toContain(`${POST_LABEL_PRESETS.length} presets`);
   });
 
   it("403s for a non-admin sending a label — never reaches the DB", async () => {

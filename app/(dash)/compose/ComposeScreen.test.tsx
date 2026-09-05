@@ -888,7 +888,7 @@ describe("ENG-745 · label picker", () => {
     // floor, and the Add-new sentinel is appended LAST so it never sits
     // between two real categories.
     expect(options).toEqual(["", ...POST_LABEL_PRESETS, ADD_NEW]);
-    expect(select.options[0].textContent).toBe("No label");
+    expect(select.options[0].textContent).toBe("No title");
     // Not a disabled placeholder — clearing a category must be selectable.
     expect(select.options[0].disabled).toBe(false);
   });

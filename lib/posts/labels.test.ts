@@ -30,7 +30,10 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
+  foldLabelName,
   isBannedLabel,
+  labelDuplicateKey,
+  orderLabels,
   isLabelCheckViolation,
   isPostLabel,
   MAX_LABEL_LENGTH,
@@ -355,14 +358,109 @@ describe("isPostLabel / normalisePostLabel", () => {
       },
     );
 
+    // The bypass table from review. The FIRST version of this check enumerated
+    // singulars only (`bookmaker`, `tip`, `punt`) and was `\\b`-anchored, so every
+    // one of these passed straight through — and `Bookmakers` / `Tipsters` /
+    // `Punters` are what an operator would actually type, not exotic attacks.
+    // These cases exist so a future "tidy-up" of the pattern cannot silently
+    // reopen the hole.
+    it.each([
+      "Bookmakers",
+      "Bookmaking",
+      "Tipster",
+      "Tipsters",
+      "Tipped",
+      "Punters",
+      "Bettor",
+      "Bettors",
+      "Wagerings",
+      "Multibet",
+      "Sportsbet",
+      "Betfair",
+      "Trifecta",
+      "Exotics",
+      "Each-Way Odds",
+      // Compatibility + zero-width evasions, folded by NFKC / stripping.
+      "\uff42\uff45\uff54\uff54\uff49\uff4e\uff47",
+      "bett\u200bing",
+      "bet\ufeffting",
+    ])("refuses the near-miss %s", (name) => {
+      expect(isBannedLabel(name)).toBe(true);
+      expect(normalisePostLabel(name)).toBeUndefined();
+    });
+
     it("does not refuse ordinary racing vocabulary", () => {
       // Word-boundary anchored, so a banned token inside a longer legitimate
       // word does not trip it.
-      for (const ok of ["Trackwork", "Barrier Trial Debrief", "Stable Update", "Marketing Notes"]) {
+      // "Better Days" is the reason the bet/bets/betting stems are enumerated
+      // individually instead of a blanket `bet\\w*`.
+      for (const ok of [
+        "Trackwork",
+        "Barrier Trial Debrief",
+        "Stable Update",
+        "Marketing Notes",
+        "Better Days",
+        "Trainer Comments",
+      ]) {
         expect(isBannedLabel(ok)).toBe(false);
         expect(normalisePostLabel(ok)).toBe(ok);
       }
     });
+  });
+});
+
+// ENG-979 — the duplicate fold. One exported copy, used by the Add-new route's
+// pre-check, the name it stores, and the compose client, so they cannot
+// disagree about what "the same category" means.
+describe("foldLabelName / labelDuplicateKey", () => {
+  it("collapses case, surrounding and inner whitespace", () => {
+    expect(labelDuplicateKey("  TRACKWORK ")).toBe("trackwork");
+    expect(labelDuplicateKey("Race  Day")).toBe(labelDuplicateKey("Race Day"));
+    expect(labelDuplicateKey("trackwork")).toBe(labelDuplicateKey("Trackwork"));
+  });
+
+  it("NFKC-normalises, so a fullwidth or decomposed spelling is not a second category", () => {
+    // Fullwidth T. Without NFKC this is a distinct row that looks identical in
+    // the picker.
+    expect(labelDuplicateKey("\uff34rackwork")).toBe("trackwork");
+    // NFD (e + combining acute) vs NFC (é) — the same word to a human.
+    expect(labelDuplicateKey("Cafe\u0301 Notes")).toBe(labelDuplicateKey("Caf\u00e9 Notes"));
+  });
+
+  it("keeps genuinely different names apart", () => {
+    expect(labelDuplicateKey("Trackwork")).not.toBe(labelDuplicateKey("Trackwork Extras"));
+  });
+
+  it("foldLabelName preserves the canonical casing it was given", () => {
+    // The fold used for STORING must not lowercase — the stored spelling is
+    // what members see.
+    expect(foldLabelName("  Owner   Update ")).toBe("Owner Update");
+  });
+});
+
+describe("orderLabels", () => {
+  it("puts builtins first in sort_order, then admin-added ones alphabetically", () => {
+    const rows = [
+      { name: "Zebra", is_builtin: false, sort_order: 0 },
+      { name: "Trial", is_builtin: true, sort_order: 5 },
+      { name: "Owner Update", is_builtin: false, sort_order: 0 },
+      { name: "Stable Update", is_builtin: true, sort_order: 1 },
+    ];
+    expect(orderLabels(rows).map((r) => r.name)).toEqual([
+      "Stable Update",
+      "Trial",
+      "Owner Update",
+      "Zebra",
+    ]);
+  });
+
+  it("does not mutate its input", () => {
+    const rows = [
+      { name: "B", is_builtin: false, sort_order: 0 },
+      { name: "A", is_builtin: true, sort_order: 1 },
+    ];
+    orderLabels(rows);
+    expect(rows[0].name).toBe("B");
   });
 });
 

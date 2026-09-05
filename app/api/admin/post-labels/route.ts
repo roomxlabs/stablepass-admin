@@ -2,8 +2,11 @@ import { requireAdmin } from "@/lib/auth/admin";
 import { ok, created, fail } from "@/lib/api/envelope";
 import {
   BANNED_LABEL_MESSAGE,
+  foldLabelName,
   isBannedLabel,
+  labelDuplicateKey,
   MAX_LABEL_LENGTH,
+  orderLabels,
 } from "@/lib/posts/labels";
 
 // The editorial categories Compose offers, read live from be's `post_label`
@@ -22,44 +25,16 @@ import {
 // cleared password auth. Writing the label vocabulary that appears on every
 // member's feed is not something an AAL1 session may do.
 
+/**
+ * The value compose's picker uses for its "+ Add new…" option. Kept in step
+ * with `ADD_NEW_VALUE` in ComposeScreen.tsx — the route refuses to store it.
+ */
+const ADD_NEW_SENTINEL = "__stablepass_add_new_label__";
+
 /** Columns the picker needs. `id` is never sent to a member surface — `post.label` stores the NAME. */
 const LABEL_FIELDS = "id,name,is_builtin,sort_order";
 
 type LabelRow = { id: string; name: string; is_builtin: boolean; sort_order: number };
-
-/**
- * Order the picker renders in: builtins first in be's seeded `sort_order`, then
- * everything an admin has added, alphabetically.
- *
- * Sorting by `sort_order` ALONE would be wrong: every admin-added row defaults
- * to `sort_order = 0` (per be's migration), so new labels would collate ahead of
- * the builtins in an arbitrary, insertion-dependent order. Ordering by
- * `is_builtin desc` first keeps the 14 known-good categories where operators
- * already expect them and gives the growing tail a stable, predictable order.
- */
-function orderLabels(rows: LabelRow[]): LabelRow[] {
-  return [...rows].sort((a, b) => {
-    if (a.is_builtin !== b.is_builtin) return a.is_builtin ? -1 : 1;
-    if (a.is_builtin) return a.sort_order - b.sort_order;
-    return a.name.localeCompare(b.name);
-  });
-}
-
-/**
- * Fold a name for duplicate comparison.
- *
- * Case-insensitive AND whitespace-normalised, because the ticket's rule is that
- * a duplicate "differing only by case or trailing space" must return the
- * existing row rather than insert a second. `post_label.name` is `unique`, but
- * that unique index is byte-exact: Postgres would happily hold both "Trackwork"
- * and "trackwork" as two distinct categories, which is precisely the mess this
- * guards against. Inner runs of whitespace are collapsed too — "Race  Day" and
- * "Race Day" are the same category to a human, and a picker that lists both is
- * broken in the same way.
- */
-function fold(name: string): string {
-  return name.trim().replace(/\s+/g, " ").toLowerCase();
-}
 
 /**
  * GET /api/admin/post-labels — the live category list for Compose's picker.
@@ -106,7 +81,7 @@ export async function POST(req: Request) {
   // is the same shape the duplicate check compares. be's
   // `post_label_name_not_blank` constraint independently requires a btrim'd
   // name, so an untrimmed insert would be rejected by Postgres anyway.
-  const name = b.name.trim().replace(/\s+/g, " ");
+  const name = foldLabelName(b.name);
   if (name === "") return fail("validation_failed", "name is required.", 400);
   if (name.length > MAX_LABEL_LENGTH)
     return fail("validation_failed", `name must be ${MAX_LABEL_LENGTH} characters or fewer.`, 400);
@@ -117,6 +92,16 @@ export async function POST(req: Request) {
   // and left only a detective CI grep. This route is the sole way a
   // `post_label` row is authored, so it is where the check has to bite.
   if (isBannedLabel(name)) return fail("validation_failed", BANNED_LABEL_MESSAGE, 400);
+
+  // Refuse the compose picker's "+ Add new…" sentinel as a stored name.
+  //
+  // It is ordinary ASCII and trips no other rule, so an operator could create
+  // it — and the resulting category would render as a SECOND <option> with the
+  // sentinel's value, so selecting it would re-open the Add-new field instead
+  // of selecting the category. Permanently unselectable, and confusing in a way
+  // that looks like a bug in the picker rather than a label someone created.
+  if (name === ADD_NEW_SENTINEL)
+    return fail("validation_failed", "That name is reserved.", 400);
 
   // Case/whitespace-insensitive existence check BEFORE inserting.
   //
@@ -129,8 +114,10 @@ export async function POST(req: Request) {
     .select(LABEL_FIELDS);
   if (readError) return fail("query_failed", readError.message, 400);
 
-  const target = fold(name);
-  const match = ((existingRows ?? []) as LabelRow[]).find((r) => fold(r.name) === target);
+  const target = labelDuplicateKey(name);
+  const match = ((existingRows ?? []) as LabelRow[]).find(
+    (r) => labelDuplicateKey(r.name) === target,
+  );
   // 200, not 201: nothing was created. The client selects `data.name` either
   // way, which is what makes Add-new idempotent from the operator's side.
   if (match) return ok(match);
@@ -142,13 +129,29 @@ export async function POST(req: Request) {
     .single();
 
   if (error) {
-    // Lost a race with a concurrent Add-new of the same name. `name` is
-    // `unique`, so Postgres is the real arbiter of the duplicate rule and the
-    // read above is only a fast path. Re-read and hand back the winner rather
-    // than failing the operator for losing a race they cannot see.
+    // Lost a race with a concurrent Add-new of the BYTE-IDENTICAL name.
+    //
+    // KNOWN LIMITATION, stated plainly because the obvious reading of this
+    // block is wrong: `post_label.name` is `unique` but that index is
+    // BYTE-EXACT (be's migration declares plain `text not null unique`, with no
+    // `lower()` index and no case-insensitive collation). So Postgres arbitrates
+    // only exact duplicates. The case/whitespace rule this route implements
+    // lives ENTIRELY in the fold above, which is a read-then-insert and
+    // therefore a TOCTOU window: two concurrent requests for "Trackwork" and
+    // "trackwork" both read nothing, both insert different bytes, and both
+    // succeed. Making the rule durable needs a
+    // `unique index on post_label (lower(btrim(name)))` in stablepass-be — filed
+    // as a follow-up on ENG-979. The window is small and both racers are AAL2
+    // admins on one small team, so it is a real but low-severity gap, not a
+    // reason to hold this ticket.
+    //
+    // Re-read and hand back the winner rather than failing the operator for
+    // losing a race they cannot see.
     if (error.code === "23505") {
       const { data: raced } = await sb.from("post_label").select(LABEL_FIELDS);
-      const winner = ((raced ?? []) as LabelRow[]).find((r) => fold(r.name) === target);
+      const winner = ((raced ?? []) as LabelRow[]).find(
+        (r) => labelDuplicateKey(r.name) === target,
+      );
       if (winner) return ok(winner);
       return fail("label_taken", "That label already exists.", 409);
     }

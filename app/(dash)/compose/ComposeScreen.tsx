@@ -1694,7 +1694,7 @@ export default function ComposeScreen({
                 }}
                 style={{ marginBottom: adding ? 8 : 14 }}
               >
-                <option value="">No label</option>
+                <option value="">No title</option>
                 {options.map((name) => (
                   <option key={name} value={name}>
                     {name}
@@ -1788,7 +1788,7 @@ export default function ComposeScreen({
               />
               <div className={styles.help}>
                 {isText
-                  ? "Required — the title and this body are the whole post. Write it so it sounds like the trainer would say it."
+                  ? "Required — this body is the whole post. Write it so it sounds like the trainer would say it."
                   : "Sounds like the trainer would say it. The feed shows the first couple of lines, so lead with what matters."}
               </div>
             </section>

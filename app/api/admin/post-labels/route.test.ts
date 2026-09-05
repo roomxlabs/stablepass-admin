@@ -262,6 +262,46 @@ describe("POST /api/admin/post-labels — Add-new", () => {
     },
   );
 
+  // The review bypass table, at the ROUTE boundary — not just on the helper.
+  // This route is the only place a `post_label` row is authored, so these are
+  // the cases that decide whether a gambling-flavoured category can exist.
+  it.each([
+    "Bookmakers",
+    "Tipsters",
+    "Punters",
+    "Bettor",
+    "Bookmaking",
+    "Multibet",
+    "Trifecta",
+    "\uff42\uff45\uff54\uff54\uff49\uff4e\uff47",
+    "bett\u200bing",
+  ])("refuses the guardrail-6 near-miss %s and never writes", async (name) => {
+    asAdmin();
+    labels([]);
+    const r = await POST(postReq({ name }));
+    expect(r.status).toBe(400);
+    expect(state.calls.mutations).toHaveLength(0);
+  });
+
+  it("refuses the picker's Add-new sentinel as a stored name", async () => {
+    // It trips no other rule, but a row with this name would render a second
+    // <option> that re-opens the Add-new field instead of selecting it.
+    asAdmin();
+    labels([]);
+    const r = await POST(postReq({ name: "__stablepass_add_new_label__" }));
+    expect(r.status).toBe(400);
+    expect(state.calls.mutations).toHaveLength(0);
+  });
+
+  it("a fullwidth spelling folds onto the existing row rather than creating a twin", async () => {
+    asAdmin();
+    labels([row("Trackwork", { id: "l-existing" })]);
+    const r = await POST(postReq({ name: "\uff34rackwork" }));
+    expect(r.status).toBe(200);
+    expect((await r.json()).data.id).toBe("l-existing");
+    expect(state.calls.mutations).toHaveLength(0);
+  });
+
   it("does not refuse ordinary racing vocabulary that merely CONTAINS a banned substring", async () => {
     // Word-boundary anchored, so "Trackwork" survives despite containing no
     // banned token, and a word like "Marketing" does not trip on "market".

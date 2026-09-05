@@ -115,20 +115,101 @@ export const LABEL_ERROR_MESSAGE = `label must be one of the ${POST_LABEL_PRESET
  * request validator and the Add-new route cannot drift apart.
  */
 export const BANNED_LABEL_PATTERN =
-  /\b(odds|bet|bets|betting|bookmaker|bookie|wager|wagers|wagering|tip|tips|tipping|punt|punts|punting|market|markets)\b/i;
+  /\b(odds|bet|bets|betting|bettor|bettors|bookmak\w*|bookie\w*|wager\w*|tip|tips|tipped|tipping|tipster\w*|punt|punts|punter\w*|punting|market|markets|multibet|sportsbet|betfair|ladbrokes|bet365|exotics|exacta|trifecta|quinella|parlay|accumulator)\b/i;
 
-/** True for a label name that trips guardrail 6. Input is trimmed by the caller. */
+/**
+ * Strip the tricks that let a banned word through a `\b`-anchored match.
+ *
+ * Two separate evasions, both of which defeated the first version of this
+ * check (found in review, with a working bypass table):
+ *
+ *  1. COMPATIBILITY FORMS. `ｂｅｔｔｉｎｇ` in fullwidth Latin (U+FF42 …) is a
+ *     different string to `betting` and matched nothing. NFKC folds those —
+ *     and ligatures, and superscripts — onto their ASCII equivalents.
+ *  2. ZERO-WIDTH INSERTIONS. `bett\u200Bing` renders as "betting" on a member's
+ *     feed but contains a zero-width space, which breaks the word into two
+ *     non-matching halves. They carry no meaning in a category name, so they
+ *     are removed outright rather than treated as separators.
+ *
+ * NOT a claim of completeness. A determined admin can still defeat any
+ * denylist (homoglyphs from other scripts — a Cyrillic `е` for a Latin `e` —
+ * are the obvious remaining hole, and normalising those means confusable-script
+ * detection, which is a much bigger hammer than this warrants). The threat model
+ * here is an AAL2 operator typing a category in good faith, plus the plausible
+ * near-misses; be's migration says the same thing about trusting an AAL2 admin.
+ * The detective control (be's CI grep over live `post_label` rows, ENG-994)
+ * remains the backstop for anything deliberate.
+ */
+function foldForBannedCheck(value: string): string {
+  return value.normalize("NFKC").replace(/[\u200B-\u200D\u2060\uFEFF]/g, "");
+}
+
+/**
+ * True for a label name that trips guardrail 6.
+ *
+ * Matches inflections by STEM where a stem is safe (`bookmak\w*` catches
+ * bookmaker/bookmakers/bookmaking) and enumerates them where it is not: a bare
+ * `bet\w*` would swallow "Better Days", so bet/bets/betting/bettor(s) are
+ * listed individually. That asymmetry is the whole reason the original
+ * enumerate-everything list leaked — `bookmaker` was listed but `Bookmakers`,
+ * `Tipsters` and `Punters` were not, and those are what an operator would
+ * actually type.
+ */
 export function isBannedLabel(value: string): boolean {
-  return BANNED_LABEL_PATTERN.test(value);
+  return BANNED_LABEL_PATTERN.test(foldForBannedCheck(value));
+}
+
+/**
+ * Fold a label name for DUPLICATE comparison — the one copy.
+ *
+ * Case-insensitive, whitespace-normalised (ends trimmed, inner runs collapsed)
+ * and NFKC-normalised, so `Ｔrackwork` in fullwidth and a decomposed `Café`
+ * (NFD) both fold onto the composed ASCII form rather than becoming a second
+ * category that looks identical in the picker.
+ *
+ * Exported because three call sites need the SAME answer — the Add-new route's
+ * pre-check, the name it stores, and the compose client — and three private
+ * copies of a rule like this is how they silently disagree.
+ */
+export function foldLabelName(name: string): string {
+  return name.normalize("NFKC").trim().replace(/\s+/g, " ");
+}
+
+/** The same fold, lowercased — what duplicate comparison actually compares. */
+export function labelDuplicateKey(name: string): string {
+  return foldLabelName(name).toLowerCase();
+}
+
+/**
+ * Order labels for the picker: builtins first in be's seeded `sort_order`, then
+ * admin-added ones alphabetically.
+ *
+ * Exported for the same reason as `foldLabelName`: the route and the compose
+ * server page both render this list, and a comment asserting the two orderings
+ * agree is exactly the claim that silently desyncs.
+ *
+ * Sorting by `sort_order` alone would be wrong — every admin-added row defaults
+ * to 0, so new labels would collate ahead of the builtins in insertion order.
+ */
+export function orderLabels<T extends { name: string; is_builtin: boolean; sort_order: number }>(
+  rows: T[],
+): T[] {
+  return [...rows].sort((a, b) => {
+    if (a.is_builtin !== b.is_builtin) return a.is_builtin ? -1 : 1;
+    if (a.is_builtin) return a.sort_order - b.sort_order;
+    return a.name.localeCompare(b.name);
+  });
 }
 
 /**
  * The 400 an operator sees when Add-new (or a post write) carries a name that
- * trips guardrail 6. Deliberately names the rule rather than the matched token
- * — echoing the word back is how a denylist teaches people to work around it.
+ * trips guardrail 6.
+ *
+ * Deliberately names the RULE rather than the matched token — echoing the word
+ * back is how a denylist teaches people to work around it.
  */
 export const BANNED_LABEL_MESSAGE =
-  "That label can't be used: StablePass carries no betting, odds or tipping content.";
+  "That label can\u2019t be used: StablePass carries no betting, odds or tipping content.";
 
 /** Longest a label name may be. `post_label.name` is unbounded `text`; this is a UI-sanity cap. */
 export const MAX_LABEL_LENGTH = 40;

@@ -28,7 +28,13 @@ async function qOrClause(sb: SupabaseClient, q: string): Promise<string | null> 
   const text = q.replace(/[(),]/g, " ").trim();
   if (!text) return null;
   const like = `%${text}%`;
-  const ors = [`title.ilike.${like}`, `body.ilike.${like}`];
+  // ENG-979 — `label` is searched alongside `title`, and it has to be: the
+  // library now NAMES each row by its label, and a new post has no title at
+  // all. Without this, typing the name you can see in the list returns
+  // nothing — which undercuts the whole point of the ticket (Mel could not
+  // tell her posts apart). `title` stays in the clause so pre-ENG-979 posts,
+  // which are named by their title, remain findable by it.
+  const ors = [`title.ilike.${like}`, `label.ilike.${like}`, `body.ilike.${like}`];
   const [{ data: horses }, { data: trainers }] = await Promise.all([
     sb
       .from("horse")

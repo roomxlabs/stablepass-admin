@@ -18,6 +18,7 @@ import {
   signPhotoMap,
 } from "@/lib/storage/photos";
 import { resolveVideoPlayback } from "@/lib/mux-playback";
+import { orderLabels } from "@/lib/posts/labels";
 
 /**
  * The types Compose can load for editing — the same four it can create.
@@ -157,9 +158,10 @@ export default async function ComposePage({
     }
   }
 
-  // Builtins first in be's seeded order, then admin-added ones alphabetically —
-  // the same ordering `GET /api/admin/post-labels` applies, so the picker does
-  // not reshuffle between a server render and an Add-new refresh.
+  // Builtins first in be's seeded order, then admin-added ones alphabetically.
+  // Literally the SAME function `GET /api/admin/post-labels` calls, not a
+  // matching copy — so the picker cannot reshuffle between a server render and
+  // the route's view of the list.
   //
   // A failed/empty read falls through to `undefined`, and ComposeScreen's
   // default (the 14 immutable builtins) takes over. Those rows cannot be
@@ -171,15 +173,7 @@ export default async function ComposePage({
     is_builtin: boolean;
     sort_order: number;
   }[];
-  const labels = labelRows.length
-    ? [...labelRows]
-        .sort((a, b) => {
-          if (a.is_builtin !== b.is_builtin) return a.is_builtin ? -1 : 1;
-          if (a.is_builtin) return a.sort_order - b.sort_order;
-          return a.name.localeCompare(b.name);
-        })
-        .map((r) => r.name)
-    : undefined;
+  const labels = labelRows.length ? orderLabels(labelRows).map((r) => r.name) : undefined;
 
   return (
     <ComposeScreen

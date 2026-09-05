@@ -91,8 +91,21 @@ export const FK_VIOLATION = "23503";
 export const LABEL_ERROR_MESSAGE = `label must be one of the ${POST_LABEL_PRESETS.length} presets, a label you have added, or null.`;
 
 /**
- * Guardrail 6 (no betting / bookmaker anything) as a PREVENTIVE control on the
- * one surface that can still author a category name.
+ * Guardrail 6 (no betting / bookmaker anything) — a MISTAKE-PREVENTION control
+ * on the UI that authors category names.
+ *
+ * SCOPE, STATED HONESTLY (an earlier version of this comment overclaimed). This
+ * is NOT a security boundary against an admin. be's migration grants
+ * `insert, update, delete on public.post_label to authenticated` under the
+ * `post_label_all_admin` policy, and admin ships a browser Supabase client, so
+ * any AAL2 admin with devtools can insert a row straight through PostgREST and
+ * never touch this code. Worse, `post_label_name_fk` is `on update cascade`, so
+ * an existing non-builtin row can be RENAMED into gambling vocabulary and the
+ * change cascades into `post.label` on every post carrying it — bypassing this
+ * check and `post`'s own RLS. What this function actually buys is that a
+ * good-faith operator cannot create such a category BY ACCIDENT through the
+ * product. The database-side gap is wider than "no denylist on insert" and
+ * belongs to ENG-994.
  *
  * Why this lives here, and why it is admin's job now. be's ENG-978 migration
  * dropped the closed `post_label_preset` CHECK, and its header states plainly
@@ -115,7 +128,19 @@ export const LABEL_ERROR_MESSAGE = `label must be one of the ${POST_LABEL_PRESET
  * request validator and the Add-new route cannot drift apart.
  */
 export const BANNED_LABEL_PATTERN =
-  /\b(odds|bet|bets|betting|bettor|bettors|bookmak\w*|bookie\w*|wager\w*|tip|tips|tipped|tipping|tipster\w*|punt|punts|punter\w*|punting|market|markets|multibet|sportsbet|betfair|ladbrokes|bet365|exotics|exacta|trifecta|quinella|parlay|accumulator)\b/i;
+  /\b(gambl\w*|odds|bet|bets|betting|bettor\w*|bookmak\w*|bookie\w*|wager\w*|tip|tips|tipped|tipping|tipster\w*|punt|punts|punter\w*|punting|market|markets|stak(?:e|es|ing)\s*plan|bankroll|multi|multis|multibet|exotics|exacta|trifecta|quinella|quaddie|quadrella|parlay|accumulator|first\s+four|each[-\s]way|roughie\w*|blackbook|longshot\w*|sportsbet|betfair|ladbrokes|bet365|tab|neds|unibet|pointsbet|beteasy|betr|topsport|bluebet|palmerbet|betstar)\b/i;
+
+/**
+ * Characters that render as nothing (or as a normal space) but split a word in
+ * two for a `\b`-anchored match.
+ *
+ * U+00AD SOFT HYPHEN is the important one and was missed by the first pass:
+ * `Od\u00ADds` renders as "Odds" on a member's feed and matched nothing. The
+ * rest is the Unicode default-ignorable set plus the variation selectors and
+ * the Hangul filler characters, which are the usual stand-ins.
+ */
+const INVISIBLE_CHARS =
+  /[\u00AD\u034F\u061C\u115F\u1160\u17B4\u17B5\u180B-\u180E\u200B-\u200F\u202A-\u202E\u2060-\u2064\u206A-\u206F\u3164\uFE00-\uFE0F\uFEFF\uFFA0]/g;
 
 /**
  * Strip the tricks that let a banned word through a `\b`-anchored match.
@@ -141,7 +166,7 @@ export const BANNED_LABEL_PATTERN =
  * remains the backstop for anything deliberate.
  */
 function foldForBannedCheck(value: string): string {
-  return value.normalize("NFKC").replace(/[\u200B-\u200D\u2060\uFEFF]/g, "");
+  return value.normalize("NFKC").replace(INVISIBLE_CHARS, "");
 }
 
 /**
@@ -172,7 +197,12 @@ export function isBannedLabel(value: string): boolean {
  * copies of a rule like this is how they silently disagree.
  */
 export function foldLabelName(name: string): string {
-  return name.normalize("NFKC").trim().replace(/\s+/g, " ");
+  // Invisible characters are stripped here as well as in the guardrail check,
+  // for two reasons: `Track\u200Bwork` would otherwise be a SECOND category that
+  // looks identical to "Trackwork" in the picker, and the zero-width character
+  // would be STORED in `post_label.name` and render on a member's feed inside a
+  // string nobody can see is wrong.
+  return name.normalize("NFKC").replace(INVISIBLE_CHARS, "").trim().replace(/\s+/g, " ");
 }
 
 /** The same fold, lowercased — what duplicate comparison actually compares. */

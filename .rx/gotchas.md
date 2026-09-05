@@ -1184,6 +1184,15 @@ Add-new exists to create. Let well-formed names through to Postgres and rely on
 `post_label_name_fk`; `isLabelCheckViolation` already maps its `23503` to a 400.
 **But:** the dropped CHECK was guardrail 6's database-level enforcement, and be deliberately shipped
 no DB denylist (its SQL linter greps the migration text for the very tokens it would have to name),
-leaving only a detective CI grep — see ENG-994. Admin's Add-new route is now the ONLY place a
-`post_label` row is authored, so the **preventive** guardrail-6 check has to live in admin
-(`isBannedLabel`), on both the Add-new route and `normalisePostLabel`.
+leaving only a detective CI grep — see ENG-994. Admin's Add-new route is the only **UI** path that authors a
+`post_label` row, so the guardrail-6 check lives in admin (`isBannedLabel`), on both the Add-new
+route and `normalisePostLabel`.
+**Do not call it a security boundary.** be grants `insert/update/delete on post_label` to any AAL2
+admin and admin ships a browser Supabase client, so devtools bypasses the route entirely; and
+`post_label_name_fk` is `on update cascade`, so renaming an existing row rewrites `post.label` on
+every post using it, bypassing both this check and `post`'s RLS. It prevents an ACCIDENT through the
+product; ENG-994 owns the database-side gap.
+Anchoring on `\b` also needs the input NFKC-normalised with invisible characters
+(**incl. U+00AD SOFT HYPHEN**, the one usually forgotten) stripped first, or `Od<AD>ds` sails
+through. Widen by STEM where safe (`bookmak\w*`) but enumerate `bet`/`bets`/`betting` — a bare
+`bet\w*` eats "Better Days".

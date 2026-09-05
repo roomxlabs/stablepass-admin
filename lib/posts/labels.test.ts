@@ -281,12 +281,29 @@ describe("post label presets — drift guard against stablepass-be", () => {
   // by be's closed CHECK; ENG-978 dropped it, so the database will now accept
   // any inserted `post_label` row. That makes this admin-side echo the only
   // automated check over the presets admin itself ships.
-  it("contains no betting or bookmaker terminology", () => {
-    // ENG-979 promoted this pattern out of the test and into `labels.ts`, so
-    // the preset array, the request validator and the Add-new route are all
-    // screened by ONE copy. A local regex here could drift from the one that
-    // actually guards the authoring surface, which is the copy that matters.
+  // TWO checks on purpose, and the duplication is the point.
+  //
+  // The production pattern screens the presets — but a test that ONLY calls
+  // `isBannedLabel` still passes if someone guts `BANNED_LABEL_PATTERN`, which
+  // makes it useless as a drift guard for exactly the failure it exists to
+  // catch. So an INDEPENDENT literal regex runs alongside it as a tripwire.
+  const INDEPENDENT_BANNED =
+    /\b(gambl|odds|bet|bets|betting|bookmaker|bookie|wager|tip|tips|tipping|punt|market)\b/i;
+
+  it("contains no betting or bookmaker terminology (independent regex)", () => {
+    for (const preset of POST_LABEL_PRESETS) expect(preset).not.toMatch(INDEPENDENT_BANNED);
+  });
+
+  it("and the production check agrees with that independent regex", () => {
     for (const preset of POST_LABEL_PRESETS) expect(isBannedLabel(preset)).toBe(false);
+  });
+
+  it("the production check has not been gutted — it still blocks the obvious terms", () => {
+    // The tripwire. If `BANNED_LABEL_PATTERN` is ever weakened to something
+    // permissive, this fails even though every preset still passes.
+    for (const term of ["Gambling", "Betting Tips", "Best Odds", "Bookmaker Corner"]) {
+      expect(isBannedLabel(term)).toBe(true);
+    }
   });
 });
 
@@ -380,6 +397,28 @@ describe("isPostLabel / normalisePostLabel", () => {
       "Trifecta",
       "Exotics",
       "Each-Way Odds",
+      // Second-review leaks: a plain English word the first pattern missed
+      // entirely, the dominant AU wagering brand, and AU exotics/multi
+      // vocabulary an operator would plausibly type.
+      "Gambling",
+      "Gamble",
+      "TAB Update",
+      "Neds",
+      "Unibet",
+      "PointsBet",
+      "Same Race Multi",
+      "Quaddie",
+      "Quadrella",
+      "First Four",
+      "Each Way",
+      "Roughies",
+      "Blackbook",
+      "Staking Plan",
+      // U+00AD SOFT HYPHEN — renders as "Odds"/"betting", split the word for a
+      // \\b match, and was NOT stripped by the first fix.
+      "Od\u00adds",
+      "Ti\u00adps",
+      "b\u00adetting",
       // Compatibility + zero-width evasions, folded by NFKC / stripping.
       "\uff42\uff45\uff54\uff54\uff49\uff4e\uff47",
       "bett\u200bing",
@@ -401,6 +440,13 @@ describe("isPostLabel / normalisePostLabel", () => {
         "Marketing Notes",
         "Better Days",
         "Trainer Comments",
+        // Words that merely CONTAIN a banned stem — the false-positive guard.
+        "Bettina",
+        "Betts Stable",
+        "Bookings",
+        "Bookkeeping",
+        "Oddity",
+        "Supermarket Run",
       ]) {
         expect(isBannedLabel(ok)).toBe(false);
         expect(normalisePostLabel(ok)).toBe(ok);
@@ -425,6 +471,14 @@ describe("foldLabelName / labelDuplicateKey", () => {
     expect(labelDuplicateKey("\uff34rackwork")).toBe("trackwork");
     // NFD (e + combining acute) vs NFC (é) — the same word to a human.
     expect(labelDuplicateKey("Cafe\u0301 Notes")).toBe(labelDuplicateKey("Caf\u00e9 Notes"));
+  });
+
+  it("strips invisible characters, so a zero-width twin is not a second category", () => {
+    // Also means the ZWSP is never STORED — an invisible character inside a
+    // string that renders on a member's feed is not something anyone can debug.
+    expect(labelDuplicateKey("Track\u200bwork")).toBe(labelDuplicateKey("Trackwork"));
+    expect(foldLabelName("Track\u200bwork")).toBe("Trackwork");
+    expect(foldLabelName("Race\u00adDay")).toBe("RaceDay");
   });
 
   it("keeps genuinely different names apart", () => {

@@ -19,6 +19,13 @@ import {
 // it without a migration ("there'll be like one button here, Add New… it'll
 // just grow as you post more").
 //
+// Guardrail 6, scoped honestly: the `isBannedLabel` check below is the only
+// thing standing between an operator and a gambling-flavoured category IN THE
+// PRODUCT — but it is not a security boundary. be grants `insert/update/delete
+// on post_label` to any AAL2 admin through PostgREST, and `post_label_name_fk`
+// is `on update cascade`, so a row can also be renamed into `post.label` after
+// the fact. This route is the only UI path, not the only path. See ENG-994.
+//
 // Guardrail 1: `requireAdmin()` first, on both verbs. Admin means an
 // `app_user.is_admin=true` row AND an AAL2 session; the gate returns 401 with no
 // session, 403 for a non-admin, and 403 `mfa_required` for an admin who has only

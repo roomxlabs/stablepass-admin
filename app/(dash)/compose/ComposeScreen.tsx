@@ -55,6 +55,14 @@ import { MAX_LABEL_LENGTH, POST_LABEL_PRESETS } from "@/lib/posts/labels";
 const ADD_NEW_VALUE = "__stablepass_add_new_label__";
 
 /**
+ * Fallback option list when the server hands none down. Hoisted to a module
+ * constant rather than written inline as a default parameter: a fresh array
+ * literal on every render gives `options`' useMemo a new dependency each time,
+ * so it would recompute forever.
+ */
+const DEFAULT_LABELS: string[] = [...POST_LABEL_PRESETS];
+
+/**
  * ENG-745 removed the 240-character caption cap entirely — there is deliberately
  * no `CAPTION_MAX` any more.
  *
@@ -145,7 +153,7 @@ export default function ComposeScreen({
   horses,
   trainers,
   initial,
-  labels = [...POST_LABEL_PRESETS],
+  labels = DEFAULT_LABELS,
 }: {
   horses: HorseOption[];
   trainers: TrainerOption[];

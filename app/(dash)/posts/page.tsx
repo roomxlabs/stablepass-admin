@@ -3,7 +3,13 @@ import { requireAdminPage } from "@/lib/auth/admin";
 import PostsLibrary from "./PostsLibrary";
 import { mapPostRow, parseStatusFilter } from "./format";
 import { parseSortDir } from "../list-href";
-import { POST_SORT_DEFAULT_DIR, parsePostSort, postsOrder, postsSelect } from "@/lib/posts/sort";
+import {
+  POSTS_PAGE_SELECT,
+  POST_SORT_DEFAULT_DIR,
+  parsePostSort,
+  postsOrder,
+  postsSelect,
+} from "@/lib/posts/sort";
 import type { PostRow, StatusCounts, StatusFilter } from "./types";
 import { HORSE_PHOTO_BUCKET, POST_MEDIA_BUCKET, signPhotoMap } from "@/lib/storage/photos";
 import { muxSignedStreamUrl, muxSignedThumbnailUrl } from "@/lib/mux-playback";
@@ -17,9 +23,9 @@ import "./posts.css";
 // PII is selected (guardrail §4).
 
 const PAGE_SIZE = 20;
-const POST_FIELDS =
-  "id,horse_id,type,status,title,body,media_url,mux_playback_id,poster_url,poster_time_s,like_count,published_at,scheduled_for,created_at," +
-  "horse:horse_id(display_name,racing_name,photo_url),trainer:source_trainer_id(name)";
+// Lives in lib/posts/sort.ts so the horse-sort rewrite (`postsSelect`) can be
+// tested against the string this page actually sends.
+const POST_FIELDS = POSTS_PAGE_SELECT;
 
 // Resolve free-text `q` into a PostgREST OR clause across post title/body plus
 // the joined horse + trainer names — mirrors T5's GET search. The `(),`
@@ -94,7 +100,15 @@ export default async function PostsPage({
   if (horseId) pageQuery = pageQuery.eq("horse_id", horseId);
   if (trainerId) pageQuery = pageQuery.eq("source_trainer_id", trainerId);
   if (orClause) pageQuery = pageQuery.or(orClause);
-  const { data, count } = await pageQuery.range(offset, offset + PAGE_SIZE - 1);
+  const { data, count, error } = await pageQuery.range(offset, offset + PAGE_SIZE - 1);
+  // Throw rather than degrade — the same rule `horses/data.ts#unwrap` states:
+  // a read that swallows `error` renders as a legitimately-empty list, and
+  // "No posts yet" is indistinguishable from "your sort was rejected" or from
+  // an RLS regression. This became load-bearing when `?sort=` started deciding
+  // the order grammar: a user-supplied param must never be able to blank the
+  // library silently. No Postgres text is carried to the client — Next serves
+  // a generic error digest.
+  if (error) throw new Error(`post list read failed (${error.code ?? "unknown"})`);
   // Untyped RLS client → the select string isn't schema-checked; cast the raw
   // rows to the shape T5's contract guarantees.
   const rows = (data ?? []) as unknown as PostRow[];

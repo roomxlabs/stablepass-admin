@@ -62,7 +62,16 @@ const ORDER_COLUMN: Record<PostSort, string> = {
 // engagement. In BOTH directions they sink: a draft is not "the oldest post",
 // and floating twenty of them to the top of an ascending sort hides the rows
 // the operator asked to see.
-const NULLABLE: Partial<Record<PostSort, true>> = { published: true, engagement: true };
+// `horse` is included because `HorseEmbed.display_name` is typed `string | null`
+// (app/(dash)/posts/types.ts). Leaving it out was justified by `post.horse_id`
+// being NOT NULL, but that is FK nullability, not COLUMN nullability — a horse
+// with no display_name would float to the top of a descending sort, which is
+// the exact behaviour the two entries below exist to prevent.
+const NULLABLE: Partial<Record<PostSort, true>> = {
+  published: true,
+  engagement: true,
+  horse: true,
+};
 
 /**
  * The posts select string, adjusted for the active sort.
@@ -80,9 +89,40 @@ const NULLABLE: Partial<Record<PostSort, true>> = { published: true, engagement:
  * Every other sort gets the select string UNCHANGED, byte for byte, so the
  * default query is exactly the one that shipped before this ticket.
  */
+// The two REAL select strings, hoisted here from their callers so that
+// `postsSelect`'s rewrite can be tested against what actually ships rather than
+// against a hand-written literal in the test file. A test that builds its own
+// select string proves the helper and nothing about the wiring.
+//
+// The Posts SCREEN needs the media columns (thumbnails, poster, playback); the
+// BFF list does not. Both carry the `horse:horse_id(...)` embed the horse sort
+// rewrites, and both are asserted in lib/posts/sort.test.ts.
+export const POSTS_PAGE_SELECT =
+  "id,horse_id,type,status,title,body,media_url,mux_playback_id,poster_url,poster_time_s,like_count,published_at,scheduled_for,created_at," +
+  "horse:horse_id(display_name,racing_name,photo_url),trainer:source_trainer_id(name)";
+
+// `label` (ENG-745) is selected so the posts library can render the category
+// chip; that rendering is a later slice, this only carries it.
+export const POSTS_API_SELECT =
+  "id,horse_id,type,status,title,body,label,like_count,published_at,scheduled_for,created_at," +
+  "horse:horse_id(display_name,racing_name),trainer:source_trainer_id(name)";
+
+export const HORSE_EMBED = "horse:horse_id(";
+export const HORSE_EMBED_INNER = "horse:horse_id!inner(";
+
 export function postsSelect(select: string, sort: PostSort | ""): string {
   if (sort !== "horse") return select;
-  return select.replace("horse:horse_id(", "horse:horse_id!inner(");
+  // THROW rather than return the input unchanged. `String.replace` with a
+  // needle that does not match returns the original string silently, so a
+  // reformatted select ("horse:horse_id (" , a newline, a renamed alias) would
+  // degrade this sort to "orders nothing" while every test stayed green — the
+  // failure is invisible precisely because the query remains valid.
+  if (!select.includes(HORSE_EMBED))
+    throw new Error(
+      `postsSelect: no \`${HORSE_EMBED}\` embed in the select string, so the horse sort cannot be ordered. ` +
+        "Update HORSE_EMBED if the alias changed.",
+    );
+  return select.replace(HORSE_EMBED, HORSE_EMBED_INNER);
 }
 
 /**
@@ -95,13 +135,20 @@ export function postsSelect(select: string, sort: PostSort | ""): string {
  * can appear on both page 1 and page 2, or on neither.
  */
 export function postsOrder(sort: PostSort | "", dir: SortDir): OrderSpec[] {
-  const tiebreak: OrderSpec = { column: "created_at", ascending: false };
-  if (!sort) return [tiebreak];
+  // `created_at` is stable but NOT unique — seeded/imported/bulk-created rows
+  // share a timestamp — so the PK is the final key. Without it the docstring
+  // above ("a row can appear on both page 1 and page 2, or on neither") is
+  // still technically true for equal timestamps.
+  const tiebreak: OrderSpec[] = [
+    { column: "created_at", ascending: false },
+    { column: "id", ascending: false },
+  ];
+  if (!sort) return tiebreak;
 
   const primary: OrderSpec = {
     column: ORDER_COLUMN[sort],
     ascending: dir === "asc",
     ...(NULLABLE[sort] ? { nullsFirst: false } : {}),
   };
-  return [primary, tiebreak];
+  return [primary, ...tiebreak];
 }

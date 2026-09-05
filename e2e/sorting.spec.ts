@@ -143,7 +143,10 @@ test("horses — sort select in the filter bar", async ({ page }) => {
   await page.goto("/horses");
   await expect(page.locator(".horse-card-adm").first()).toBeVisible({ timeout: 30000 });
 
-  const select = page.getByLabel("Sort horses");
+  // Addressed by its VISIBLE label — the select no longer carries an
+  // aria-label, because an aria-label would override the visible "Sort" and
+  // leave the accessible name disagreeing with what the operator can read.
+  const select = page.getByRole("combobox", { name: "Sort" });
   await expect(select).toBeVisible();
   await page.screenshot({ path: "e2e/__screenshots__/20-horses-sort-select.png", fullPage: true });
 

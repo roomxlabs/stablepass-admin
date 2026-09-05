@@ -54,14 +54,18 @@ export default function SortableTh({
 
   return (
     <th aria-sort={ariaSort} className={className} style={style} data-testid={`th-${column}`}>
-      <Link
-        href={hrefFor(column, target)}
-        className={cls}
-        // Announced instead of a bare label so a screen-reader user hears what
-        // activating the link will DO, not just which column it names.
-        title={`Sort by ${label} (${target === "asc" ? "ascending" : "descending"})`}
-      >
+      <Link href={hrefFor(column, target)} className={cls}>
         <span>{label}</span>
+        {/*
+          A visually-hidden span, NOT `title`: a `title` on a link that already
+          has text is not announced by NVDA/JAWS at default verbosity, and is
+          invisible to keyboard and touch users entirely. This puts the action
+          in the accessible name itself — and because it comes AFTER the label,
+          the name still STARTS with the visible text (WCAG 2.5.3 Label in Name).
+        */}
+        <span className="th-sort-sr">
+          {`, sort ${target === "asc" ? "ascending" : "descending"}`}
+        </span>
         <span className="th-sort-ind" aria-hidden="true">
           {active ? (dir === "asc" ? "▲" : "▼") : "↕"}
         </span>

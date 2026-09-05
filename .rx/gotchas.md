@@ -1181,3 +1181,33 @@ those binaries, restores only the UNTRACKED (new) files and leaves every tracked
 while printing something that reads like success. If you stash to measure a baseline, run
 `git checkout -- e2e/__screenshots__` before popping, and verify with a `grep -c` on a symbol you
 added rather than trusting the pop's output.
+
+## A user-controlled param that shapes a QUERY makes a swallowed `error` a real bug
+`app/(dash)/posts/page.tsx` destructured `{ data, count }` for years without harm. The moment
+`?sort=` started deciding the ORDER GRAMMAR, that omission became a silent-empty-library bug: a
+rejected order returns `data: null`, which renders "No posts yet · Showing 0 of 0" — identical to an
+empty library and to an RLS regression. Rule: any Server-Component read whose SHAPE depends on a URL
+param must handle `error` (throw, per `horses/data.ts#unwrap`). Grep for `const { data` without
+`error` in `(dash)` before adding a param to a query.
+
+## `String.replace` is the wrong tool for a REQUIRED rewrite — it no-ops silently
+`postsSelect()` rewrites `horse:horse_id(` → `horse:horse_id!inner(` because PostgREST will not order
+parent rows by an embedded column without an inner join. `replace` with a needle that does not match
+returns the input UNCHANGED, so a reformatted select string would silently degrade the sort to
+"orders nothing" while still emitting a valid query — invisible to every test. Do-this: throw when
+the needle is absent, and assert the helper against the REAL exported select constant, never against
+a literal retyped in the test file (a test that invents its own input proves the helper and nothing
+about the wiring).
+
+## `created_at desc` is a STABLE tiebreaker, not a TOTAL one
+Seeded/imported/bulk-created rows share a timestamp, so `order=created_at.desc` alone still lets a row
+appear on two pages of an offset-paginated query, or on neither. Append the PK
+(`.order("id", {ascending:false})`). Cheap, and it is what makes the "pagination stays correct" claim
+actually true.
+
+## `!inner` on an embed changes the RESULT SET, not just the order
+Adding `!inner` to make an embedded-column sort work also drops any parent row whose embed is missing
+or unreadable — from the rows AND from `count:"exact"`. If the screen's chip counts come from a
+SEPARATE embed-free query (posts does exactly this), the table's "Showing N of M" can then disagree
+with the chips. Safe here only because `post.horse_id` is NOT NULL and admins read all horses; verify
+that before reusing the pattern on a nullable FK.

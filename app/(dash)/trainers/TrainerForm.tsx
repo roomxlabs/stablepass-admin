@@ -8,6 +8,7 @@ import { signPhoto } from "@/lib/storage/photos";
 import { parseWebsiteUrl } from "@/lib/trainers/website-url";
 import { slugCollisionMessage } from "@/lib/trainers/slug-collision";
 import PhotoCropField, { type CropState, type PickedPhoto } from "../components/PhotoCropField";
+import ToastRegion, { saveToastHoldMs, useToast } from "../Toast";
 import { publishMarketingPhoto, unpublishMarketingPhoto } from "./marketingPhoto";
 
 // Add / edit trainer form — matches mockups/web/admin/screens/08-add-trainer.html.
@@ -95,6 +96,17 @@ export default function TrainerForm(props: Props) {
   );
   const [removed, setRemoved] = useState<string[]>([]);
   const [uploading, setUploading] = useState(false);
+  const { toasts, showToast, dismissToast } = useToast();
+  // Deferred so the success toast is on screen before the list replaces the
+  // form; cleared on unmount so a manual navigation mid-hold cannot fire a
+  // stray push afterwards.
+  const navTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(
+    () => () => {
+      if (navTimer.current) clearTimeout(navTimer.current);
+    },
+    [],
+  );
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
@@ -283,8 +295,11 @@ export default function TrainerForm(props: Props) {
   async function retryPublish() {
     if (!savedId) return;
     if (await syncMarketingPhoto(savedId)) {
-      router.push("/trainers");
-      router.refresh();
+      showToast("Marketing photo published.", "success");
+      navTimer.current = setTimeout(() => {
+        router.push("/trainers");
+        router.refresh();
+      }, saveToastHoldMs());
     }
   }
 
@@ -424,8 +439,15 @@ export default function TrainerForm(props: Props) {
       setSavedId(trainerId);
       if (!(await syncMarketingPhoto(trainerId))) return;
 
-      router.push("/trainers");
-      router.refresh();
+      // A successful save used to just become the trainers list with no
+      // confirmation at all. Announce it, hold briefly so the toast is seen,
+      // then navigate (ENG-964). Failures are untouched here: `setError` already
+      // renders a `role="alert"` banner, so toasting them too would say it twice.
+      showToast(existingId ? "Trainer saved." : "Trainer added.", "success");
+      navTimer.current = setTimeout(() => {
+        router.push("/trainers");
+        router.refresh();
+      }, saveToastHoldMs());
     } catch {
       // Without this, a rejection mid-save unwound silently: no message, the
       // button simply re-enabled, and the admin had no way to tell whether
@@ -700,6 +722,10 @@ export default function TrainerForm(props: Props) {
           {saving ? "Saving…" : isEdit ? "Save changes" : "Add to library"}
         </button>
       </div>
+      {/* Last child on purpose: the region is `position: fixed`, so its
+          DOM position is cosmetic — but keeping it after the form's own
+          `role="alert"` banner means it can never shadow a first-match query. */}
+      <ToastRegion toasts={toasts} onDismiss={dismissToast} />
     </form>
   );
 }

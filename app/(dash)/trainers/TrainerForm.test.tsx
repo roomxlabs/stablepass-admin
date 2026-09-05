@@ -3,6 +3,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import TrainerForm, { type TrainerData } from "./TrainerForm";
 import { WEBSITE_URL_MESSAGE } from "@/lib/trainers/website-url";
+import { setSaveToastHoldMs } from "../Toast";
+
+// ENG-964 deferred the post-save `router.push` behind a real ~900ms timer so
+// the success toast is seen. These suites assert navigation through RTL's
+// default 1000ms `waitFor`, which would leave ~40ms of headroom — green when
+// idle, flaky under load, and ~13s of dead wall-clock. Drop the hold here.
+setSaveToastHoldMs(0);
 
 // ENG-766 — the "Show on marketing site" toggle and the public photo copy.
 //

@@ -348,3 +348,220 @@ a { color: inherit; text-decoration: none; }
   margin: 0 0 8px;
 }
 .dash-placeholder p { color: var(--muted); font-size: 14px; margin: 0; }
+
+/* ====================================================================
+   ENG-964 — perceived speed: skeletons, toasts, sticky table header.
+
+   APPEND-ONLY BLOCK. Everything below is additive and lives at the end of
+   the file on purpose: ENG-963 is editing the header affordance in this
+   same area concurrently, so nothing above this comment is reordered,
+   reformatted or restructured by this ticket.
+   ==================================================================== */
+
+/* Height of the sticky `.admin-topbar`, which the sticky `thead` below parks
+   directly underneath — so the token and the real bar MUST agree.
+
+   The bar is content-sized, and its content is NOT the same on every screen:
+   measured on the built app it is 69.25px on dashboard/posts/horses/trainers/
+   compose, but 71.75px on /analytics (the `PeriodToggle` in `.actions` is
+   taller than a button) and 70px on /waitlist (a bare SearchField, no button).
+   A single hardcoded 69px was therefore RIGHT on posts and WRONG by 2.75px on
+   analytics, where the header tucked under the topbar and was painted over by
+   it (topbar z-index 10 > thead z-index 4).
+
+   So rather than guess a number, pin the bar: `min-height` ≥ the tallest
+   natural content (71.75) makes every screen resolve to exactly 72px, and the
+   token is then exact everywhere by construction. `min-height` (not `height`)
+   so the responsive band can still grow the bar if it ever needs to — and the
+   e2e proof asserts token == measured height on EVERY table route, not just
+   one, so this cannot drift back. */
+.admin-topbar { min-height: 72px; }
+:root {
+  --admin-topbar-h: 72px;
+}
+
+/* Skeletons ---------------------------------------------------------
+   One primitive shared by every route's `loading.tsx`. `.sk` is the
+   shimmering surface; `.sk-line` / `.sk-block` are the two shapes the
+   skeletons are built from. Colours are the existing cream/line tokens —
+   a skeleton must read as "not content yet", never as a real empty row. */
+@keyframes adm-sk-shimmer {
+  0% { background-position: 100% 0; }
+  100% { background-position: -100% 0; }
+}
+.sk {
+  background: linear-gradient(
+    90deg,
+    var(--cream-dark) 0%,
+    var(--cream) 40%,
+    var(--cream-dark) 80%
+  );
+  background-size: 200% 100%;
+  animation: adm-sk-shimmer 1.4s linear infinite;
+  border-radius: 6px;
+}
+.sk-line { height: 11px; }
+.sk-line.tall { height: 14px; }
+.sk-line.sm { height: 9px; }
+.sk-block { border-radius: 10px; }
+.sk-circle { border-radius: 50%; }
+/* Operators on reduced-motion get the same layout, statically. */
+@media (prefers-reduced-motion: reduce) {
+  .sk { animation: none; background: var(--cream-dark); }
+}
+
+/* Skeleton compositions used by the route loading.tsx files ---------- */
+.sk-stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; }
+.sk-stats.five { grid-template-columns: repeat(5, 1fr); }
+.sk-stat {
+  background: var(--white);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 18px 20px;
+}
+.sk-stat .sk + .sk { margin-top: 12px; }
+.sk-card {
+  background: var(--white);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  overflow: clip;
+}
+.sk-filter-bar {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  padding: 14px 22px;
+  border-bottom: 1px solid var(--line);
+}
+.sk-chip { height: 28px; width: 92px; border-radius: 999px; }
+.sk-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 14px 22px;
+  border-bottom: 1px solid var(--line);
+}
+.sk-row:last-child { border-bottom: 0; }
+.sk-row .sk-thumb { width: 36px; height: 36px; flex: 0 0 36px; }
+.sk-row .sk-grow { flex: 1 1 auto; min-width: 0; }
+.sk-head { background: var(--cream); }
+.sk-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 18px;
+}
+.sk-tile {
+  background: var(--white);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  overflow: clip;
+}
+.sk-tile .sk-photo { height: 150px; border-radius: 0; }
+.sk-tile .sk-body { padding: 14px 16px; }
+.sk-tile .sk-body .sk + .sk { margin-top: 10px; }
+@media (max-width: 899px) {
+  .sk-stats,
+  .sk-stats.five { grid-template-columns: repeat(2, 1fr); }
+}
+
+/* Toasts ------------------------------------------------------------
+   Two permanently-mounted live regions (polite + assertive) — see the
+   long note in app/(dash)/Toast.tsx for why they are never conditionally
+   rendered. `position: fixed` so a caller can mount the region from
+   inside a table cell without the markup position mattering. */
+/* ONE fixed stack holding BOTH live regions. They used to be two separate
+   `position: fixed` elements at the same coordinates, so a success (4s) and a
+   failure (8s) raised within 4s of each other — trivial in the posts list:
+   unpublish one row, publish another that 409s — rendered two stacks directly
+   on top of each other. Nesting them in a single flex column keeps the two
+   regions (a11y) while giving one visual stack (no overlap). Assertive sits
+   last, nearest the corner, so a failure is the closest thing to the eye. */
+.adm-toast-stack {
+  position: fixed;
+  right: 24px;
+  bottom: 24px;
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  align-items: flex-end;
+  /* An empty stack must not eat clicks on the page behind it. */
+  pointer-events: none;
+}
+.adm-toast-region {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  align-items: flex-end;
+  pointer-events: none;
+}
+/* Collapse an empty region so it contributes no gap to the stack. */
+.adm-toast-region:empty { display: none; }
+.adm-toast {
+  pointer-events: auto;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  max-width: 380px;
+  padding: 12px 14px;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: var(--white);
+  box-shadow: var(--shadow-lg);
+  font-size: 13.5px;
+  line-height: 1.4;
+  color: var(--ink);
+  animation: adm-toast-in 160ms ease-out;
+}
+@keyframes adm-toast-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .adm-toast { animation: none; }
+}
+.adm-toast.success { border-left: 3px solid var(--brand-green); }
+.adm-toast.error { border-left: 3px solid var(--red); color: var(--ink); }
+.adm-toast-text { flex: 1 1 auto; min-width: 0; }
+.adm-toast-x {
+  flex: 0 0 auto;
+  border: 0;
+  background: none;
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 17px;
+  line-height: 1;
+  padding: 2px 4px;
+  border-radius: 4px;
+}
+.adm-toast-x:hover { color: var(--ink); background: var(--cream-dark); }
+
+/* Sticky table header ------------------------------------------------
+   The header row parks directly under the sticky `.admin-topbar`, so a
+   long list keeps its column meanings while it scrolls.
+
+   `.adm-card` (defined per-screen in posts.css / dashboard.css /
+   trainers.css / analytics.css) clips its corners with `overflow: hidden`,
+   which makes it the table's nearest SCROLL container — and a sticky
+   `thead` inside a non-scrolling container never moves, so the rule below
+   would silently do nothing. `overflow: clip` clips identically WITHOUT
+   creating a scroll container, so the sticky resolves against the viewport
+   as intended. Two real differences to know about, neither of which bites
+   today: `clip` establishes no block formatting context, so a card whose
+   first/last child carries a vertical margin can margin-collapse through the
+   card edge (current children are padded, not margined); and `clip` gives the
+   UA no scrollport, so it can no longer scroll a focused descendant into view
+   inside a card. Written as a descendant selector (0,2,0) rather than
+   editing the four per-screen `.adm-card` rules (0,1,0), so it wins on
+   specificity regardless of stylesheet order and touches no other file. */
+.admin-main .adm-card { overflow: clip; }
+.adm-table thead th {
+  position: sticky;
+  top: var(--admin-topbar-h);
+  z-index: 4;
+  /* Sticky cells sit ABOVE the rows they overlap, so the header must be
+     opaque — the per-screen sheets already set `background: var(--cream)`
+     on `.adm-table th`, restated here so a screen that forgets it cannot
+     produce see-through text. */
+  background: var(--cream);
+}

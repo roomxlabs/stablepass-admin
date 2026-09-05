@@ -1155,3 +1155,42 @@ and a best-effort dispatch helper swallows that to 0. The cron has fallbacks
 `title?.trim() || "New post"`, `body?.trim() || title?.trim() || "A new update is available."` —
 or the two publish paths diverge for the same row. More generally: when admin duplicates a fan-out
 the be cron already does, diff the two payload builders, don't just match the ticket's field list.
+
+## `loading.tsx` cannot be surfaced by stalling the RSC fetch from the browser (ENG-964)
+**Symptom:** a Playwright proof that intercepted `GET /<route>?_rsc=…` and delayed it never saw
+`loading.tsx` — `location.pathname` stayed on the OLD route for the whole stall and the skeleton
+never mounted.
+**Cause:** Next commits a soft navigation only once the RSC payload arrives. A delayed *response*
+therefore just freezes the current page; the loading boundary is what the SERVER streams first while
+it is still rendering, so the delay has to be on the server side, not the wire. `<Link>` prefetching
+compounds it — a prefetched dynamic route resolves from cache on click and skips the boundary
+entirely.
+**Do this:** to screenshot a skeleton, slow the DATA the server reads, not the page request: run a
+delay proxy in front of `e2e/mock-supabase.mjs` and rebuild with `NEXT_PUBLIC_SUPABASE_URL` pointed
+at it (`NEXT_PUBLIC_*` is inlined at BUILD time — setting it only at `next start` changes nothing).
+~900ms is the sweet spot: enough that a multi-query page (posts) holds its skeleton for seconds,
+little enough that the `(dash)` layout's own `requireAdminPage()` gate still commits the shell —
+at 2.5s the gate itself blocks and you get a blank page instead of the skeleton.
+
+## An always-mounted toast region must NOT carry `role="status"`/`role="alert"` (ENG-964)
+**Symptom:** adding a shared `<ToastRegion>` to TrainerForm broke 9 unrelated TrainerForm tests with
+"Found multiple elements with the role alert", and the slug-collision assertions read `''`.
+**Cause:** a live region only announces mutations that happen while it is ALREADY in the DOM, so the
+regions are mounted permanently, even when empty. Tagging them with a role therefore puts a permanent
+EMPTY alert on every screen that mounts a toast — and being earlier in the DOM it won
+`getByRole("alert")` over the form's real error banner.
+**Do this:** put `aria-live="polite"`/`"assertive"` on the regions and NO role. The roles are only
+implicit `aria-live` values, so nothing is lost from the announcement, and a screen's own
+`role="alert"` banner stays the only alert on the page. Mount the region as the LAST child too, so it
+can never shadow a first-match query.
+
+## `.adm-card { overflow: hidden }` silently kills a sticky `thead` (ENG-964)
+**Symptom:** `thead th { position: sticky; top: … }` on `.adm-table` did nothing — the header just sat
+at the top of the card.
+**Cause:** `.adm-card` (defined separately in posts.css, dashboard.css, trainers.css, analytics.css)
+clips its corners with `overflow: hidden`, which makes it the table's nearest SCROLL container. A
+sticky element resolves against that container, and the card never scrolls, so it never moves.
+**Do this:** `overflow: clip` clips identically WITHOUT creating a scroll container. ENG-964 applied it
+as `.admin-main .adm-card { overflow: clip }` from globals.css — specificity (0,2,0) beats the four
+per-screen `.adm-card` rules (0,1,0), so it wins regardless of stylesheet order and no per-screen sheet
+has to be touched (they were owned by a concurrent ticket).

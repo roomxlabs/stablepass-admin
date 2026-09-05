@@ -1196,3 +1196,36 @@ Anchoring on `\b` also needs the input NFKC-normalised with invisible characters
 (**incl. U+00AD SOFT HYPHEN**, the one usually forgotten) stripped first, or `Od<AD>ds` sails
 through. Widen by STEM where safe (`bookmak\w*`) but enumerate `bet`/`bets`/`betting` — a bare
 `bet\w*` eats "Better Days".
+
+## `lib/testing/supabase-fake.ts` is the fake for ROUTES — not every module (ENG-993, 5 Sep 2026)
+`lib/mux-playback.ts` does **not** use it: it declares its own narrow `PlaybackDb` interface and
+`mux-playback.test.ts` hand-rolls a matching fake. So "fix the shared fake" did **not** by itself pin
+that module's guard — the shared fake only reaches it via `app/api/admin/posts/[id]/preview/route.ts`,
+which passes the real `sb`. **Before claiming a call site is unprotected by the shared fake, check
+whether the module even takes the Supabase client** — several take a narrow structural interface
+instead, and each of those has its own fake with its own blind spots.
+
+Comparator recording idiom (post-ENG-993): `eq` records `{column, value}` **bare** — four existing
+tests do `toEqual([{column, value}])`, so adding an `op` to `eq` would break them. Every other
+comparator records `{column, value, op}`. `order`/`range` are result-shaping, never filters, and go to
+`calls.modifiers` — putting them in `filters` corrupts "which row did this write target".
+
+Mutation records **snapshot** their filters (`filters = [...filters]` at push). They used to share one
+array per builder, so two mutations off one `from()` cross-contaminated and a guard on the SECOND
+write showed up on the first — a false PASS on exactly the precondition assertions this fake exists to
+support. Keep the snapshot if you touch `makeBuilder`.
+
+## Branch drift between `main` and `feature/launch-v1` (ENG-993)
+A ticket written off one branch can describe code that differs on its declared base. ENG-993 said `in`
+was already fixed (true on `main` via ENG-950/PR #78) but it was still a no-op on `feature/launch-v1`
+when this branch was cut. **Read the actual file on the ticket's `Base branch:`, not the ticket's
+description of it.**
+
+ENG-950 has since merged into `feature/launch-v1`, so `in` arrived from two directions and the rebase
+conflicted on it. The two fixes were **convergent, not contradictory** — both record
+`{column, value, op: "in"}`, so ENG-950's publish-race tests
+(`app/api/admin/posts/[id]/publish/route.test.ts`, which assert the `.in("status", [...])` guard on the
+mutation record) and ENG-993's comparator pinning exercise the same recording. Resolved by keeping
+ENG-993's full comparator set with ENG-950's rationale for `in` folded into it. **The one resolution
+that must never be taken here is restoring any `() => b` no-op to make the suite green** — that is the
+precise defect this ticket exists to remove, and it would silently un-pin every conditional write.

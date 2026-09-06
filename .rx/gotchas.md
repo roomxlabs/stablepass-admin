@@ -1516,3 +1516,49 @@ are the same suite. Always cite the base commit next to the numbers. And note `n
 **Trap:** that `git checkout <base> -- ...` is the same one the "commit BEFORE mutation testing"
 gotcha above warns about — it silently discards UNCOMMITTED work in those files. Commit your fixes
 first, including any review follow-ups, or you will re-apply them from memory.
+## A crop-dialog testid resolving means MOUNTED, not USABLE — the async-decode trap (ENG-1024)
+`PhotoCropField` renders its dialog root (`photo-crop-dialog`) and its action buttons
+(`photo-crop-apply`, `photo-crop-cancel`, `photo-crop-use-as-is`) IMMEDIATELY, but the viewport, the
+zoom slider (`photo-crop-zoom`) and the meta line sit behind `{image ? … : "Preparing photo…"}` — i.e.
+behind the ASYNC `loadImage` decode. So `await screen.findByTestId("photo-crop-dialog")` (or
+`"photo-crop-apply"`) proves only that the dialog MOUNTED, never that it is USABLE.
+
+**Symptom, two flavours, both intermittent and both blamed on "slow CI":**
+- Clicking Apply inside that window hits `apply()`'s `if (!loaded) applyAsIs()` guard, which uploads
+  the ORIGINAL file and closes the dialog. `cropToBlob` is never called, so a `waitFor` on the encode
+  (`h.script.releaseCrop`) burns its whole 1000ms budget and the test reads as a timeout.
+- Reading `photo-crop-zoom` in that window finds nothing, because the slider genuinely is not in the
+  tree yet — reported as "the crop dialog is absent".
+
+**Do this:** wait on the decode-gated element, never on the dialog root, before touching the dialog:
+```ts
+const cropReady = async () => {
+  await screen.findByTestId("photo-crop-dialog");
+  await screen.findByTestId("photo-crop-zoom"); // only exists once loadImage resolved
+};
+```
+This is an explicit await on the real precondition — NOT a raised timeout and NOT a retry. Raising the
+timeout here would have masked the wrong-state bug rather than fixing it.
+
+**How to prove it deterministically** (the flake itself is only ~1-in-10 under CPU load): add
+`await new Promise((r) => setTimeout(r, 20));` to the top of the `loadImage` mock in
+`TrainerForm.test.tsx`. On the unfixed file that fails 12 tests across the crop block; on the fixed
+file all 55 pass under the identical injection. Same trap applies to `HorseForm`'s crop tests.
+
+## A real timer whose interval equals `findByText`'s poll interval has ZERO margin (ENG-1024)
+`form-toast.test.tsx` set the save hold to 50ms and then `await screen.findByText(...)`, whose own
+polling interval is ALSO 50ms, before asserting `expect(push).not.toHaveBeenCalled()`. The deferred
+`router.push` and the assertion were racing by construction — ~1-in-13 full-suite runs went red.
+Do not "fix" this by nudging the hold up; use FAKE timers so the clock cannot move underneath the
+assertion:
+```ts
+vi.useFakeTimers();
+setSaveToastHoldMs(SAVE_TOAST_HOLD_MS);      // the REAL hold, not a shrunken one
+// …submit…
+await act(async () => { await vi.advanceTimersByTimeAsync(0); });  // drain microtasks, clock frozen
+expect(push).not.toHaveBeenCalled();                                // now deterministic
+await act(async () => { await vi.advanceTimersByTimeAsync(SAVE_TOAST_HOLD_MS); });
+expect(push).toHaveBeenCalledWith("/horses");
+```
+`advanceTimersByTimeAsync(0)` flushes the promise chain repeatedly while advancing zero milliseconds,
+which is what makes "the toast is up and the push has NOT happened yet" a real assertion.

@@ -104,7 +104,19 @@ describe("the save hold is a real timer, so it must stay injectable", () => {
 
 describe("HorseForm — save feedback", () => {
   it("announces the save in the polite region and defers the navigation behind the hold", async () => {
-    setSaveToastHoldMs(50);
+    // ENG-1024: FAKE timers, and the REAL hold. This assertion — "the toast is
+    // up and the push has NOT happened yet" — is only meaningful if the hold
+    // provably has not elapsed. On real timers it did not: the test used to set
+    // the hold to 50ms and then `await findByText(...)`, whose own polling
+    // interval is ALSO 50ms, so the deferred `router.push` and the assertion
+    // were racing with zero margin by construction. Measured at ~1-in-13 full
+    // suite runs; forcing the hold to 1ms failed it 3/3.
+    //
+    // With the clock frozen there is no margin to get wrong: microtasks flush
+    // the save's promise chain, the hold timer cannot fire until we advance it,
+    // and both halves of the behaviour are asserted deterministically.
+    vi.useFakeTimers();
+    setSaveToastHoldMs(SAVE_TOAST_HOLD_MS);
     const r = render(
       <>
         <HorseForm mode="create" trainers={TRAINERS} />
@@ -114,13 +126,24 @@ describe("HorseForm — save feedback", () => {
     fillTrainer(r);
     submitHorse(r);
 
-    const toast = await screen.findByText("Horse added to the library.");
+    // Drain the save's promise chain (fetch → json → showToast) WITHOUT moving
+    // the clock. `advanceTimersByTimeAsync(0)` flushes microtasks repeatedly
+    // while advancing zero milliseconds, so the 900ms hold cannot have fired.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+
+    const toast = screen.getByText("Horse added to the library.");
     expect(within(politeRegion()).getByText("Horse added to the library.")).toBeTruthy();
     // The toast is up BEFORE the list replaces the form — that is the point.
     expect(push).not.toHaveBeenCalled();
     expect(toast).toBeTruthy();
 
-    await waitFor(() => expect(push).toHaveBeenCalledWith("/horses"));
+    // Now let the hold elapse, and only then does the navigation happen.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(SAVE_TOAST_HOLD_MS);
+    });
+    expect(push).toHaveBeenCalledWith("/horses");
   });
 
   it("routes a save failure to the assertive region and keeps the inline banner", async () => {

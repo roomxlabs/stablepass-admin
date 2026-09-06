@@ -6,6 +6,40 @@
 
 export type ScriptResult = { single?: any; rows?: any[]; count?: number; error?: any };
 
+/**
+ * One comparator recorded off a query chain (ENG-993).
+ *
+ * `op` names WHICH comparator it was, so a test can prove a write was guarded
+ * by `.is(col, null)` rather than merely that some filter was present. `eq` is
+ * the one exception and records BARE (no `op`) — four pre-existing tests assert
+ * `toEqual([{ column, value }])`, so that is load-bearing, not an oversight.
+ */
+export type Filter = { column: string; value: any; op?: string };
+
+/** One recorded insert/update/delete/upsert. */
+export type MutationRecord = {
+  table: string;
+  op: "insert" | "update" | "delete" | "upsert";
+  payload: any;
+  /**
+   * The upsert's conflict target (e.g. `{ onConflict: "post_id,sort_order" }`),
+   * so a test can prove the arbiter is what the writer actually needs
+   * (ENG-748) and not just that SOME upsert happened. `insert`/`update`/
+   * `delete` never carry one, hence optional.
+   */
+  options?: any;
+  /**
+   * The filters the chain carried, so a test can prove WHICH row a mutation
+   * targeted and WHAT precondition guarded it. Without this a rollback
+   * assertion is satisfied by a `.delete()` with no filter at all — i.e. by a
+   * statement that would delete the whole table.
+   *
+   * Each mutation gets its OWN array (see `makeBuilder`): two mutations off one
+   * `from()` builder never share or inherit filters, in either direction.
+   */
+  filters: Filter[];
+};
+
 export type TableScript = {
   // Result for a read chain (`.select(...).eq(...).single()` / awaited list).
   select?: ScriptResult;
@@ -38,33 +72,15 @@ export type FakeState = {
      * `media_url`, passed just as green as a correct one. Recording the
      * payload is what lets a test guard the write itself.
      */
-    mutations: {
-      table: string;
-      op: "insert" | "update" | "delete" | "upsert";
-      payload: any;
-      /**
-       * The upsert's conflict target (e.g. `{ onConflict: "post_id,sort_order" }`),
-       * so a test can prove the arbiter is what the writer actually needs
-       * (ENG-748) and not just that SOME upsert happened. `insert`/`update`/
-       * `delete` never carry one, hence optional.
-       */
-      options?: any;
-      /**
-       * The `.eq()` filters the chain carried, so a test can prove WHICH row a
-       * mutation targeted. Without this a rollback assertion is satisfied by a
-       * `.delete()` with no filter at all — i.e. by a statement that would
-       * delete the whole table.
-       */
-      filters: { column: string; value: any; op?: string }[];
-    }[];
+    mutations: MutationRecord[];
     /**
      * Result-SHAPING calls (`.order()` / `.range()`), per table (ENG-993).
      *
      * These are not filters — they cannot make a mutation conditional — so
      * they must not land in `mutations[].filters`. They are recorded here
-     * instead of being dropped, so that no method which *filters or shapes a
-     * result* discards its arguments, and so a paging/sort assertion has
-     * something to read.
+     * instead of being dropped, so that of the methods this builder DOES
+     * implement, none which filters or shapes a result discards its arguments,
+     * and so a paging/sort assertion has something to read.
      *
      * `args` has fixed arity: `.order("created_at")` records
      * `["created_at", undefined]`, not `["created_at"]`.
@@ -72,8 +88,12 @@ export type FakeState = {
      * Scope note — this is NOT a claim that the fake records everything.
      * `select()` still drops its column list (and `{ count, head }`), `or()`
      * keeps only the expression, and `insert`/`update`/`delete` ignore their
-     * options argument. Those are unused by the assertions this fake supports;
-     * add recording when a test actually needs to prove one.
+     * options argument. `limit()` is not implemented AT ALL (though
+     * `lib/dashboard/queries.ts` calls it) — an unimplemented method throws
+     * loudly rather than passing silently, so it cannot produce a false PASS,
+     * but a test that needs it must add it. Those gaps are unused by the
+     * assertions this fake supports; add recording when a test needs to prove
+     * one.
      */
     modifiers: { table: string; kind: "order" | "range"; args: any[] }[];
     /** Storage signed-upload targets requested, so "text makes no Storage call" is provable. */
@@ -113,34 +133,41 @@ type Builder = {
 
 function makeBuilder(state: FakeState, table: string): Builder {
   let op: "select" | "mutate" = "select";
-  // Shared with the recorded mutation (same array reference), so `.eq()` calls
-  // chained AFTER .delete()/.update() are still captured.
+  // Filters chained BEFORE any mutation. They legitimately apply to every
+  // mutation on this builder, so each mutation record is seeded from a fresh
+  // COPY of this — never from the previous mutation's (still-growing) array.
+  const base: Filter[] = [];
+  // Where comparators push right now. Aliases `base` until the first mutation,
+  // then points at that mutation's own record array — so `.eq()` chained AFTER
+  // `.delete()`/`.update()` still lands on the mutation it belongs to.
   //
-  // ENG-993: re-seeded (copied) by `recordMutation` on every mutation, so that
-  // two mutations off ONE `from()` builder don't share one array. They used to,
-  // which meant a `.is(...)` guard belonging to the SECOND write also appeared
-  // on the first — i.e. the aliasing could make a precondition assertion pass
-  // for a write that never carried it. That false PASS is the exact failure
-  // mode this ticket exists to remove, so it must not survive in the fix.
-  let filters: { column: string; value: any; op?: string }[] = [];
+  // ENG-993: this used to be ONE array shared by every mutation off a single
+  // `from()`, which leaked guards in BOTH directions — a `.is(...)` belonging
+  // to the second write appeared on the first, and the second write inherited
+  // the first's. The second direction is the dangerous one: an UNFILTERED
+  // `.delete()` (the statement that would wipe the table) recorded as though
+  // it carried a row selector and a precondition. Either way a test asserts a
+  // guard on a write that never carried it — the exact false PASS this ticket
+  // exists to remove, so it must not survive in the fix. (Found by fresh-eyes
+  // review of the first attempt, which only closed the backward direction.)
+  let filters: Filter[] = base;
   const script = () => state.tables[table] ?? {};
-  // Snapshot the filters accumulated so far into a FRESH array, hand that to
-  // the mutation record, and keep chaining into it — so filters chained after
-  // the mutation still land on it, while an earlier mutation's record stays
-  // frozen at what it actually carried.
+  // Give this mutation a FRESH array seeded from `base` (the pre-mutation
+  // filters only) and chain into it — so filters chained after the mutation
+  // land on it, an earlier mutation's record stays frozen at what it actually
+  // carried, and a later mutation does NOT inherit the earlier one's guards.
+  //
+  // The param is `kind`, not `op`, to avoid shadowing the enclosing
+  // `let op: "select" | "mutate"` — the callers set that before calling here,
+  // and a shadowed name would make a future `op = "mutate"` moved inside this
+  // helper silently assign the parameter instead.
   const recordMutation = (
-    op: "insert" | "update" | "delete" | "upsert",
+    kind: "insert" | "update" | "delete" | "upsert",
     payload: any,
     options?: any,
   ) => {
-    filters = [...filters];
-    const record: {
-      table: string;
-      op: "insert" | "update" | "delete" | "upsert";
-      payload: any;
-      options?: any;
-      filters: { column: string; value: any; op?: string }[];
-    } = { table, op, payload, filters };
+    filters = [...base];
+    const record: MutationRecord = { table, op: kind, payload, filters };
     if (options !== undefined) record.options = options;
     state.calls.mutations.push(record);
   };

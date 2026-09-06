@@ -1210,10 +1210,15 @@ tests do `toEqual([{column, value}])`, so adding an `op` to `eq` would break the
 comparator records `{column, value, op}`. `order`/`range` are result-shaping, never filters, and go to
 `calls.modifiers` — putting them in `filters` corrupts "which row did this write target".
 
-Mutation records **snapshot** their filters (`filters = [...filters]` at push). They used to share one
-array per builder, so two mutations off one `from()` cross-contaminated and a guard on the SECOND
-write showed up on the first — a false PASS on exactly the precondition assertions this fake exists to
-support. Keep the snapshot if you touch `makeBuilder`.
+Mutation records get their **own** filter array, seeded from a separate `base` (the filters chained
+before ANY mutation) — `filters = [...base]`, **not** `[...filters]`. They used to share one array per
+builder, so two mutations off one `from()` cross-contaminated in BOTH directions. Watch the second
+direction: it is the dangerous one and the obvious `[...filters]` snapshot does **not** fix it. Seeding
+from the running array means a later mutation inherits the earlier one's guards, so an **unfiltered
+`.delete()` — the statement that would wipe the table — records as though it carried a row selector and
+a precondition**, and "we only deleted that one row" passes for a statement that deleted everything.
+Both directions are pinned by tests in `supabase-fake.test.ts`; assert them with `toEqual`, never
+`toContainEqual`, which passes on an array that has picked up extra entries — i.e. on the bug itself.
 
 ## Branch drift between `main` and `feature/launch-v1` (ENG-993)
 A ticket written off one branch can describe code that differs on its declared base. ENG-993 said `in`

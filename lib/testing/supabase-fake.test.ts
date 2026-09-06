@@ -87,11 +87,56 @@ describe("supabase-fake query builder records its filters", () => {
 
     const [first, second] = state.calls.mutations;
     // The UPDATE never carried `.is(...)`, so it must not appear to.
+    // `toEqual`, not `toContainEqual` — a containment matcher passes on an
+    // array that has picked up EXTRA entries, which is the whole bug.
     expect(first.filters).toEqual([{ column: "id", value: "p1" }]);
-    expect(first.filters).not.toContainEqual(
-      expect.objectContaining({ column: "archived_at" }),
-    );
-    expect(second.filters).toContainEqual({ column: "archived_at", value: null, op: "is" });
+    expect(second.filters).toEqual([
+      { column: "id", value: "p2" },
+      { column: "archived_at", value: null, op: "is" },
+    ]);
+  });
+
+  // The mirror direction, and the dangerous one. The first attempt at this fix
+  // re-seeded each mutation from the RUNNING filter array, which closed the
+  // leak above but left this one wide open: a later mutation inherited the
+  // earlier one's guards. An UNFILTERED `.delete()` — the statement that would
+  // wipe the whole table — then recorded as though it carried a row selector
+  // and a precondition, so a "we only deleted that one row" assertion passed
+  // for a statement that deleted everything. Same false PASS, mirrored.
+  it("does not leak an earlier mutation's guard onto a later, UNGUARDED one", () => {
+    const state = blankState();
+    const chain = makeFakeClient(state).from("post");
+    chain.update({ a: 1 }).eq("id", "p1").is("archived_at", null);
+    chain.delete(); // no filter at all
+
+    const [first, second] = state.calls.mutations;
+    expect(first.filters).toEqual([
+      { column: "id", value: "p1" },
+      { column: "archived_at", value: null, op: "is" },
+    ]);
+    // Must report itself for what it is: a DELETE with no WHERE clause.
+    expect(second.filters).toEqual([]);
+  });
+
+  it("keeps filters chained BEFORE any mutation on every mutation off that builder", () => {
+    const state = blankState();
+    const chain = makeFakeClient(state).from("post");
+    chain.eq("horse_id", "h1"); // scopes the builder, before either write
+    chain.update({ a: 1 }).eq("id", "p1");
+    chain.delete().eq("id", "p2");
+
+    const [first, second] = state.calls.mutations;
+    // Legitimately shared — it really did precede both — but each mutation
+    // holds its OWN copy, so neither can mutate the other's record.
+    expect(first.filters).toEqual([
+      { column: "horse_id", value: "h1" },
+      { column: "id", value: "p1" },
+    ]);
+    expect(second.filters).toEqual([
+      { column: "horse_id", value: "h1" },
+      { column: "id", value: "p2" },
+    ]);
+    expect(first.filters).not.toBe(second.filters);
   });
 
   describe("result-shaping calls are recorded, not treated as filters", () => {
@@ -128,10 +173,24 @@ describe("supabase-fake query builder records its filters", () => {
     });
   });
 
-  it("still records `.eq()` chained AFTER the mutation", () => {
+  // Distinct from the "keeps .eq() bare" test above: that one only proves the
+  // recorded SHAPE. This one proves POSITION — filters on both sides of the
+  // `.delete()` land on it, in call order — which is what makes the fake
+  // usable for the `.delete().eq(...)` idiom the routes actually write.
+  it("records filters chained BEFORE and AFTER the mutation, in call order", () => {
     const state = blankState();
-    makeFakeClient(state).from("post").delete().eq("id", "p1");
-    expect(state.calls.mutations[0].filters).toEqual([{ column: "id", value: "p1" }]);
+    makeFakeClient(state)
+      .from("post")
+      .eq("horse_id", "h1")
+      .delete()
+      .eq("id", "p1")
+      .is("archived_at", null);
+
+    expect(state.calls.mutations[0].filters).toEqual([
+      { column: "horse_id", value: "h1" },
+      { column: "id", value: "p1" },
+      { column: "archived_at", value: null, op: "is" },
+    ]);
   });
 
   it("blankState() starts with empty modifiers", () => {

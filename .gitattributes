@@ -1,0 +1,15 @@
+# `.rx/gotchas.md` is an append-only log — every agent appends its lesson at EOF.
+# Two agents branching from the same base therefore collide there every single
+# time, even though their entries are semantically independent. `merge=union`
+# keeps both sides instead of raising a conflict. (ENG-1012)
+#
+# Deliberately NOT applied to `.rx/guardrails.md` or `.rx/mockups.md`: those hold
+# rules and references that agents EDIT rather than append to. Union is dumb — on
+# an edited line it silently keeps BOTH versions rather than asking a human, which
+# for a guardrail would mean two contradictory rules shipping unnoticed. A conflict
+# in those files is the correct outcome, so they stay unmanaged.
+#
+# The same caveat applies here in the rare case two agents edit the SAME existing
+# gotchas entry: both rewrites survive, adjacent. For an append-only log that is
+# visible and harmless; for a rule file it would not be.
+.rx/gotchas.md merge=union

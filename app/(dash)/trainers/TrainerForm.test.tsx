@@ -896,7 +896,6 @@ describe("TrainerForm — profile photo crop (ENG-749)", () => {
 
       pick(container, jpeg("first.jpg"));
       await cropReady();
-      await cropReady();
       fireEvent.click(screen.getByTestId("photo-crop-apply"));
       await screen.findByText("Photo added");
 

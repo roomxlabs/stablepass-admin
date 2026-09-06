@@ -1317,6 +1317,7 @@ resolving that conflict without re-adding `label` would have renamed every post 
 "Untitled post" with 1100+ tests passing. Any select string a screen depends on gets its columns
 asserted BY NAME next to the string itself — see the `POSTS_PAGE_SELECT` block in
 `lib/posts/sort.test.ts`, which also asserts the *consequence* through `mapPostRow`.
+
 ## `loading.tsx` cannot be surfaced by stalling the RSC fetch from the browser (ENG-964)
 **Symptom:** a Playwright proof that intercepted `GET /<route>?_rsc=…` and delayed it never saw
 `loading.tsx` — `location.pathname` stayed on the OLD route for the whole stall and the skeleton
@@ -1348,10 +1349,37 @@ can never shadow a first-match query.
 ## `.adm-card { overflow: hidden }` silently kills a sticky `thead` (ENG-964)
 **Symptom:** `thead th { position: sticky; top: … }` on `.adm-table` did nothing — the header just sat
 at the top of the card.
-**Cause:** `.adm-card` (defined separately in posts.css, dashboard.css, trainers.css, analytics.css)
-clips its corners with `overflow: hidden`, which makes it the table's nearest SCROLL container. A
+**Cause:** `.adm-card` is declared separately in SIX per-screen sheets — posts.css, dashboard.css,
+horses.css, trainers.css, analytics.css and waitlist.css (the last two are easy to miss; count before
+you trust a fix). Each clips its corners with `overflow: hidden`, which makes it the table's nearest
+SCROLL container. A
 sticky element resolves against that container, and the card never scrolls, so it never moves.
 **Do this:** `overflow: clip` clips identically WITHOUT creating a scroll container. ENG-964 applied it
-as `.admin-main .adm-card { overflow: clip }` from globals.css — specificity (0,2,0) beats the four
+as `.admin-main .adm-card { overflow: clip }` from globals.css — specificity (0,2,0) beats all six
 per-screen `.adm-card` rules (0,1,0), so it wins regardless of stylesheet order and no per-screen sheet
 has to be touched (they were owned by a concurrent ticket).
+
+## ONE toast live region per page, mounted from the layout — never per row (ENG-964)
+**Symptom:** the toast overlap this ticket set out to fix survived the fix. Probing the real posts
+table: `rows= 20  polite= 20  assertive= 20  stacks= 20`.
+**Cause:** `<ToastRegion/>` was rendered inside `PostActions`, which is per table row, and the toast
+queue lived in that component's `useToast()` state. Merging the two regions into one stack therefore
+only helped WITHIN a row; the named repro (unpublish one row, publish another that 409s) spans two
+rows, so it still painted two fixed stacks at the same coordinates on top of each other.
+**Do this:** put the queue in MODULE state (`showToast()` is a plain exported function, not a hook
+result) and mount `<ToastRegion/>` exactly once, in `app/(dash)/layout.tsx`, so it also survives route
+changes. Callers import `showToast` and never own a region. `ToastRegion` additionally elects a single
+owner, so a stray second mount renders `null` rather than a duplicate live region. Assert the count
+against a MULTI-ROW table — a single-component harness cannot see this class of bug.
+
+## Never hide an `aria-live` region, not even with `:empty` (ENG-964)
+**Symptom:** none in any test. jsdom applies no stylesheets, so a render test sees a perfectly healthy
+live region while real assistive tech hears nothing.
+**Cause:** `.adm-toast-region:empty { display: none }`, added to stop an empty region contributing a
+flex `gap`. `:empty` matches until the FIRST toast, and `display: none` takes the node out of the
+accessibility tree — so the region became observable and gained its message in the same commit, which
+is the silent-live-region bug the always-mounted architecture exists to prevent.
+**Do this:** never `display: none` / `visibility: hidden` / `content-visibility: hidden` a live region,
+and never gate one on `:empty`. For the spacing, drop the container `gap` to 0 and put the spacing on
+each toast's own `margin-top`. Guard it by reading the rule TEXT out of globals.css (with comments
+stripped) — that is the only way to test a stylesheet fact from jsdom.

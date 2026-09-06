@@ -8,7 +8,7 @@ import { signPhoto } from "@/lib/storage/photos";
 import { SHARES_WEBSITE_REQUIRED } from "@/lib/horses/shares-for-sale";
 import { trainerHasWebsite } from "@/lib/trainers/website-url";
 import PhotoCropField, { type CropState, type PickedPhoto } from "../components/PhotoCropField";
-import ToastRegion, { saveToastHoldMs, useToast } from "../Toast";
+import { saveToastHoldMs, showToast } from "../Toast";
 import { HORSE_SEXES, TRAINING_STATUSES, dollarsToCents, horseSexLabel, humanizeTrainingStatus } from "./format";
 
 // Shared add/edit form — screens/07-add-horse.html (re-cut 18 Aug 2026). In
@@ -104,7 +104,6 @@ export default function HorseForm({ mode, trainers, horseId, initial = {} }: Pro
     trainingStatus: initial.trainingStatus ?? "spelling",
     sharesForSale: initial.sharesForSale ?? false,
   });
-  const { toasts, showToast, dismissToast } = useToast();
   // The post-save navigation is deferred so the success toast is visible; the
   // handle is cleared on unmount so a manual navigation mid-hold can't fire a
   // stray push afterwards.
@@ -740,7 +739,6 @@ export default function HorseForm({ mode, trainers, horseId, initial = {} }: Pro
           </div>
         </div>
       </div>
-      <ToastRegion toasts={toasts} onDismiss={dismissToast} />
     </form>
   );
 }

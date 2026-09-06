@@ -1,11 +1,14 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
+import { renderToStaticMarkup } from "react-dom/server";
 import DashboardLoading from "./loading";
 import PostsLoading from "./posts/loading";
 import HorsesLoading from "./horses/loading";
 import TrainersLoading from "./trainers/loading";
 import AnalyticsLoading from "./analytics/loading";
+
+(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 afterEach(cleanup);
 
@@ -28,6 +31,28 @@ describe.each(routes)("$name loading", ({ name, Component, label }) => {
   it("carries aria-busy on the root", () => {
     const { getByTestId } = render(<Component />);
     expect(getByTestId("route-skeleton").getAttribute("aria-busy")).toBe("true");
+  });
+
+  it("mounts the status node EMPTY and writes the label in a LATER commit — a live region that arrives together with its text is never announced", () => {
+    // `loading.tsx` is what the SERVER streams while the page renders, so the
+    // server markup is literally the first thing the browser mounts. If the
+    // label were rendered inline (`<p role="status">{label}</p>`) it would be
+    // in that markup, and the region would gain its content in the same commit
+    // as the region itself — which no assistive technology announces.
+    //
+    // Asserting only `textContent === label` after a client render (as this
+    // suite originally did) is true of the broken form too: delete the effect,
+    // inline the label, and nothing goes red. The mount ORDER is the property
+    // that matters, so it is the property asserted.
+    const host = document.createElement("div");
+    host.innerHTML = renderToStaticMarkup(<Component />);
+    const streamed = host.querySelector('[role="status"]');
+    expect(streamed, "the status node must be in the streamed markup").not.toBeNull();
+    expect(streamed!.textContent, "the label must NOT be in the first commit").toBe("");
+
+    // Then the effect writes it — a real mutation of an already-observed node.
+    render(<Component />);
+    expect(screen.getByRole("status").textContent).toBe(label);
   });
 
   it("announces exactly one status node with the route's label, and hides the skeleton bars from the a11y tree", () => {

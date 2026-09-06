@@ -136,6 +136,18 @@ test("toast — unpublish succeeds", async ({ page }) => {
   await page.goto("/posts");
   await expect(page.locator(".adm-table tbody tr").first()).toBeVisible({ timeout: 30000 });
 
+  // ONE live-region pair for the whole page, however many rows it has. The
+  // regions used to be rendered inside PostActions, i.e. once per row, so a
+  // full page carried 40 of them and 20 fixed stacks at identical coordinates
+  // — which is why two toasts raised from two different rows overlapped. The
+  // count is asserted against the real, populated table on purpose: a
+  // single-component harness cannot see this.
+  const rowCount = await page.locator(".adm-table tbody tr").count();
+  expect(rowCount).toBeGreaterThan(1);
+  await expect(page.locator('[aria-live="polite"]')).toHaveCount(1);
+  await expect(page.locator('[aria-live="assertive"]')).toHaveCount(1);
+  await expect(page.locator(".adm-toast-stack")).toHaveCount(1);
+
   await page.getByRole("button", { name: "Unpublish" }).first().click();
 
   const polite = page.locator('[aria-live="polite"]');

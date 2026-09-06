@@ -4,18 +4,19 @@ import { act } from "react";
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import ToastRegion, { ERROR_TTL_MS, SUCCESS_TTL_MS, useToast } from "./Toast";
+import ToastRegion, { ERROR_TTL_MS, SUCCESS_TTL_MS, resetToastsForTest, showToast } from "./Toast";
 
 // Allow bare act(...) (used by the fake-timer test below) to flush effects
 // without the "testing environment is not configured to support act" warning
 // — same setup as LocalTime.test.tsx.
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
-// A tiny harness so the hook is exercised the same way a real screen uses it:
-// showToast from a click handler, ToastRegion mounted once, dismissToast wired
-// through to the per-toast button.
+// A tiny harness in the shape of the real tree: a screen raises a toast with
+// the module-level `showToast()`, and the single <ToastRegion/> that the (dash)
+// layout mounts renders it. The queue is module state, not component state, so
+// the caller and the region need not be related in the tree at all — which is
+// what lets ONE region serve twenty table rows.
 function Harness() {
-  const { toasts, showToast, dismissToast } = useToast();
   return (
     <div>
       <button type="button" onClick={() => showToast("It worked.", "success")}>
@@ -24,13 +25,14 @@ function Harness() {
       <button type="button" onClick={() => showToast("It broke.", "error")}>
         show error
       </button>
-      <ToastRegion toasts={toasts} onDismiss={dismissToast} />
+      <ToastRegion />
     </div>
   );
 }
 
 afterEach(() => {
   cleanup();
+  resetToastsForTest();
   vi.useRealTimers();
 });
 
@@ -41,6 +43,42 @@ describe("useToast / ToastRegion", () => {
     const assertive = document.querySelectorAll('[aria-live="assertive"]');
     expect(polite).toHaveLength(1);
     expect(assertive).toHaveLength(1);
+  });
+
+  it("adds the message to the SAME region node that was already mounted — it does not create a region to hold it", () => {
+    render(<Harness />);
+    // Capture the actual DOM nodes before anything has ever been announced.
+    const politeBefore = document.querySelector('[aria-live="polite"]') as HTMLElement;
+    const assertiveBefore = document.querySelector('[aria-live="assertive"]') as HTMLElement;
+    expect(politeBefore.textContent).toBe("");
+    expect(assertiveBefore.textContent).toBe("");
+
+    fireEvent.click(screen.getByText("show success"));
+    fireEvent.click(screen.getByText("show error"));
+
+    // NODE IDENTITY, not "a region exists": if React had replaced or re-created
+    // the region to render the message, these would be different elements — and
+    // an assistive technology would have had nothing to observe a mutation on.
+    // This is the behavioural half of the `:empty { display: none }` fix; the
+    // CSS contract below is the other half, because jsdom applies no
+    // stylesheets and so cannot see a region that is hidden rather than absent.
+    expect(document.querySelector('[aria-live="polite"]')).toBe(politeBefore);
+    expect(document.querySelector('[aria-live="assertive"]')).toBe(assertiveBefore);
+    expect(politeBefore.textContent).toContain("It worked.");
+    expect(assertiveBefore.textContent).toContain("It broke.");
+  });
+
+  it("keeps ONE region pair when a second <ToastRegion/> is mounted — a stray mount is inert, never a duplicate live region", () => {
+    render(
+      <>
+        <ToastRegion />
+        <ToastRegion />
+        <ToastRegion />
+      </>,
+    );
+    expect(document.querySelectorAll('[aria-live="polite"]')).toHaveLength(1);
+    expect(document.querySelectorAll('[aria-live="assertive"]')).toHaveLength(1);
+    expect(document.querySelectorAll(".adm-toast-stack")).toHaveLength(1);
   });
 
   it("puts a success toast in the polite region and an error toast in the assertive one", () => {
@@ -143,6 +181,34 @@ describe("globals.css — ENG-964 CSS contract", () => {
     const th = rule(".adm-table thead th");
     expect(th).toMatch(/position:\s*sticky/);
     expect(th).toMatch(/top:\s*var\(--admin-topbar-h\)/);
+  });
+
+  it("gives the sticky header its own bottom rule — under border-collapse the cell border belongs to the TABLE and scrolls away with the rows", () => {
+    expect(rule(".adm-table thead th")).toMatch(/box-shadow:\s*inset\s+0\s+-1px\s+0\s+var\(--line\)/);
+  });
+
+  // THE point of this ticket's a11y work. A live region that is not in the
+  // accessibility tree when its content changes does not announce, and
+  // `display: none` takes it out of that tree. `.adm-toast-region:empty
+  // { display: none }` matched until the very first toast, so the region became
+  // visible and gained its message in the same commit — silent, exactly the bug
+  // the whole always-mounted architecture exists to avoid. jsdom applies no
+  // stylesheets, so no render test can see this; the rule text is the evidence.
+  it("never hides the live regions — no rule in globals.css may take .adm-toast-region out of the accessibility tree", () => {
+    // Comments are stripped first — the block above TALKS about the rule it
+    // forbids, and prose must not be able to fail (or pass) this test.
+    const declarations = CSS.replace(/\/\*[\s\S]*?\*\//g, "");
+    // Every rule whose selector mentions the region, with its declarations.
+    const blocks = [...declarations.matchAll(/([^{}]*\.adm-toast-(?:region|stack)[^{}]*)\{([^}]*)\}/g)];
+    expect(blocks.length, "the toast regions must be styled at all").toBeGreaterThan(0);
+    for (const [, selector, body] of blocks) {
+      expect(body, `${selector.trim()} must not hide the live region`).not.toMatch(/display:\s*none/);
+      expect(body, `${selector.trim()} must not hide the live region`).not.toMatch(/visibility:\s*hidden|collapse/);
+      expect(body, `${selector.trim()} must not hide the live region`).not.toMatch(/content-visibility:\s*hidden/);
+    }
+    // And specifically not behind :empty, which matches right up until the
+    // first message — the exact window in which the region must be observable.
+    expect(declarations).not.toMatch(/\.adm-toast-(?:region|stack)[^{}]*:empty/);
   });
 
   it("clips the card with overflow: clip, not hidden — hidden would make the card the table's scroll container and silently kill the sticky header", () => {

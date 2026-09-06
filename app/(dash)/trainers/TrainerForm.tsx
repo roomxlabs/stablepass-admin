@@ -8,7 +8,7 @@ import { signPhoto } from "@/lib/storage/photos";
 import { parseWebsiteUrl } from "@/lib/trainers/website-url";
 import { slugCollisionMessage } from "@/lib/trainers/slug-collision";
 import PhotoCropField, { type CropState, type PickedPhoto } from "../components/PhotoCropField";
-import ToastRegion, { saveToastHoldMs, useToast } from "../Toast";
+import { saveToastHoldMs, showToast } from "../Toast";
 import { publishMarketingPhoto, unpublishMarketingPhoto } from "./marketingPhoto";
 
 // Add / edit trainer form — matches mockups/web/admin/screens/08-add-trainer.html.
@@ -96,7 +96,6 @@ export default function TrainerForm(props: Props) {
   );
   const [removed, setRemoved] = useState<string[]>([]);
   const [uploading, setUploading] = useState(false);
-  const { toasts, showToast, dismissToast } = useToast();
   // Deferred so the success toast is on screen before the list replaces the
   // form; cleared on unmount so a manual navigation mid-hold cannot fire a
   // stray push afterwards.
@@ -725,7 +724,6 @@ export default function TrainerForm(props: Props) {
       {/* Last child on purpose: the region is `position: fixed`, so its
           DOM position is cosmetic — but keeping it after the form's own
           `role="alert"` banner means it can never shadow a first-match query. */}
-      <ToastRegion toasts={toasts} onDismiss={dismissToast} />
     </form>
   );
 }

@@ -4,7 +4,7 @@ import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import type { PostStatus } from "./types";
 import { deletePost, discardDraft, publishNow, republishPost, unpublishPost } from "./api";
-import ToastRegion, { useToast } from "../Toast";
+import { showToast } from "../Toast";
 
 // The per-row action affordances. Which action shows is a pure function of the
 // post's status (guardrail §2): Discard appears only on a draft; a published
@@ -51,7 +51,6 @@ export default function PostActions({ id, status }: { id: string; status: PostSt
   // Optimistic overlay on the server-rendered `status`. `undefined` = no action
   // has completed yet, so the server's value stands; `null` = the row is gone.
   const [optimistic, setOptimistic] = useState<PostStatus | null | undefined>(undefined);
-  const { toasts, showToast, dismissToast } = useToast();
   const working = busy || pending;
   // Drop the overlay as soon as the SERVER sends a different status than the
   // one it was standing in for. Without this the overlay shadows the prop for
@@ -123,10 +122,6 @@ export default function PostActions({ id, status }: { id: string; status: PostSt
           Delete
         </button>
       )}
-      {/* Replaces the old 11px `.row-err` string in the actions cell: a failed
-          publish now announces itself assertively instead of hiding in the
-          corner of a table row (ENG-964). */}
-      <ToastRegion toasts={toasts} onDismiss={dismissToast} />
     </>
   );
 }

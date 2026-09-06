@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act } from "react";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import type { RenderResult } from "@testing-library/react";
-import { SAVE_TOAST_HOLD_MS, saveToastHoldMs, setSaveToastHoldMs } from "./Toast";
+import ToastRegion, { SAVE_TOAST_HOLD_MS, resetToastsForTest, saveToastHoldMs, setSaveToastHoldMs } from "./Toast";
 import HorseForm from "./horses/HorseForm";
 import TrainerForm from "./trainers/TrainerForm";
 
@@ -11,6 +11,10 @@ import TrainerForm from "./trainers/TrainerForm";
 // TrainerForm/HorseForm suites cover what gets SENT; nothing covered what the
 // admin is TOLD, which before this ticket was nothing at all — a successful
 // save simply became the list screen.
+//
+// The single <ToastRegion/> lives in the (dash) layout, so each test mounts the
+// form next to one — the same shape the app has, and the reason a form can call
+// `showToast()` without owning a region of its own.
 //
 // These are the four things the toast wiring adds, and none of them were
 // exercised anywhere else: the success message, that it lands in the polite
@@ -76,6 +80,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  resetToastsForTest();
   vi.clearAllMocks();
   vi.unstubAllGlobals();
   setSaveToastHoldMs(SAVE_TOAST_HOLD_MS);
@@ -100,7 +105,12 @@ describe("the save hold is a real timer, so it must stay injectable", () => {
 describe("HorseForm — save feedback", () => {
   it("announces the save in the polite region and defers the navigation behind the hold", async () => {
     setSaveToastHoldMs(50);
-    const r = render(<HorseForm mode="create" trainers={TRAINERS} />);
+    const r = render(
+      <>
+        <HorseForm mode="create" trainers={TRAINERS} />
+        <ToastRegion />
+      </>,
+    );
     fillTrainer(r);
     submitHorse(r);
 
@@ -119,7 +129,12 @@ describe("HorseForm — save feedback", () => {
       "fetch",
       vi.fn(async () => ({ ok: false, json: async () => ({ error: { message: "Create failed" } }) })),
     );
-    const r = render(<HorseForm mode="create" trainers={TRAINERS} />);
+    const r = render(
+      <>
+        <HorseForm mode="create" trainers={TRAINERS} />
+        <ToastRegion />
+      </>,
+    );
     fillTrainer(r);
     submitHorse(r);
 
@@ -137,7 +152,12 @@ describe("HorseForm — save feedback", () => {
   it("cancels the deferred push when the form unmounts mid-hold", async () => {
     vi.useFakeTimers();
     setSaveToastHoldMs(5000);
-    const r = render(<HorseForm mode="create" trainers={TRAINERS} />);
+    const r = render(
+      <>
+        <HorseForm mode="create" trainers={TRAINERS} />
+        <ToastRegion />
+      </>,
+    );
     const { unmount } = r;
     fillTrainer(r);
     submitHorse(r);
@@ -156,7 +176,12 @@ describe("HorseForm — save feedback", () => {
 describe("TrainerForm — save feedback", () => {
   it("announces the save in the polite region before navigating", async () => {
     setSaveToastHoldMs(50);
-    render(<TrainerForm mode="create" />);
+    render(
+      <>
+        <TrainerForm mode="create" />
+        <ToastRegion />
+      </>,
+    );
     fireEvent.change(screen.getByTestId("trainer-name"), { target: { value: "Peter Moody" } });
     fireEvent.click(screen.getByTestId("submit-trainer"));
 
@@ -175,7 +200,12 @@ describe("TrainerForm — save feedback", () => {
         json: async () => ({ error: { message: "Location is not valid." } }),
       })),
     );
-    render(<TrainerForm mode="create" />);
+    render(
+      <>
+        <TrainerForm mode="create" />
+        <ToastRegion />
+      </>,
+    );
     fireEvent.change(screen.getByTestId("trainer-name"), { target: { value: "Peter Moody" } });
     fireEvent.click(screen.getByTestId("submit-trainer"));
 

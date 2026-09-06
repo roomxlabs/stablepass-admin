@@ -74,6 +74,32 @@ describe("GET /api/admin/posts/:id/preview", () => {
     expect(j.data.mobile.playbackUrl).toContain("pb_2.m3u8?token=");
   });
 
+  // ENG-993. The test above proves the reconcile *happens*; this proves it is
+  // still CONDITIONAL. `lib/mux-playback.ts:99` guards its write with
+  // `.is("mux_playback_id", null)` so it cannot clobber a playback id the Mux
+  // webhook wrote in between (a lost update). Reached through the SHARED fake
+  // — this route passes the real `sb`, so it is the only production path where
+  // the shared fake sees that guard. While `is` was a `() => b` no-op the
+  // filter was invisible here and the guard was pinned by nothing.
+  it("the reconcile UPDATE carries its lost-update guard, not just an id match", async () => {
+    asAdmin();
+    findMuxAssetByPassthrough.mockResolvedValue({ assetId: "as_1", playbackId: "pb_2" });
+    state.tables.post = {
+      select: { single: { id: "p1", type: "video", status: "draft", mux_playback_id: null } },
+      mutate: {},
+    };
+    const r = await GET(req(), params);
+    expect(r.status).toBe(200);
+
+    const update = state.calls.mutations.find((m) => m.op === "update");
+    expect(update).toBeDefined();
+    expect(update!.table).toBe("post");
+    expect(update!.filters).toEqual([
+      { column: "id", value: "p1" },
+      { column: "mux_playback_id", value: null, op: "is" },
+    ]);
+  });
+
   it("photo posts carry no playbackUrl", async () => {
     asAdmin();
     state.tables.post = {

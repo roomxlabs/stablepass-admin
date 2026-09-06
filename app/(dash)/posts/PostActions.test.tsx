@@ -30,9 +30,11 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
-// The real tree: PostActions raises toasts, and the ONE <ToastRegion/> that
-// renders them lives in the (dash) layout — not in the row. Every test below
-// mounts that shape, so nothing here can pass against a per-row region.
+// The real tree's SHAPE: PostActions raises toasts, and the ONE <ToastRegion/>
+// that renders them is not in the row. Every test below mounts that shape, so
+// nothing here can pass against a per-row region. The region is mounted by this
+// harness, not by the layout — app/(dash)/layout.test.tsx is what pins the
+// layout as the thing that mounts it in the real app.
 function renderRow(ui: ReactElement) {
   return render(
     <>
@@ -186,7 +188,11 @@ describe("PostActions — exactly one live-region pair per page", () => {
     );
     // The rows really are all there — otherwise the counts below are vacuous.
     expect(screen.getAllByRole("button", { name: "Unpublish" })).toHaveLength(ROWS);
-    // ...and the layout mounts the single region alongside them.
+    // ...and ONE region serves all of them. Note what this does and does not
+    // prove: the region is mounted HERE, by the harness, so this asserts the
+    // architecture (one region, N rows) and NOT the layout wiring. That the
+    // (dash) layout is what mounts it in the app is pinned separately, and
+    // mutation-proven, in app/(dash)/layout.test.tsx.
     render(<ToastRegion />);
     expect(document.querySelectorAll('[aria-live="polite"]')).toHaveLength(1);
     expect(document.querySelectorAll('[aria-live="assertive"]')).toHaveLength(1);

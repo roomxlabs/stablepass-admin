@@ -12,7 +12,13 @@ import { test, expect, type Page, type Route } from "@playwright/test";
 //    re-asserts its precondition on the UPDATE itself (ENG-950), so a 409 is a
 //    real outcome; fulfilling it here proves the client surfaces it instead of
 //    optimistically showing the post as published.
-test.describe.configure({ mode: "serial" });
+// NOT `mode: "serial"`. The config already pins `workers: 1` +
+// `fullyParallel: false`, so these run in file order regardless; all "serial"
+// added was CASCADE-SKIPPING — when the unpublish test below failed on the
+// unscoped [aria-live] selector, the error-toast test after it was reported as
+// "did not run" and the error path lost its browser evidence entirely. Each
+// test here signs in and navigates for itself, so none depends on a previous
+// one; a failure should cost exactly one result, not two.
 
 async function signIn(page: Page) {
   await page.goto("/signin");
@@ -138,19 +144,27 @@ test("toast — unpublish succeeds", async ({ page }) => {
 
   // ONE live-region pair for the whole page, however many rows it has. The
   // regions used to be rendered inside PostActions, i.e. once per row, so a
-  // full page carried 40 of them and 20 fixed stacks at identical coordinates
-  // — which is why two toasts raised from two different rows overlapped. The
-  // count is asserted against the real, populated table on purpose: a
-  // single-component harness cannot see this.
+  // page of N posts carried 2N of them and N fixed stacks at identical
+  // coordinates — which is why two toasts raised from two different rows
+  // overlapped. The count is asserted against the real, populated table on
+  // purpose: a single-component harness cannot see this. The mock-Supabase
+  // fixture yields 7 posts, so 7 is the multi-row shape being asserted here.
   const rowCount = await page.locator(".adm-table tbody tr").count();
-  expect(rowCount).toBeGreaterThan(1);
-  await expect(page.locator('[aria-live="polite"]')).toHaveCount(1);
-  await expect(page.locator('[aria-live="assertive"]')).toHaveCount(1);
+  expect(rowCount, "the fixture must give a genuinely multi-row table").toBeGreaterThanOrEqual(5);
+
+  // Scoped to OUR regions by class, not to bare [aria-live]. Next 16's App
+  // Router mounts its own announcer (`#__next-route-announcer__`) and sets
+  // `ariaLive = "assertive"` on it; it lives in an OPEN shadow root, which
+  // Playwright's CSS engine pierces. So a bare '[aria-live="assertive"]'
+  // permanently resolves to 2 in a real browser and can never equal 1 — the
+  // app is correct, the unscoped selector was not.
+  await expect(page.locator('.adm-toast-region[aria-live="polite"]')).toHaveCount(1);
+  await expect(page.locator('.adm-toast-region[aria-live="assertive"]')).toHaveCount(1);
   await expect(page.locator(".adm-toast-stack")).toHaveCount(1);
 
   await page.getByRole("button", { name: "Unpublish" }).first().click();
 
-  const polite = page.locator('[aria-live="polite"]');
+  const polite = page.locator('.adm-toast-region[aria-live="polite"]');
   await expect(polite.getByText(/Post unpublished/)).toBeVisible({ timeout: 15000 });
   // Optimistic: that row's affordance flipped before the refresh landed.
   await expect(page.getByRole("button", { name: "Republish" }).first()).toBeVisible();
@@ -174,7 +188,7 @@ test("toast — publish loses the race and says so", async ({ page }) => {
   await expect(publish).toBeVisible({ timeout: 30000 });
   await publish.click();
 
-  const assertive = page.locator('[aria-live="assertive"]');
+  const assertive = page.locator('.adm-toast-region[aria-live="assertive"]');
   await expect(assertive.getByText(/already published by someone else/)).toBeVisible({ timeout: 15000 });
   // The failure must NOT be shown as a success: the row keeps its action.
   await expect(page.getByRole("button", { name: "Publish now" }).first()).toBeVisible();

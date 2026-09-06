@@ -411,7 +411,12 @@ a { color: inherit; text-decoration: none; }
 }
 
 /* Skeleton compositions used by the route loading.tsx files ---------- */
-.sk-stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; }
+/* Geometry below is MEASURED from the components these skeletons stand in
+   for, not eyeballed — a skeleton whose box differs from its real box makes
+   the page jump on swap-in. `gap` here is `.adm-stats`'s own 14px
+   (dashboard.css:16, analytics/analytics.css:34); it was 16px, so every
+   gutter moved 2px the moment the tiles arrived. */
+.sk-stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; }
 .sk-stats.five { grid-template-columns: repeat(5, 1fr); }
 .sk-stat {
   background: var(--white);
@@ -434,11 +439,18 @@ a { color: inherit; text-decoration: none; }
   border-bottom: 1px solid var(--line);
 }
 .sk-chip { height: 28px; width: 92px; border-radius: 999px; }
+/* One `.sk-row` stands in for one `<tr>`, so it must be the same height. The
+   real cell is `padding: 12px 14px` with `padding-left/right: 22px` on the
+   first/last child (posts.css:105,111,113 — waitlist.css:32,44,49 agrees), so
+   the row's own box is 12px vertical by 22px horizontal. This said 14px
+   vertical, copied from `.sk-filter-bar` (whose 14px 22px IS right — it
+   matches `.adm-filter-bar`, posts.css:23), which made a thumbnail row 65px
+   against the real 61px and shifted the whole list 4px per row on swap-in. */
 .sk-row {
   display: flex;
   align-items: center;
   gap: 14px;
-  padding: 14px 22px;
+  padding: 12px 22px;
   border-bottom: 1px solid var(--line);
 }
 .sk-row:last-child { border-bottom: 0; }

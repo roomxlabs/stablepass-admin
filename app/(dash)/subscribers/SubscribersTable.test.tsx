@@ -9,6 +9,7 @@ import SubscribersTable, {
   statusPill,
   TENURE_BANDS,
 } from "./SubscribersTable";
+import { formatSubscribedDate } from "./SubscribedDate";
 import type { SubscriberRow } from "./data";
 
 // next/link renders an <a> here; the real one wants an App Router context that
@@ -78,15 +79,82 @@ describe("<SubscribersTable>", () => {
     expect(pill.className).toContain("pill");
     expect(pill.className).toContain("red");
 
-    // 3. The cancellation date is in the row, on screen, unclicked.
+    // 3. The cancellation date is in the row, on screen, unclicked — and the
+    //    LABEL a human actually reads is asserted, not only the machine-readable
+    //    datetime attribute. Asserting the attribute alone is what let the
+    //    cancelled cell keep `LocalTime kind="when"` (relative under 7 days,
+    //    year-less "Aug 27" beyond) through an otherwise mutation-clean suite.
     const cell = flagged[0].querySelector(".subs-cancelled-on");
     expect(cell).toBeTruthy();
-    expect(cell!.querySelector("time")?.getAttribute("datetime")).toBe(
-      "2026-09-02T00:00:00.000Z",
+    const cancelledTime = cell!.querySelector("time");
+    expect(cancelledTime?.getAttribute("datetime")).toBe("2026-09-02T00:00:00.000Z");
+    expect(cancelledTime?.textContent).toBe(
+      formatSubscribedDate("2026-09-02T00:00:00.000Z"),
     );
 
     // The healthy row is NOT flagged.
     expect(screen.getAllByTestId("subscriber-row")).toHaveLength(1);
+  });
+
+  // Regression guard, ENG-982 review @3f9cf51: the Cancelled column shipped on
+  // the shared `LocalTime kind="when"` — the exact component SubscribedDate was
+  // written to stop using — so the committed cancelled-cohort screenshot showed
+  // "3 days ago" and "Aug 27" two rows apart, neither carrying a year, in the
+  // one column an operator emails people from. This asserts the rendered OUTPUT
+  // of formatSubscribedDate, so reverting the cell to LocalTime goes red.
+  it("renders the cancellation date in the year-bearing absolute format, not the relative one", () => {
+    // Two cancellations that LocalTime would render in two DIFFERENT formats:
+    // one inside its seven-day relative window, one outside it. Both must come
+    // out in the same absolute, year-bearing format here.
+    const recent = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString();
+    const old = "2025-08-27T00:00:00.000Z";
+
+    render(
+      <SubscribersTable
+        rows={[
+          row(1, { status: "canceled", canceledAt: recent }),
+          row(2, { status: "canceled", canceledAt: old }),
+        ]}
+        total={2}
+        matching={2}
+        offset={0}
+        limit={25}
+      />,
+    );
+
+    const labels = Array.from(
+      document.querySelectorAll(".subs-cancelled-on time"),
+    ).map((el) => el.textContent);
+
+    expect(labels).toEqual([formatSubscribedDate(recent), formatSubscribedDate(old)]);
+
+    // And concretely: a year is present, and no relative wording survives.
+    expect(labels[1]).toContain("2025");
+    expect(labels[0]).toContain(String(new Date(recent).getFullYear()));
+    for (const label of labels) {
+      expect(label).not.toMatch(/ago|yesterday|today/i);
+    }
+  });
+
+  // ENG-982 review @3f9cf51 (should-fix 2): the `updated_at` caveat was in a
+  // `title` on the <th> only — invisible on touch, unreliable for screen
+  // readers — while the header still showed a bare "Cancelled *". The
+  // asterisk now has a visible legend, wired to the header by aria.
+  it("shows the cancellation-date approximation caveat on screen, not only on hover", () => {
+    render(
+      <SubscribersTable rows={[row(1), cancelled(2)]} total={2} matching={2} offset={0} limit={25} />,
+    );
+
+    const legend = document.querySelector(".subs-legend");
+    expect(legend).toBeTruthy();
+    expect(legend!.textContent).toMatch(/approximate/i);
+    // It names the actual cause, not just "approximate".
+    expect(legend!.textContent).toMatch(/last updated while cancelled/i);
+
+    // And the header points at it, so assistive tech reaches it too.
+    const header = screen.getByText(/Cancelled \*/);
+    expect(header.getAttribute("aria-describedby")).toBe(legend!.id);
+    expect(legend!.id).toBeTruthy();
   });
 
   it("reserves the red pill for cancelled — lapsed and trial read differently", () => {

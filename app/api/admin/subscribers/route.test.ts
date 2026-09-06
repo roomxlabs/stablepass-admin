@@ -3,11 +3,9 @@ import { makeFakeClient, blankState, type FakeState } from "@/lib/testing/supaba
 
 const state: FakeState = blankState();
 
-// Swappable so the `view=list` tests can substitute a client whose `.range()`
-// actually slices — the shared fake's is a no-op, which cannot terminate
-// `fetchAllSubscribers`'s paging loop (see app/(dash)/subscribers/data.test.ts
-// for the same reasoning). The existing aggregate-mode tests below never touch
-// this and keep using the plain `state`-driven fake.
+// Swappable so the AAL1 gate test can substitute a client that reports an
+// `aal1` session — the shared `state`-driven fake is always AAL2. Every other
+// test here uses the plain fake.
 let supabaseServerImpl: (() => Promise<unknown>) | null = null;
 vi.mock("@/lib/supabase/server", () => ({
   supabaseServer: async () => (supabaseServerImpl ? supabaseServerImpl() : makeFakeClient(state)),
@@ -37,9 +35,9 @@ type SubRow = {
 };
 
 /**
- * Installs a Supabase stand-in that ACTUALLY honours `.range(from,to)`, as an
- * authenticated AAL2 admin, for the `view=list` tests. Mirrors the equivalent
- * helper in app/api/admin/waitlist/export/route.test.ts.
+ * Installs a Supabase stand-in at a chosen assurance level, used by the AAL1
+ * gate test. Mirrors the equivalent helper in
+ * app/api/admin/waitlist/export/route.test.ts.
  */
 function useSubscriptionRows(all: SubRow[], aal: "aal1" | "aal2" = "aal2") {
   supabaseServerImpl = async () => ({
@@ -125,66 +123,40 @@ describe("GET /api/admin/subscribers", () => {
     expect(j.data.byStatus).toEqual({});
   });
 
-  describe("?view=list", () => {
-    it("returns subscriber rows and a total/matching meta", async () => {
-      useSubscriptionRows([
-        subRow({ id: "1", user: { name: "Ann", email: "ann@example.com", is_admin: false } }),
-        subRow({ id: "2", status: "trial", user: { name: "Bob", email: "bob@example.com", is_admin: false } }),
-      ]);
-      const r = await GET(req("?view=list"));
-      expect(r.status).toBe(200);
-      const j = await r.json();
-      expect(j.data).toHaveLength(2);
-      expect(j.data[0]).toMatchObject({ name: "Ann", email: "ann@example.com", status: "active" });
-      expect(typeof j.data[0].tenureMonths).toBe("number");
-      expect(j.meta).toMatchObject({ total: 2, matching: 2, offset: 0, limit: 25 });
-    });
+  // ENG-982 review @3f9cf51 (should-fix 1): this route deliberately has NO
+  // per-row `?view=list` mode. It shipped one with zero consumers — the page
+  // renders server-side via `listSubscribers()` — which put member name +
+  // email on the wire for nobody. Removed; these two guard the removal.
+  it("?view=list is NOT a per-row mode — it falls through to the aggregate, leaking no member PII", async () => {
+    asAdmin();
+    state.tables.subscription = {
+      select: {
+        rows: [
+          { status: "active", user: { name: "Ann", email: "ann@example.com" } },
+          { status: "canceled", user: { name: "Bob", email: "bob@example.com" } },
+        ],
+      },
+    };
+    const r = await GET(req("?view=list"));
+    expect(r.status).toBe(200);
+    const j = await r.json();
+    // Aggregate shape, identical to the no-param call.
+    expect(j.data.byStatus).toEqual({ active: 1, canceled: 1 });
+    // The point: no member row, no name, no email, no user_id.
+    const body = JSON.stringify(j);
+    for (const leak of ["ann@example.com", "bob@example.com", "Ann", "Bob", "user_id"]) {
+      expect(body).not.toContain(leak);
+    }
+  });
 
-    it("excludes a staff (is_admin) row (guardrail)", async () => {
-      useSubscriptionRows([
-        subRow({ id: "1", user: { name: "Ann", email: "ann@example.com", is_admin: false } }),
-        subRow({ id: "2", user: { name: "Ops", email: "ops@example.com", is_admin: true } }),
-      ]);
-      const r = await GET(req("?view=list"));
-      const j = await r.json();
-      expect(j.data.map((row: { email: string }) => row.email)).toEqual(["ann@example.com"]);
-      expect(j.meta.total).toBe(1);
-    });
-
-    it("?status=canceled returns only canceled rows, each with a non-null canceledAt", async () => {
-      useSubscriptionRows([
-        subRow({ id: "1", status: "active" }),
-        subRow({ id: "2", status: "canceled", updated_at: "2026-06-01T00:00:00Z" }),
-      ]);
-      const r = await GET(req("?view=list&status=canceled"));
-      const j = await r.json();
-      expect(j.data).toHaveLength(1);
-      expect(j.data[0].status).toBe("canceled");
-      expect(j.data[0].canceledAt).toBe("2026-06-01T00:00:00Z");
-    });
-
-    it("?minMonths=6 returns only the long-tenure cohort", async () => {
-      useSubscriptionRows([
-        subRow({ id: "1", created_at: "2020-01-01T00:00:00Z", user: { name: "Old", email: "old@example.com" } }),
-        subRow({ id: "2", created_at: new Date().toISOString(), user: { name: "New", email: "new@example.com" } }),
-      ]);
-      const r = await GET(req("?view=list&minMonths=6"));
-      const j = await r.json();
-      expect(j.data.map((row: { email: string }) => row.email)).toEqual(["old@example.com"]);
-    });
-
-    it("403s for a non-admin", async () => {
-      asNonAdmin();
-      const r = await GET(req("?view=list"));
-      expect(r.status).toBe(403);
-    });
-
-    it("403s with mfa_required for an admin whose session is only AAL1 (guardrail)", async () => {
-      useSubscriptionRows([subRow()], "aal1");
-      const r = await GET(req("?view=list"));
-      expect(r.status).toBe(403);
-      const j = await r.json();
-      expect(j.error.code).toBe("mfa_required");
-    });
+  // The two gate tests below covered the removed list mode; retained and
+  // retargeted at the surviving aggregate path so this route keeps both
+  // halves of its authorization coverage (guardrail).
+  it("403s with mfa_required for an admin whose session is only AAL1 (guardrail)", async () => {
+    useSubscriptionRows([subRow()], "aal1");
+    const r = await GET(req());
+    expect(r.status).toBe(403);
+    const j = await r.json();
+    expect(j.error.code).toBe("mfa_required");
   });
 });

@@ -1,5 +1,4 @@
 import Link from "next/link";
-import LocalTime from "../LocalTime";
 import SubscribedDate from "./SubscribedDate";
 import { SUBSCRIBER_STATUSES, type SubscriberRow } from "./data";
 
@@ -216,6 +215,7 @@ export default function SubscribersTable({
                   actually means. */}
               <th
                 scope="col"
+                aria-describedby="subs-cancelled-caveat"
                 title="Approximate: taken from when the subscription row was last updated while cancelled. There is no dedicated cancellation-date column yet."
               >
                 Cancelled *
@@ -253,8 +253,14 @@ export default function SubscribersTable({
                   <td className="muted">
                     <SubscribedDate iso={row.currentPeriodEnd} />
                   </td>
+                  {/* Year-bearing for the same reason as the two columns
+                      above, and most of all here: this is the column Mel
+                      emails people from, and `LocalTime kind="when"` renders
+                      a relative label under seven days and a year-less
+                      "Aug 27" beyond it — two formats in one column, and a
+                      2025 cancellation indistinguishable from a 2026 one. */}
                   <td className={cancelled ? "subs-cancelled-on" : "muted"}>
-                    {row.canceledAt ? <LocalTime iso={row.canceledAt} kind="when" /> : "—"}
+                    {row.canceledAt ? <SubscribedDate iso={row.canceledAt} /> : "—"}
                   </td>
                 </tr>
               );
@@ -262,6 +268,22 @@ export default function SubscribersTable({
           </tbody>
         </table>
       )}
+
+      {/* The asterisk in the Cancelled header needs somewhere to land. It was
+          hover-only (a `title` on the <th>), which is invisible on touch and
+          unreliable for screen readers — and this date is the one Mel acts on
+          by emailing people, so what it actually means has to be readable
+          without a mouse. Rendered whenever the table is (ENG-982 review,
+          should-fix 2); `aria-describedby` on the <th> ties the two together. */}
+      {rows.length > 0 ? (
+        <p className="subs-legend" id="subs-cancelled-caveat">
+          <span aria-hidden="true">* </span>
+          Cancellation dates are approximate. There is no cancellation-date column
+          on the subscription record yet, so this shows when the row was last
+          updated while cancelled — a later billing write can move it later than
+          the real cancellation.
+        </p>
+      ) : null}
 
       {rows.length > 0 || pastEnd ? (
         <div className="subscribers-foot">

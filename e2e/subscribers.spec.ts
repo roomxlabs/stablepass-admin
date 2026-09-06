@@ -166,5 +166,20 @@ test("subscribers — a signed-out visitor is redirected, never shown member ema
   await page.waitForURL(/\/signin/, { timeout: 30000 });
   expect(page.url()).toContain("/signin");
 
+  // The redirect alone does not earn the second half of this test's name
+  // (ENG-982 review @3f9cf51, should-fix 3): a page that redirected but still
+  // streamed the subscriber list in its markup would have passed. Assert the
+  // content too — no member email, name, or table anywhere in what was served.
+  const html = await page.content();
+  for (const pii of [
+    "harriet@example.com",
+    "Harriet Vale",
+    "douglas@example.com",
+    "Douglas Byrne",
+  ]) {
+    expect(html).not.toContain(pii);
+  }
+  await expect(page.locator(".adm-table")).toHaveCount(0);
+
   await context.close();
 });

@@ -277,3 +277,15 @@
 }
 
 .subscribers-foot .pager span.disabled { opacity: 0.45; }
+
+/* The Cancelled-column caveat, on screen rather than hover-only: this date is
+   derived from `updated_at` (there is no `canceled_at` column), and an operator
+   emails people from it. Quiet enough not to compete with the rows. */
+.subs-legend {
+  margin: 0;
+  padding: 12px 22px 0;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--muted);
+  max-width: 72ch;
+}

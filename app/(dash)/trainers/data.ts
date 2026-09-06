@@ -1,9 +1,16 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 // Server-side data access for the admin Trainers list. Kept out of the page
-// component so it can be unit-tested against the Supabase fake. Uses flat,
-// per-table queries (no PostgREST embedding) merged in JS — deriving horse
-// count, last-post recency and the primary internal contact per trainer.
+// component so it can be unit-tested against the Supabase fake.
+//
+// This used to be FIVE full-table reads merged in JS — every trainer, every
+// horse, every trainer_contact and, worst, EVERY POST IN THE DATABASE (all of
+// `post`, just to find one timestamp per trainer). It is now one trainer read
+// that derives all three per-trainer facts with PostgREST embedding: aggregate
+// counts (`horse(count)`, `post(count)`), the newest post via an embedded
+// ordered `post(...)` limited to 1 per trainer, and the contacts inline. The
+// roster counts behind the filter chips are three `head: true` counts, which
+// fetch no rows at all.
 //
 // trainer_contact is ADMIN-ONLY (guardrail §3): its email is read here only to
 // render the admin-gated list, never on any member surface.
@@ -166,6 +173,59 @@ function sanitize(q: string): string {
   return q.replace(/[(),]/g, " ").trim();
 }
 
+/**
+ * The trainer-list projection.
+ *
+ * Everything the row needs comes back in ONE request:
+ *  - `horseCount` from the `horse(count)` aggregate — no horse rows travel;
+ *  - `lastPostAt` from `last_post`, an embed of the SAME `post` relation under
+ *    a second alias, ordered and `.limit(1, { referencedTable })`-ed so exactly
+ *    one row per trainer comes back instead of the whole table;
+ *  - `contactEmail` from the inline `trainer_contact` rows (a handful each).
+ *
+ * The `!trainer_id` / `!source_trainer_id` hints name the FK explicitly. They
+ * are not decoration: `post` and `horse` each reach `trainer` by one column
+ * today, but an added FK would make a bare `post(count)` ambiguous and
+ * PostgREST answers ambiguity with a 400 that this module surfaces as an empty
+ * list. Aliasing `post` twice is what lets one query carry both the count and
+ * the newest row.
+ */
+export const TRAINER_LIST_SELECT =
+  "id,name,display_name,slug,stable_name,location,status,photo_url,marketing_visible," +
+  "horses:horse!trainer_id(count),posts:post!source_trainer_id(count)," +
+  "last_post:post!source_trainer_id(published_at,created_at)," +
+  "contacts:trainer_contact(trainer_id,role,email)";
+
+/** A PostgREST `rel(count)` aggregate: a one-element array carrying the count. */
+type CountEmbed = { count: number }[] | null;
+type LastPostEmbed = { published_at: string | null; created_at: string }[] | null;
+type ContactEmbed = { trainer_id?: string; role: string | null; email: string | null }[] | null;
+
+type TrainerListDbRow = TrainerDbRow & {
+  horses: CountEmbed;
+  posts: CountEmbed;
+  last_post: LastPostEmbed;
+  contacts: ContactEmbed;
+};
+
+function embedCount(e: CountEmbed): number {
+  return e?.[0]?.count ?? 0;
+}
+
+/**
+ * The one contact whose email the list shows. Unchanged rule: a contact whose
+ * role mentions "trainer" wins, otherwise the first one with an email.
+ */
+function contactEmail(contacts: ContactEmbed): string | null {
+  let fallback: string | null = null;
+  for (const c of contacts ?? []) {
+    if (!c.email) continue;
+    if ((c.role ?? "").toLowerCase().includes("trainer")) return c.email;
+    if (fallback === null) fallback = c.email;
+  }
+  return fallback;
+}
+
 export async function listTrainers(
   sb: SupabaseClient,
   params: TrainerListParams = {},
@@ -175,8 +235,15 @@ export async function listTrainers(
 
   let query = sb
     .from("trainer")
-    .select("id,name,display_name,slug,stable_name,location,status,photo_url,marketing_visible")
-    .order("name", { ascending: true });
+    .select(TRAINER_LIST_SELECT)
+    .order("name", { ascending: true })
+    // Newest post FIRST inside the embed, then take one. `nullsFirst: false`
+    // matters: a draft has a null `published_at`, and without it Postgres sorts
+    // nulls first on a DESC order, so the single row we keep would be a draft
+    // for any trainer who has one — i.e. the column would report the newest
+    // DRAFT rather than the newest published post.
+    .order("published_at", { referencedTable: "last_post", ascending: false, nullsFirst: false })
+    .limit(1, { referencedTable: "last_post" });
   if (status) query = query.eq("status", status);
   if (text) {
     const like = `%${text}%`;
@@ -185,58 +252,44 @@ export async function listTrainers(
     );
   }
 
-  // Roster counts for the filter chips are unfiltered (they show the whole set).
-  const [{ data: trainers }, { data: statuses }, { data: horses }, { data: posts }, { data: contacts }] =
-    await Promise.all([
-      query,
-      sb.from("trainer").select("status"),
-      sb.from("horse").select("trainer_id"),
-      sb.from("post").select("source_trainer_id,published_at,created_at"),
-      sb.from("trainer_contact").select("trainer_id,role,email"),
-    ]);
+  // Roster counts for the filter chips are unfiltered (they show the whole set)
+  // and are `head: true`, so they fetch NO rows — the previous
+  // `select("status")` pulled one row per trainer purely to run `.filter()` on
+  // it in JS.
+  const [{ data: trainers }, allRes, activeRes, onboardingRes] = await Promise.all([
+    query,
+    sb.from("trainer").select("id", { count: "exact", head: true }),
+    sb.from("trainer").select("id", { count: "exact", head: true }).eq("status", "active"),
+    sb.from("trainer").select("id", { count: "exact", head: true }).eq("status", "onboarding"),
+  ]);
 
-  const horseCounts = new Map<string, number>();
-  for (const h of (horses ?? []) as { trainer_id: string }[])
-    horseCounts.set(h.trainer_id, (horseCounts.get(h.trainer_id) ?? 0) + 1);
+  const rows: TrainerRow[] = ((trainers ?? []) as unknown as TrainerListDbRow[]).map((t) => {
+    const last = t.last_post?.[0] ?? null;
+    return {
+      id: t.id,
+      name: t.name,
+      displayName: t.display_name ?? t.name,
+      slug: t.slug,
+      stableName: t.stable_name ?? null,
+      location: t.location ?? null,
+      status: (t.status as TrainerStatus) ?? "active",
+      photoUrl: t.photo_url ?? null,
+      // Coerced, not passed through: the list badge must reflect the flag exactly,
+      // and a missing column would otherwise render as a falsy-but-undefined badge.
+      marketingVisible: t.marketing_visible === true,
+      initials: initials(t.name),
+      contactEmail: contactEmail(t.contacts),
+      horseCount: embedCount(t.horses),
+      // Same coalesce as before (a post with no `published_at` falls back to
+      // `created_at`), now applied to the ONE row the embed returned.
+      lastPostAt: last ? last.published_at ?? last.created_at : null,
+    };
+  });
 
-  const lastPost = new Map<string, string>();
-  for (const p of (posts ?? []) as { source_trainer_id: string; published_at: string | null; created_at: string }[]) {
-    if (!p.source_trainer_id) continue;
-    const at = p.published_at ?? p.created_at;
-    const cur = lastPost.get(p.source_trainer_id);
-    if (!cur || new Date(at) > new Date(cur)) lastPost.set(p.source_trainer_id, at);
-  }
-
-  const emails = new Map<string, string>();
-  for (const c of (contacts ?? []) as { trainer_id: string; role: string | null; email: string | null }[]) {
-    if (!c.email) continue;
-    const isTrainerRole = (c.role ?? "").toLowerCase().includes("trainer");
-    if (isTrainerRole || !emails.has(c.trainer_id)) emails.set(c.trainer_id, c.email);
-  }
-
-  const rows: TrainerRow[] = ((trainers ?? []) as TrainerDbRow[]).map((t) => ({
-    id: t.id,
-    name: t.name,
-    displayName: t.display_name ?? t.name,
-    slug: t.slug,
-    stableName: t.stable_name ?? null,
-    location: t.location ?? null,
-    status: (t.status as TrainerStatus) ?? "active",
-    photoUrl: t.photo_url ?? null,
-    // Coerced, not passed through: the list badge must reflect the flag exactly,
-    // and a missing column would otherwise render as a falsy-but-undefined badge.
-    marketingVisible: t.marketing_visible === true,
-    initials: initials(t.name),
-    contactEmail: emails.get(t.id) ?? null,
-    horseCount: horseCounts.get(t.id) ?? 0,
-    lastPostAt: lastPost.get(t.id) ?? null,
-  }));
-
-  const all = (statuses ?? []) as { status: string }[];
   const counts = {
-    all: all.length,
-    active: all.filter((s) => s.status === "active").length,
-    onboarding: all.filter((s) => s.status === "onboarding").length,
+    all: allRes.count ?? 0,
+    active: activeRes.count ?? 0,
+    onboarding: onboardingRes.count ?? 0,
   };
 
   return { rows, counts };

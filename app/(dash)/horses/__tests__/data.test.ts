@@ -1,7 +1,16 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { makeFakeClient, blankState, type FakeState } from "@/lib/testing/supabase-fake";
 import { recordCalls, blankRecord, selectFor, type CallRecord } from "@/lib/testing/call-recorder";
-import { HORSE_LIST_SELECT, fetchHorseForEdit, fetchHorses, fetchTrainerLabel, fetchTrainerOptions } from "../data";
+import {
+  HORSE_LIST_SELECT,
+  HORSE_LIST_LIMIT,
+  countHorsesByFilter,
+  fetchHorseForEdit,
+  fetchHorses,
+  fetchTrainerLabel,
+  fetchTrainerOptions,
+  searchTrainerIds,
+} from "../data";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -80,6 +89,99 @@ describe("fetchHorses", () => {
     const term = state.calls.or[0].split(",")[0];
     expect(term).not.toMatch(/[()]/);
     expect(state.calls.or[0]).toContain("display_name.ilike.%a b c %");
+  });
+});
+
+// The Horses screen used to select the WHOLE table — with two embedded count
+// aggregates per row — and then apply the status chip and the search with a JS
+// `.filter()`. Both are PostgREST predicates now, and the chip counts are
+// head:true counts. The screen still shows every horse on one scrollable page
+// (Justin, 25 Aug 2026); the `.range` is a safety bound, not pagination.
+describe("fetchHorses — filter + bound in the query", () => {
+  it("bounds the read with a range instead of selecting the whole table", async () => {
+    state.tables.horse = { select: { rows: [] } };
+    await fetchHorses(sb(), "");
+    expect(rec.ranges).toEqual([`horse=0-${HORSE_LIST_LIMIT - 1}`]);
+  });
+
+  it("sends the status chip as an equality filter, not a JS filter", async () => {
+    state.tables.horse = { select: { rows: [] } };
+    await fetchHorses(sb(), "", null, { filter: "retired" });
+    expect(rec.filters).toContain("horse.training_status=retired");
+  });
+
+  it("'active' keeps horses whose training_status is NULL", async () => {
+    // `.neq("training_status","retired")` alone would drop them: SQL's
+    // `NULL <> 'retired'` is NULL, so an unset horse would silently vanish
+    // from the chip. The OR is what puts them back.
+    state.tables.horse = { select: { rows: [] } };
+    await fetchHorses(sb(), "", null, { filter: "active" });
+    expect(state.calls.or).toContain("training_status.is.null,training_status.neq.retired");
+  });
+
+  it("'all' adds no status predicate at all", async () => {
+    state.tables.horse = { select: { rows: [] } };
+    await fetchHorses(sb(), "", null, { filter: "all" });
+    expect(rec.filters.filter((f) => f.startsWith("horse.training_status="))).toEqual([]);
+    expect(state.calls.or).toEqual([]);
+  });
+
+  it("reuses trainer ids the caller already resolved (one lookup per request)", async () => {
+    state.tables.horse = { select: { rows: [] } };
+    await fetchHorses(sb(), "waller", null, { trainerIds: ["t-1", "t-2"] });
+    // No second trainer read: the page shares ONE lookup with the chip counts.
+    expect(state.calls.from.filter((t) => t === "trainer")).toEqual([]);
+    expect(state.calls.or.join(" ")).toContain("trainer_id.in.(t-1,t-2)");
+  });
+});
+
+describe("countHorsesByFilter", () => {
+  it("runs one head:true count per chip and fetches no rows", async () => {
+    state.tables.horse = { selectQueue: [{ count: 9 }, { count: 7 }, { count: 4 }, { count: 2 }] };
+    const counts = await countHorsesByFilter(sb(), "", null, []);
+    expect(counts).toEqual({ all: 9, active: 7, racing: 4, retired: 2 });
+
+    const opts = rec.selectOptions.filter((o) => o.table === "horse");
+    expect(opts).toHaveLength(4);
+    for (const o of opts) expect(o).toMatchObject({ count: "exact", head: true });
+    // A count query must never carry the row projection.
+    expect(rec.selects.filter((x) => x === `horse:${HORSE_LIST_SELECT}`)).toEqual([]);
+  });
+
+  it("carries the trainer scope into every chip count", async () => {
+    state.tables.horse = { selectQueue: [{ count: 0 }, { count: 0 }, { count: 0 }, { count: 0 }] };
+    await countHorsesByFilter(sb(), "", "t-42", []);
+    expect(rec.filters.filter((f) => f === "horse.trainer_id=t-42")).toHaveLength(4);
+  });
+
+  it("carries the search into every chip count", async () => {
+    state.tables.horse = { selectQueue: [{ count: 0 }, { count: 0 }, { count: 0 }, { count: 0 }] };
+    await countHorsesByFilter(sb(), "winx", null, ["t-9"]);
+    // Four search ORs (one per chip) plus the "active" chip's own null-safe OR.
+    // PostgREST ANDs multiple `or=` params, so the two compose rather than
+    // clobbering each other — that is why the search survives the chip.
+    const searchOrs = state.calls.or.filter((o) => o.includes("display_name.ilike"));
+    expect(searchOrs).toHaveLength(4);
+    for (const o of searchOrs) expect(o).toContain("trainer_id.in.(t-9)");
+    expect(state.calls.or).toContain("training_status.is.null,training_status.neq.retired");
+  });
+
+  it("THROWS on a count error rather than reporting an empty library", async () => {
+    state.tables.horse = { select: { error: { code: "42501" } } };
+    await expect(countHorsesByFilter(sb(), "", null, [])).rejects.toThrow(/42501/);
+  });
+});
+
+describe("searchTrainerIds", () => {
+  it("is an ilike over display_name", async () => {
+    state.tables.trainer = { select: { rows: [{ id: "t1" }, { id: "t2" }] } };
+    await expect(searchTrainerIds(sb(), "wall")).resolves.toEqual(["t1", "t2"]);
+    expect(rec.ilikes).toContain("trainer.display_name=%wall%");
+  });
+
+  it("does not query at all for an empty term", async () => {
+    await expect(searchTrainerIds(sb(), "")).resolves.toEqual([]);
+    expect(state.calls.from).toEqual([]);
   });
 });
 

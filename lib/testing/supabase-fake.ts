@@ -9,6 +9,18 @@ export type ScriptResult = { single?: any; rows?: any[]; count?: number; error?:
 export type TableScript = {
   // Result for a read chain (`.select(...).eq(...).single()` / awaited list).
   select?: ScriptResult;
+  /**
+   * Results for CONSECUTIVE reads of the same table, consumed one per chain in
+   * the order the code issues them; `select` is the fallback once the queue is
+   * empty.
+   *
+   * A single `select` cannot express a screen that now asks the same table
+   * several different questions — four `{ count: "exact", head: true }` counts
+   * over `horse`, or one count per subscription status — because every chain
+   * would answer with the same number and a test could not tell a correct
+   * implementation from one that ran the same query four times.
+   */
+  selectQueue?: ScriptResult[];
   // Result once `.insert/.update/.delete` was called on the chain.
   mutate?: ScriptResult;
 };
@@ -79,7 +91,9 @@ type Builder = {
   ilike: (...a: any[]) => Builder;
   or: (expr: string, ...a: any[]) => Builder;
   order: (...a: any[]) => Builder;
+  limit: (...a: any[]) => Builder;
   range: (...a: any[]) => Builder;
+  not: (...a: any[]) => Builder;
   gt: (...a: any[]) => Builder;
   gte: (...a: any[]) => Builder;
   lt: (...a: any[]) => Builder;
@@ -98,7 +112,16 @@ function makeBuilder(state: FakeState, table: string): Builder {
   // chained AFTER .delete()/.update() are still captured.
   const filters: { column: string; value: any; op?: string }[] = [];
   const script = () => state.tables[table] ?? {};
-  const pick = (): ScriptResult => (op === "mutate" ? script().mutate : script().select) ?? {};
+  // Resolved ONCE per chain (and memoised), so `.single()` and `then` on the
+  // same builder cannot consume two entries of the queue.
+  let resolved: ScriptResult | undefined;
+  const pick = (): ScriptResult => {
+    if (resolved) return resolved;
+    if (op === "mutate") return (resolved = script().mutate ?? {});
+    const queue = script().selectQueue;
+    resolved = (queue && queue.length ? queue.shift() : script().select) ?? {};
+    return resolved;
+  };
   const b: Builder = {
     select: () => b,
     insert: (payload?: any) => {
@@ -134,7 +157,13 @@ function makeBuilder(state: FakeState, table: string): Builder {
     ilike: () => b,
     or: (expr: string) => { state.calls.or.push(expr); return b; },
     order: () => b,
+    // ENG query-batch: embedded order/limit (`.limit(1, { referencedTable })`)
+    // is how a "latest child row per parent" read is expressed in PostgREST, so
+    // the builder has to ACCEPT it — the call-recorder is what asserts the
+    // arguments. A missing method here would throw before a test could look.
+    limit: () => b,
     range: () => b,
+    not: () => b,
     gt: () => b,
     // Records its filter (unlike the other range comparators, which stay
     // no-ops) because ENG-748's trailing-set trim is a `.delete().eq(post_id)

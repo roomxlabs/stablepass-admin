@@ -8,7 +8,15 @@ import {
   humanizeTrainingStatus,
   statusPillClass,
 } from "./format";
-import { fetchHorses, fetchTrainerLabel, type CountEmbed, type HorseRow } from "./data";
+import {
+  countHorsesByFilter,
+  fetchHorses,
+  fetchTrainerLabel,
+  searchTrainerIds,
+  type CountEmbed,
+  type HorseFilter,
+  type HorseRow,
+} from "./data";
 import { HORSE_PHOTO_BUCKET, signPhotoMap } from "@/lib/storage/photos";
 import "./horses.css";
 
@@ -25,16 +33,20 @@ import "./horses.css";
 // returning [], so reaching `.horse-empty` means the library really is empty.
 //
 // NO PAGINATION. The list renders every horse the operator can read, on one
-// scrollable page, at Justin's request (hotfix, 25 Aug 2026). This only ever
-// removed a CLIENT-SIDE `.slice()`: `fetchHorses()` already returned the whole
-// table and the 12-per-page cut was applied afterwards, so nothing about the
-// query changed and no round-trip was added. `signPhotoMap()` is still ONE
-// batched `createSignedUrls` call, now over every row instead of twelve.
+// scrollable page, at Justin's request (hotfix, 25 Aug 2026). That decision is
+// unchanged here: `fetchHorses()` now carries a `.range` bound, but the bound
+// (HORSE_LIST_LIMIT) sits far above any real roster, so the screen still shows
+// the whole library in one scroll. What moved is the WORK: the status chip and
+// the search used to select every horse — with two embedded count aggregates
+// per row — and then `.filter()` the array in JS. Both are now `.eq`/`.or`
+// predicates in the query, and the four chip counts are `head: true` counts
+// that fetch no rows at all. `signPhotoMap()` is still ONE batched
+// `createSignedUrls` call, now over only the rows this view actually renders.
 //
 // A stale bookmark carrying `?page=2` is simply ignored — the param is no
 // longer read, and an unknown search param is inert on a Server Component.
 
-type Filter = "all" | "active" | "racing" | "retired";
+type Filter = HorseFilter;
 const FILTERS: { key: Filter; label: string }[] = [
   { key: "all", label: "All" },
   { key: "active", label: "Active" },
@@ -90,26 +102,19 @@ export default async function HorsesPage({
   const trainerId =
     typeof sp.trainerId === "string" && /^[0-9a-f-]{36}$/i.test(sp.trainerId) ? sp.trainerId : "";
 
-  const [all, trainerLabel] = await Promise.all([
-    fetchHorses(sb, q, trainerId || null),
+  // The chip counts and the list share ONE trainer-name lookup for `q`, so
+  // pushing the search into the query did not multiply that read by five.
+  const trainerIds = await searchTrainerIds(sb, q);
+
+  const [filtered, counts, trainerLabel] = await Promise.all([
+    fetchHorses(sb, q, trainerId || null, { filter, trainerIds }),
+    countHorsesByFilter(sb, q, trainerId || null, trainerIds),
     trainerId ? fetchTrainerLabel(sb, trainerId) : Promise.resolve(null),
   ]);
 
-  const counts = {
-    all: all.length,
-    active: all.filter((h) => h.training_status !== "retired").length,
-    racing: all.filter((h) => h.training_status === "racing").length,
-    retired: all.filter((h) => h.training_status === "retired").length,
-  };
-
-  const filtered = all.filter((h) => {
-    if (filter === "active") return h.training_status !== "retired";
-    if (filter === "racing") return h.training_status === "racing";
-    if (filter === "retired") return h.training_status === "retired";
-    return true;
-  });
-
-  const total = filtered.length;
+  // The count for the chip that is actually selected — exact, and no longer the
+  // length of the array we happen to be holding.
+  const total = counts[filter];
   // Private bucket: turn each stored photo path into a signed URL for display.
   // One batched call regardless of how many rows the filter left.
   const covers = await signPhotoMap(sb, HORSE_PHOTO_BUCKET, filtered.map((h) => h.photo_url));

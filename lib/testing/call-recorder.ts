@@ -16,14 +16,46 @@ export type WriteCall = { table: string; op: "insert" | "upsert" | "update" | "d
 export type CallRecord = {
   /** Every projection string passed to `.select()`, as `table:projection`. */
   selects: string[];
+  /**
+   * The OPTIONS object of every `.select()`, as `table:{count,head}` — the only
+   * way to prove a read is a `{ count: "exact", head: true }` count and not a
+   * row fetch. Without it "we count instead of pulling rows" is unassertable:
+   * the fake returns the same shape either way.
+   */
+  selectOptions: { table: string; count?: string; head?: boolean }[];
   /** Every `.insert()` / `.update()` / `.delete()` with its payload. */
   writes: WriteCall[];
   /** Every equality filter, as `table.column=value`. */
   filters: string[];
+  /**
+   * Every `.order()`, as `table.column asc|desc` — or, for an order applied to
+   * an EMBEDDED resource, `table.<referencedTable>.column asc|desc`. The
+   * referenced-table form is what distinguishes "newest post per trainer"
+   * (embedded) from "trainers newest first" (top level).
+   */
+  orders: string[];
+  /** Every `.limit()`, as `table=n` or `table.<referencedTable>=n` for an embed. */
+  limits: string[];
+  /** Every `.range()`, as `table=from-to`. */
+  ranges: string[];
+  /** Every `.ilike()`, as `table.column=pattern`. */
+  ilikes: string[];
+  /** Every `.not()`, as `table.column=not.<op>.<value>`. */
+  nots: string[];
 };
 
 export function blankRecord(): CallRecord {
-  return { selects: [], writes: [], filters: [] };
+  return {
+    selects: [],
+    selectOptions: [],
+    writes: [],
+    filters: [],
+    orders: [],
+    limits: [],
+    ranges: [],
+    ilikes: [],
+    nots: [],
+  };
 }
 
 // `upsert` is listed even though the current fake has no such method: the day
@@ -42,12 +74,32 @@ export function recordCalls<T extends { from: (table: string) => any }>(client: 
           if (typeof value !== "function") return value;
           return (...args: any[]) => {
             const name = String(prop);
-            if (name === "select" && typeof args[0] === "string") {
-              rec.selects.push(`${table}:${args[0]}`);
+            if (name === "select") {
+              if (typeof args[0] === "string") rec.selects.push(`${table}:${args[0]}`);
+              const opts = (typeof args[0] === "string" ? args[1] : args[0]) as
+                | { count?: string; head?: boolean }
+                | undefined;
+              if (opts && (opts.count !== undefined || opts.head !== undefined)) {
+                rec.selectOptions.push({ table, count: opts.count, head: opts.head });
+              }
             } else if (WRITE_OPS.has(name)) {
               rec.writes.push({ table, op: name as WriteCall["op"], payload: args[0] });
             } else if (name === "eq") {
               rec.filters.push(`${table}.${args[0]}=${args[1]}`);
+            } else if (name === "order") {
+              const opts = (args[1] ?? {}) as { ascending?: boolean; referencedTable?: string };
+              const on = opts.referencedTable ? `${table}.${opts.referencedTable}` : table;
+              rec.orders.push(`${on}.${args[0]} ${opts.ascending === false ? "desc" : "asc"}`);
+            } else if (name === "limit") {
+              const opts = (args[1] ?? {}) as { referencedTable?: string };
+              const on = opts.referencedTable ? `${table}.${opts.referencedTable}` : table;
+              rec.limits.push(`${on}=${args[0]}`);
+            } else if (name === "range") {
+              rec.ranges.push(`${table}=${args[0]}-${args[1]}`);
+            } else if (name === "ilike") {
+              rec.ilikes.push(`${table}.${args[0]}=${args[1]}`);
+            } else if (name === "not") {
+              rec.nots.push(`${table}.${args[0]}=not.${args[1]}.${args[2]}`);
             }
             const out = value.apply(target, args);
             // Keep the recorder attached across the whole chain.

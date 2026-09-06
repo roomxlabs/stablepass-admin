@@ -125,7 +125,13 @@ export type TrialRow = {
   daysLeft: number;
   status: string;
 };
-export type Trials = { byMonth: TrialsByMonth[]; list: TrialRow[] };
+/**
+ * `counts` are exact, `list` is capped (see TRIALS_LIST_LIMIT). Keeping them
+ * apart is the point: the tiles used to be `list.filter(...).length`, so the
+ * moment the list was bounded every tile would have started under-reporting.
+ */
+export type TrialsCounts = { active: number; trial: number; trialEndingSoon: number };
+export type Trials = { byMonth: TrialsByMonth[]; list: TrialRow[]; counts: TrialsCounts };
 
 export type PostAnalytics = {
   post: {
@@ -251,13 +257,63 @@ function daysLeft(trialEndsAt: string | null): number {
   return Math.max(0, Math.ceil((Date.parse(trialEndsAt) - Date.now()) / DAY_MS));
 }
 
-export async function getTrials(sb: SupabaseClient): Promise<Trials> {
-  const [byMonthRows, subsRes] = await Promise.all([
+/**
+ * How many subscription rows the trials LIST reads at once.
+ *
+ * The list is a screen table (and a CSV of the same rows); it was unbounded, so
+ * it grew one row per member forever. 200 covers the on-screen table with room
+ * to spare, and the tile counts no longer come from it — they are exact
+ * `head: true` counts, so capping the list cannot make a number wrong.
+ *
+ * The CSV export passes a much larger limit rather than inheriting this one: a
+ * truncated export is silent data loss, which is not a trade a performance
+ * change gets to make on the operator's behalf.
+ */
+export const TRIALS_LIST_LIMIT = 200;
+
+/**
+ * Count subscriptions in one status, excluding staff, fetching no rows.
+ *
+ * `endingBefore` adds the "ending soon" window as a second predicate rather
+ * than a second helper. `is.null` is part of it on purpose: `daysLeft(null)` is
+ * 0, so a trial with no end date always counted as ending soon, and dropping it
+ * here would silently change what the tile means.
+ */
+async function countSubscriptions(
+  sb: SupabaseClient,
+  status: string,
+  endingBefore?: string,
+): Promise<number> {
+  let q = sb
+    .from("subscription")
+    .select("status,user:user_id!inner(is_admin)", { count: "exact", head: true })
+    .not("user.is_admin", "is", true)
+    .eq("status", status);
+  if (endingBefore) q = q.or(`trial_ends_at.lte.${endingBefore},trial_ends_at.is.null`);
+  const { count } = await q;
+  return count ?? 0;
+}
+
+export async function getTrials(
+  sb: SupabaseClient,
+  opts: { limit?: number } = {},
+): Promise<Trials> {
+  const limit = opts.limit ?? TRIALS_LIST_LIMIT;
+  // "Ending soon" is `daysLeft <= 7`, and `daysLeft` floors at 0 — so an
+  // already-expired trial, and one with no end date at all, both counted. The
+  // count filter has to say the same thing or the tile changes meaning.
+  const soonIso = new Date(Date.now() + 7 * DAY_MS).toISOString();
+
+  const [byMonthRows, subsRes, activeCount, trialCount, endingSoonCount] = await Promise.all([
     callRpc<TrialsByMonthRow>(sb, "admin_trials_by_month"),
     sb
       .from("subscription")
       .select("status,trial_ends_at,created_at,user:user_id(name,email,is_admin)")
-      .order("created_at", { ascending: false }),
+      .order("created_at", { ascending: false })
+      .range(0, limit - 1),
+    countSubscriptions(sb, "active"),
+    countSubscriptions(sb, "trial"),
+    countSubscriptions(sb, "trial", soonIso),
   ]);
 
   // Every signup gets a trial subscription — including operators, who are just
@@ -269,6 +325,7 @@ export async function getTrials(sb: SupabaseClient): Promise<Trials> {
   );
 
   return {
+    counts: { active: activeCount, trial: trialCount, trialEndingSoon: endingSoonCount },
     byMonth: byMonthRows.map((r) => ({
       month: r.month,
       started: Number(r.started),

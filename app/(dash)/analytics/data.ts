@@ -78,9 +78,12 @@ function buildTiles(
   trials: Trials,
 ): Tile[] {
   const label = periodLabel(period).toLowerCase();
-  const onTrial = trials.list.filter((t) => t.status === "trial");
-  const endingSoon = onTrial.filter((t) => t.daysLeft <= 7).length;
-  const subscribers = trials.list.filter((t) => t.status === "active").length;
+  // These three come from exact `head: true` counts, NOT from `trials.list` —
+  // the list is capped now (see TRIALS_LIST_LIMIT), so counting it would make
+  // every one of these tiles stop at the cap and quietly under-report.
+  const onTrialCount = trials.counts.trial;
+  const endingSoon = trials.counts.trialEndingSoon;
+  const subscribers = trials.counts.active;
   const reactions = sum(engagement.trainers.map((t) => t.reactions));
   const saves = sum(engagement.trainers.map((t) => t.saves));
 
@@ -96,7 +99,7 @@ function buildTiles(
     },
     {
       label: "On trial",
-      value: formatCount(onTrial.length),
+      value: formatCount(onTrialCount),
       delta:
         endingSoon === 1
           ? "1 ends within 7 days · as of today"
@@ -146,7 +149,8 @@ export async function getAnalyticsView(
       value: m.started,
     })),
     trials: trials.list.filter((t) => t.status === "trial"),
-    trialCount: trials.list.filter((t) => t.status === "trial").length,
+    // The exact count, not the length of the (capped) table above it.
+    trialCount: trials.counts.trial,
     trainers,
     horses: engagement.horses,
     topPosts: engagement.topPosts,

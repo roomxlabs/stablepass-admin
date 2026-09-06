@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach } from "vitest";
 import { readFileSync } from "node:fs";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { makeFakeClient, blankState, type FakeState } from "@/lib/testing/supabase-fake";
+import { recordCalls, blankRecord, selectFor, type CallRecord } from "@/lib/testing/call-recorder";
 import {
   listTrainers,
   initials,
@@ -9,6 +10,7 @@ import {
   toTrainerFormSeed,
   TRAINER_DETAIL_COLUMNS,
   TRAINER_DETAIL_COLUMN_MAP,
+  TRAINER_LIST_SELECT,
   type TrainerDetailRow,
   trainerHorsesHref,
 } from "./data";
@@ -16,24 +18,49 @@ import {
 // listTrainers takes the sb client by injection, so no module mock is needed —
 // we drive results per table through the shared Supabase fake.
 const state: FakeState = blankState();
-const sb = () => makeFakeClient(state) as unknown as SupabaseClient;
+const rec: CallRecord = blankRecord();
+const sb = () => recordCalls(makeFakeClient(state), rec) as unknown as SupabaseClient;
 
+// listTrainers is ONE trainer read now: the horse count, the post count, the
+// newest post and the contacts all arrive as PostgREST embeds on the row, and
+// the three roster counts are `head: true` counts of the same table. The fake's
+// `selectQueue` supplies the four `trainer` reads in the order the code issues
+// them (list, then all/active/onboarding).
 function seed() {
   state.tables.trainer = {
-    select: {
-      rows: [
-        { id: "t1", name: "Chris Waller", display_name: "Chris Waller", slug: "chris-waller", stable_name: "Chris Waller Racing", location: "Rosehill, NSW", status: "active", photo_url: null, marketing_visible: true },
-        { id: "t2", name: "John Thompson", display_name: "John Thompson", slug: "john-thompson", stable_name: "Thompson Stables", location: "Warwick Farm, NSW", status: "onboarding", photo_url: null, marketing_visible: false },
-      ],
-    },
+    selectQueue: [
+      {
+        rows: [
+          {
+            id: "t1", name: "Chris Waller", display_name: "Chris Waller", slug: "chris-waller",
+            stable_name: "Chris Waller Racing", location: "Rosehill, NSW", status: "active",
+            photo_url: null, marketing_visible: true,
+            horses: [{ count: 2 }],
+            posts: [{ count: 5 }],
+            last_post: [{ published_at: "2026-07-11T00:00:00Z", created_at: "2026-07-10T00:00:00Z" }],
+            contacts: [{ trainer_id: "t1", role: "Trainer", email: "chris@waller.au" }],
+          },
+          {
+            id: "t2", name: "John Thompson", display_name: "John Thompson", slug: "john-thompson",
+            stable_name: "Thompson Stables", location: "Warwick Farm, NSW", status: "onboarding",
+            photo_url: null, marketing_visible: false,
+            horses: [{ count: 1 }],
+            posts: [{ count: 0 }],
+            last_post: [],
+            contacts: [],
+          },
+        ],
+      },
+      { count: 2 },
+      { count: 1 },
+      { count: 1 },
+    ],
   };
-  state.tables.horse = { select: { rows: [{ trainer_id: "t1" }, { trainer_id: "t1" }, { trainer_id: "t2" }] } };
-  state.tables.post = { select: { rows: [{ source_trainer_id: "t1", published_at: "2026-07-11T00:00:00Z", created_at: "2026-07-10T00:00:00Z" }] } };
-  state.tables.trainer_contact = { select: { rows: [{ trainer_id: "t1", role: "Trainer", email: "chris@waller.au" }] } };
 }
 
 beforeEach(() => {
   Object.assign(state, blankState());
+  Object.assign(rec, blankRecord());
 });
 
 describe("listTrainers", () => {
@@ -62,7 +89,10 @@ describe("listTrainers", () => {
 
   it("fails closed: a row with no marketing_visible is NOT badged as published", async () => {
     state.tables.trainer = {
-      select: { rows: [{ id: "t9", name: "Ghost", display_name: "Ghost", slug: "ghost", status: "active" }] },
+      selectQueue: [
+        { rows: [{ id: "t9", name: "Ghost", display_name: "Ghost", slug: "ghost", status: "active" }] },
+      ],
+      select: { count: 0 },
     };
     const { rows } = await listTrainers(sb(), {});
     expect(rows[0].marketingVisible).toBe(false);
@@ -75,6 +105,85 @@ describe("listTrainers", () => {
     expect(orExpr).toContain("name.ilike.%waller%");
     expect(orExpr).toContain("stable_name.ilike.%waller%");
     expect(orExpr).toContain("location.ilike.%waller%");
+  });
+
+  // The whole point of the rewrite: this screen used to read every trainer,
+  // every horse, every trainer_contact AND EVERY POST IN THE DATABASE, then do
+  // the joins in JS. These assertions are what stops that coming back.
+  it("reads ONLY the trainer table — no horse / post / trainer_contact scan", async () => {
+    seed();
+    await listTrainers(sb(), {});
+    expect(new Set(state.calls.from)).toEqual(new Set(["trainer"]));
+  });
+
+  it("derives horse + post counts from PostgREST aggregates, not from rows", async () => {
+    seed();
+    await listTrainers(sb(), {});
+    const projection = selectFor(rec, "trainer")!;
+    expect(projection).toBe(TRAINER_LIST_SELECT);
+    expect(projection).toContain("horses:horse!trainer_id(count)");
+    expect(projection).toContain("posts:post!source_trainer_id(count)");
+    expect(projection).toContain("contacts:trainer_contact(");
+  });
+
+  it("takes the newest post per trainer with an embedded ordered limit-1", async () => {
+    seed();
+    await listTrainers(sb(), {});
+    // Ordered INSIDE the embed and capped at one row there — a top-level
+    // `.limit(1)` would return one TRAINER, which is the bug this shape avoids.
+    expect(rec.orders).toContain("trainer.last_post.published_at desc");
+    expect(rec.limits).toContain("trainer.last_post=1");
+    expect(rec.limits.filter((l) => l === "trainer=1")).toEqual([]);
+  });
+
+  it("gets the roster counts with head:true — no status rows fetched", async () => {
+    seed();
+    await listTrainers(sb(), {});
+    const counts = rec.selectOptions.filter((o) => o.table === "trainer");
+    expect(counts).toHaveLength(3);
+    for (const c of counts) expect(c).toMatchObject({ count: "exact", head: true });
+  });
+
+  it("falls back to created_at when the newest post is an unpublished draft", async () => {
+    state.tables.trainer = {
+      selectQueue: [
+        {
+          rows: [
+            {
+              id: "t9", name: "Ghost", display_name: "Ghost", slug: "ghost", status: "active",
+              horses: [{ count: 0 }], posts: [{ count: 1 }],
+              last_post: [{ published_at: null, created_at: "2026-07-01T00:00:00Z" }],
+              contacts: [],
+            },
+          ],
+        },
+      ],
+      select: { count: 0 },
+    };
+    const { rows } = await listTrainers(sb(), {});
+    expect(rows[0].lastPostAt).toBe("2026-07-01T00:00:00Z");
+  });
+
+  it("prefers a contact whose role mentions trainer over the first one", async () => {
+    state.tables.trainer = {
+      selectQueue: [
+        {
+          rows: [
+            {
+              id: "t9", name: "Ghost", display_name: "Ghost", slug: "ghost", status: "active",
+              horses: [{ count: 0 }], posts: [{ count: 0 }], last_post: [],
+              contacts: [
+                { role: "Stable hand", email: "hand@example.com" },
+                { role: "Head Trainer", email: "boss@example.com" },
+              ],
+            },
+          ],
+        },
+      ],
+      select: { count: 0 },
+    };
+    const { rows } = await listTrainers(sb(), {});
+    expect(rows[0].contactEmail).toBe("boss@example.com");
   });
 
   it("strips PostgREST structural chars from the search term", async () => {

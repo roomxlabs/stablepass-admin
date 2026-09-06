@@ -14,7 +14,10 @@ export async function GET(req: Request) {
   if (format != null && format !== "csv") return fail("invalid_format", "format must be csv.", 400);
 
   try {
-    const { byMonth, list } = await getTrials(sb);
+    // The CSV is an EXPORT: it asks for a far larger list than the screen's
+    // default cap, because silently truncating an export is data loss, not a
+    // performance win. The screen table stays capped (TRIALS_LIST_LIMIT).
+    const { byMonth, list } = await getTrials(sb, format === "csv" ? { limit: 5000 } : {});
 
     if (format === "csv") {
       const csv = toCsv(

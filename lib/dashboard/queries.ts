@@ -37,18 +37,45 @@ type HorseRow = {
   racing_name: string | null;
   training_status: string | null;
   photo_url: string | null;
+  /** The horse's newest published post, or none — an embed limited to 1 row. */
+  posts?: PostRecency[] | null;
 };
 
-// Every signup gets a trial subscription — operators included, since an admin
-// is an app_user promoted to is_admin after signup (ENG-315). Any "members"
-// count over `subscription` must therefore exclude staff rows. PostgREST
-// returns a to-one embed as an object or a 1-element array.
-type SubscriptionUserEmbed = { is_admin?: boolean | null };
-type SubscriptionWithUser = { status: string; user: SubscriptionUserEmbed | SubscriptionUserEmbed[] | null };
-function isStaff(user: SubscriptionWithUser["user"]): boolean {
-  return !!(Array.isArray(user) ? user[0] : user)?.is_admin;
+/**
+ * Count subscriptions in one status, EXCLUDING staff, without fetching a row.
+ *
+ * Every signup gets a trial subscription — operators included, since an admin
+ * is just an app_user promoted to `is_admin` after signup (ENG-315), so any
+ * count over `subscription` has to drop staff rows. That rule is exactly why
+ * this was a row fetch before: `{ count: "exact", head: true }` cannot filter
+ * in JS. It does not have to — PostgREST filters on an embedded resource, and
+ * `!inner` makes the embed a join so the filter reaches the parent count.
+ *
+ * `not.is.true` rather than `eq.false` deliberately: `is_admin` may be null,
+ * and `eq.false` would drop a perfectly ordinary member whose flag was never
+ * set — a member count that silently shrinks is worse than a slow one.
+ */
+async function countMembers(sb: SupabaseClient, status: string): Promise<number> {
+  const { count } = await sb
+    .from("subscription")
+    .select("status,user:user_id!inner(is_admin)", { count: "exact", head: true })
+    .eq("status", status)
+    .not("user.is_admin", "is", true);
+  return count ?? 0;
 }
-type PostRecency = { horse_id: string; published_at: string | null };
+
+/**
+ * The statuses a subscription can hold (api-contract.md: the Stripe webhook
+ * writes active/canceled/lapsed; the trial-sweep writes lapsed). Needed because
+ * a per-status count has to know which statuses to ask about — the old row
+ * fetch discovered them from the data.
+ */
+export const SUBSCRIPTION_STATUSES = ["trial", "active", "lapsed", "canceled"] as const;
+
+/** The single embedded post row a horse carries in the analytics read. */
+type PostRecency = { published_at: string | null };
+/** The flat `post` projection race-day still reads (it is already `.in()`-scoped). */
+type HorsePostRecency = PostRecency & { horse_id: string };
 
 function horseName(h: { racing_name: string | null; display_name: string }): string {
   return h.racing_name ?? h.display_name;
@@ -62,7 +89,7 @@ function daysSince(iso: string | null, now: Date): number | null {
 export async function getAnalytics(sb: SupabaseClient, now: Date = new Date()): Promise<Analytics> {
   const weekAgo = weekAgoIso(now);
 
-  const [postsRes, reactionsRes, savesRes, membersRes, horsesRes, recentPostsRes] =
+  const [postsRes, reactionsRes, savesRes, trialMembers, activeMembers, horsesRes] =
     await Promise.all([
       // Posts published in the last 7 days.
       sb
@@ -81,44 +108,44 @@ export async function getAnalytics(sb: SupabaseClient, now: Date = new Date()): 
         .select("post_id", { count: "exact", head: true })
         .gte("created_at", weekAgo),
       // Members = subscriptions currently in trial or active, excluding
-      // operator accounts (see isStaff above). Row fetch instead of a head
-      // count so the staff filter can apply; the embed carries no PII.
-      sb
-        .from("subscription")
-        .select("status,user:user_id(is_admin)")
-        .in("status", ["trial", "active"]),
-      // Active (visible) horses — the pool the quiet-horse check runs over.
+      // operator accounts. Two `head: true` counts: this used to fetch one row
+      // per member subscription purely to run `.filter().length` over it.
+      countMembers(sb, "trial"),
+      countMembers(sb, "active"),
+      // Active (visible) horses — the pool the quiet-horse check runs over —
+      // each carrying its OWN newest published post, and nothing else.
+      //
+      // This replaces a read of EVERY published post in the database. The embed
+      // is filtered to published rows (`posts.status`), ordered newest-first and
+      // `.limit(1, { referencedTable })`-ed, so at most one post row travels per
+      // horse. It is exactly equivalent to what the JS did: it took the first
+      // row of the same descending order, and "posted this week" is true iff
+      // that newest post is inside the window. `!inner` is deliberately NOT
+      // used — a horse with no published post must still appear (that is the
+      // whole point of a quiet-horse list), and an inner join would drop it.
       sb
         .from("horse")
-        .select("id,display_name,racing_name,training_status,photo_url")
-        .eq("status", "active"),
-      // Published posts, newest first — used to derive each horse's last-post
-      // recency and whether it posted within the window (one query, no N+1).
-      sb
-        .from("post")
-        .select("horse_id,published_at")
-        .eq("status", "published")
-        .order("published_at", { ascending: false }),
+        .select("id,display_name,racing_name,training_status,photo_url,posts:post(published_at)")
+        .eq("status", "active")
+        .eq("posts.status", "published")
+        .order("published_at", { referencedTable: "posts", ascending: false, nullsFirst: false })
+        .limit(1, { referencedTable: "posts" }),
     ]);
 
   const weekAgoMs = now.getTime() - WEEK_MS;
-  const lastPostByHorse = new Map<string, string | null>();
-  const postedThisWeek = new Set<string>();
-  for (const p of (recentPostsRes.data ?? []) as PostRecency[]) {
-    if (!lastPostByHorse.has(p.horse_id)) lastPostByHorse.set(p.horse_id, p.published_at);
+  const lastPostOf = (h: HorseRow): string | null => (h.posts ?? [])[0]?.published_at ?? null;
+
+  const quietHorses: QuietHorse[] = ((horsesRes.data ?? []) as unknown as HorseRow[])
     // Compare as timestamps, not ISO strings, so a timezone-offset format
     // (`+00:00` vs `Z`) can't break the "posted this week" boundary check.
-    if (p.published_at && new Date(p.published_at).getTime() >= weekAgoMs) {
-      postedThisWeek.add(p.horse_id);
-    }
-  }
-
-  const quietHorses: QuietHorse[] = ((horsesRes.data ?? []) as HorseRow[])
-    .filter((h) => !postedThisWeek.has(h.id))
+    .filter((h) => {
+      const last = lastPostOf(h);
+      return !(last && new Date(last).getTime() >= weekAgoMs);
+    })
     .map((h) => ({
       id: h.id,
       name: horseName(h),
-      daysSinceLastPost: daysSince(lastPostByHorse.get(h.id) ?? null, now),
+      daysSinceLastPost: daysSince(lastPostOf(h), now),
       trainingStatus: h.training_status,
       imageUrl: h.photo_url,
     }))
@@ -129,8 +156,7 @@ export async function getAnalytics(sb: SupabaseClient, now: Date = new Date()): 
     postsThisWeek: postsRes.count ?? 0,
     reactions: reactionsRes.count ?? 0,
     saves: savesRes.count ?? 0,
-    members: ((membersRes.data ?? []) as SubscriptionWithUser[]).filter((r) => !isStaff(r.user))
-      .length,
+    members: trialMembers + activeMembers,
     quietHorses,
   };
 }
@@ -221,7 +247,7 @@ export async function getRaceDay(
       .eq("status", "published")
       .in("horse_id", horseIds)
       .order("published_at", { ascending: false });
-    for (const p of (posts ?? []) as PostRecency[]) {
+    for (const p of (posts ?? []) as HorsePostRecency[]) {
       if (p.published_at && !lastPostByHorse.has(p.horse_id)) {
         lastPostByHorse.set(p.horse_id, p.published_at);
       }
@@ -263,14 +289,23 @@ export async function getSubscribers(
   sb: SupabaseClient,
   status?: string | null,
 ): Promise<Subscribers> {
-  let q = sb.from("subscription").select("status,user:user_id(is_admin)");
-  if (status) q = q.eq("status", status);
-  const { data } = await q;
-  // Staff excluded (ENG-315); only `status` is tallied — still no member PII.
-  const rows = ((data ?? []) as SubscriptionWithUser[]).filter((r) => !isStaff(r.user));
+  // One `head: true` count per status instead of one ROW per subscription. The
+  // old version fetched every subscription in the system and tallied it in JS,
+  // which is the same answer at a linearly growing cost.
+  const wanted = status ? [status] : [...SUBSCRIPTION_STATUSES];
+  const counts = await Promise.all(wanted.map((sName) => countMembers(sb, sName)));
+
+  // Zero-count statuses stay ABSENT from `byStatus`, exactly as the tally-from-
+  // rows version left them out — the subscribers route's response shape is
+  // asserted key-for-key, and a `{ lapsed: 0 }` that never used to appear would
+  // be a contract change dressed up as a performance fix.
   const byStatus: Record<string, number> = {};
-  for (const r of rows) byStatus[r.status] = (byStatus[r.status] ?? 0) + 1;
-  return { total: rows.length, byStatus };
+  let total = 0;
+  wanted.forEach((sName, i) => {
+    total += counts[i];
+    if (counts[i] > 0) byStatus[sName] = counts[i];
+  });
+  return { total, byStatus };
 }
 
 // ---- Recently published (dashboard table; reuses T5's published shape) ------

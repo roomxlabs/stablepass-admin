@@ -1562,3 +1562,74 @@ expect(push).toHaveBeenCalledWith("/horses");
 ```
 `advanceTimersByTimeAsync(0)` flushes the promise chain repeatedly while advancing zero milliseconds,
 which is what makes "the toast is up and the push has NOT happened yet" a real assertion.
+## Recurring — grill-time prevention
+
+### Never claim a mutation test you did not run (ENG-1016, 5–6 Sep 2026)
+
+A PR body asserts *"revert X → N tests fail"*, the reviewer reads the table, believes the guard is
+pinned, and approves. The guard is not pinned. This class landed **five verified times across the
+four repos on 5–6 Sep 2026 alone**. Four of the five were caught by the author's own fresh-eyes pass
+and fixed inside the same PR, so the merged state is clean — but every one of them was *written down
+as run* before it was run. That is the failure being recorded here.
+
+**1. Never write a mutation-test table from reasoning.** Run `delete → test → restore → test` and
+paste both counts. If you did not run it, do not claim it. admin #78 (ENG-950) claimed *"remove
+`.in("status", ...)` → race test fails (`expected 200 to be 409`)"*. Deleting
+`.in("status", ["draft","scheduled"])` from the route actually left the publish suite **12/12
+green** — `supabase-fake`'s `in` was a no-op. The claim only became true at commit `32117af`, and
+the PR body now says so in exactly those words.
+
+**2. Reviewer's rule: re-checking a corrected claim means re-RUNNING the mutation, not re-reading
+the prose.** The prose was confidently wrong the first time. mobile #112 (ENG-954) is the case: the
+original claim was, in the author's own words, "honest but coarse" — every existing test reached
+`stripUrlQuery` through `redactText`, which percent-decodes **first**, so the `%3F|%23` alternation
+was pinned by nothing and deleting it left **37/37 green**. No amount of re-reading that sentence
+would have surfaced it; running it did. The fix was a `describe` block calling `stripUrlQuery`
+directly.
+
+**3. Apply the mutation, then `git diff` to confirm you changed the line you meant** — before you
+believe a green result. A mutation that silently no-ops is indistinguishable from an un-pinned
+guard, and it lies in *both* directions: it makes a real guard look vacuous as easily as it lets a
+vacuous one look pinned. Prefer a **python exact-match edit** over `perl -0pi -e 's/…/…/'`: an
+escaped-regex payload silently substitutes nothing, and a non-global substitution hits the **first**
+match, which is usually a doc comment rather than the code. That bit the integrate loop twice in one
+day, in opposite directions.
+
+**4. Two fixture smells that make an assertion vacuous.**
+
+- **A seed that already satisfies the assertion in both directions.** admin #84 (ENG-963) seeded
+  `[t1 (2 horses), t2 (1 horse)]` and asserted `horses desc === ["t1","t2"]` — which is just the
+  fetch order, so deleting `sortTrainerRows` outright left the suite green. The fix reorders the
+  seed so that **no** asserted order equals it; the merged test carries a `SEED ORDER IS
+  LOAD-BEARING` comment explaining why. (The suite here is 1321 tests / 75 files — if you are
+  quoting a count, re-measure it rather than copying one from another PR body.)
+- **`toContainEqual`/`toContain` where `toEqual`/`toBe` is meant.** A containment matcher passes on a
+  **superset** — i.e. on the leak itself. admin #79 (ENG-993) pinned a filter-leak test with
+  `expect(second.filters).toContainEqual({ column: "archived_at", value: null, op: "is" })` in
+  commit `c3d075d`: that passes on an array that has picked up extra entries, which is precisely the
+  bug the test was written to catch. Replaced with `expect(first.filters).toEqual([...])` in
+  `af4c5e8`.
+
+**5. Pin with literals, not by re-importing the constant under test.**
+`expect(x).toBe(IMPORTED_CONST)` is vacuous *with respect to that constant's content*: widening the
+constant widens the assertion along with it. The cleanest contrast is two PRs in the same repo,
+days apart:
+
+- **web #90 (ENG-958) — wrong.** `test/horses-route.test.ts` imports `HORSE_PROFILE_COLUMNS` and
+  asserts `expect(horseSelectMock).toHaveBeenCalledWith(HORSE_PROFILE_COLUMNS)` — the same constant
+  the route uses to build its own `.select()`. The advertised `photo_url` strip therefore survives
+  deletion with the suite green **and** `tsc` clean.
+- **web #91 — right.** `test/horse-status-scale.test.tsx` treats the constant as the *subject* and
+  pins it with literals: `expect(HORSE_PROFILE_COLUMNS).toContain("shares_for_sale")` and
+  `expect(trainerEmbed).not.toContain("website_url")`.
+
+**The two mechanisms, named.** Nearly every instance is one of:
+
+- **a fixture that satisfies the assertion either way** — ENG-963 (pre-sorted seed), ENG-954
+  (assertion routed through a decoder), ENG-993 (containment matcher); and
+- **a mock that discards the thing being asserted** — ENG-950 (`supabase-fake`'s `in` was a no-op),
+  ENG-958 (the projection pinned against its own imported constant).
+
+ENG-993 fixed the second *mechanism* in `supabase-fake` (8 query methods that silently no-opped).
+Nothing prevents either mechanism from being **claimed** without being run — which is what this
+entry exists to prevent.

@@ -2,6 +2,7 @@ import { requireAdminPage } from "@/lib/auth/admin";
 import { signOut } from "@/app/signin/actions";
 import AdminNav from "./AdminNav";
 import { Icon } from "./icons";
+import ToastRegion from "./Toast";
 
 // Shell + gate for every dashboard page. requireAdminPage() runs first, so a
 // non-admin never reaches any (dash) child: no session -> /signin, non-admin
@@ -37,6 +38,13 @@ export default async function DashLayout({
       </aside>
 
       <main className="admin-main">{children}</main>
+
+      {/* ONE toast live-region pair for the whole dashboard (ENG-964). Mounted
+          here, not per screen and emphatically not per table row, so the
+          regions exist before any message lands in them and two toasts raised
+          from two different rows share one stack instead of overlapping.
+          Callers raise toasts with `showToast()` from anywhere. */}
+      <ToastRegion />
     </div>
   );
 }

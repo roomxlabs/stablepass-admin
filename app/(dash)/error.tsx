@@ -23,6 +23,10 @@ import { useEffect } from "react";
 // survive and the operator can navigate away or retry, rather than landing on
 // an unstyled full-page crash with no way out but the back button.
 //
+// Styling reuses `.dash-placeholder` from app/globals.css — the design
+// system's existing card — rather than bespoke inline hexes, so this stays on
+// palette if the tokens move.
+//
 // The message is deliberately generic. `error.message` from a server component
 // is already redacted to a digest in production, and the underlying text can
 // carry Postgres schema detail (see MUST-FIX 1) — so the digest is shown for a
@@ -39,28 +43,24 @@ export default function DashError({
   }, [error]);
 
   return (
-    <div className="admin-content" role="alert">
-      <div
-        style={{
-          maxWidth: 560,
-          margin: "48px auto",
-          padding: "24px",
-          border: "1px solid var(--line, #e5e5e5)",
-          borderRadius: 12,
-          background: "var(--surface, #fff)",
-        }}
-      >
-        <h2 style={{ margin: "0 0 8px", fontSize: 18 }}>This page couldn&apos;t load</h2>
-        <p style={{ margin: "0 0 16px", color: "var(--muted, #666)", fontSize: 14, lineHeight: 1.5 }}>
+    <div className="admin-content">
+      <div className="dash-placeholder" role="alert" style={{ maxWidth: 560, margin: "48px auto" }}>
+        <h2>This page couldn&apos;t load</h2>
+        <p>
           Something went wrong reading the data for this screen. Nothing was changed. Try again — if
           it keeps happening, the reference below will be in the server logs.
         </p>
         {error.digest ? (
-          <p style={{ margin: "0 0 16px", fontSize: 12, color: "var(--muted, #666)" }}>
+          <p style={{ marginTop: 12, fontSize: 12 }}>
             Reference: <code>{error.digest}</code>
           </p>
         ) : null}
-        <button type="button" className="btn btn-primary" onClick={reset} style={{ padding: "8px 16px" }}>
+        <button
+          type="button"
+          className="btn btn-primary"
+          onClick={reset}
+          style={{ marginTop: 20, padding: "8px 16px" }}
+        >
           Try again
         </button>
       </div>

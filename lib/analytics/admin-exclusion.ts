@@ -105,13 +105,36 @@ const MAX_BATCHES = 100;
  * WHY THIS EXISTS — `.range()` WITHOUT AN `ORDER BY` IS NOT PAGING.
  * Postgres gives no ordering guarantee between two separate unordered queries.
  * `synchronize_seqscans` (on by default) can start the second scan at a
- * different block than the first, and any concurrent insert or delete shifts
- * the rows under the offset. Batch 2 then repeats rows batch 1 already
- * returned and omits others entirely. Termination here is on
+ * different block than the first, so batch 2 can repeat rows batch 1 already
+ * returned and omit others entirely. Termination here is on
  * `all.length >= total`, so the loop still stops at the right COUNT with the
  * WRONG ROWS — silently double-counting some members and dropping others. That
  * is precisely the "is the reported number true" surface this module exists to
  * protect, so the ordering is not optional and not left to the caller.
+ *
+ * WHAT THIS DOES **NOT** FIX — READ BEFORE TRUSTING THE NUMBERS.
+ * The ordering removes scan-order nondeterminism. It does NOT make this a
+ * consistent snapshot, because this is still OFFSET paging
+ * (`.range(all.length, ...)`). A row INSERTED concurrently that sorts BEFORE
+ * the current offset shifts every later row up by one, so the next batch skips
+ * a row; a concurrent DELETE before the offset duplicates one. The sort key is
+ * `(user_id, post_id)` and mobile clients insert `impression` rows
+ * continuously with arbitrary `user_id`s, so roughly half of any concurrent
+ * insert lands before the offset. The residual error is small — on the order of
+ * one row per extra batch, and only on tables over PAGE_SIZE rows — but it is
+ * real, and it is NOT what the ordering above guarantees.
+ *
+ * The actual fix is KEYSET paging: carry the last row's
+ * `(user_id, post_id)` and ask for the next batch with
+ * `.or("user_id.gt.<u>,and(user_id.eq.<u>,post_id.gt.<p>)")` instead of an
+ * offset. The registry below is exactly what that needs, so the change is
+ * mechanical. It is deliberately NOT done in this review round: it rewrites the
+ * query PostgREST actually issues on all six analytics endpoints, and neither
+ * the unit fake nor the e2e mock (which returns every row in one batch, so the
+ * loop never takes a second iteration) can prove the new predicate against a
+ * real PostgREST. Shipping an unverifiable query rewrite across every analytics
+ * endpoint days before launch is the larger risk. Tracked as follow-up; it also
+ * removes the `OFFSET 99000` re-scan cost noted on MAX_BATCHES.
  *
  * The key must be UNIQUE, otherwise ties are still free to reorder between
  * queries and the same tearing returns on a smaller scale. These are the

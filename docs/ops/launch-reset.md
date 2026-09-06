@@ -155,3 +155,22 @@ would time out long before it helped. That is a `stablepass-be` change.
 
 Rough headroom check: at 500 members and 200 posts, `impression` tops out near
 100,000 — so this should be tracked as the member count grows, not filed away.
+
+### Known residual: offset paging is not a consistent snapshot
+
+The paging in `lib/analytics/admin-exclusion.ts` orders every batch on the
+table's unique key, which removes scan-order nondeterminism. It does **not**
+make a multi-batch read a consistent snapshot: it is still offset paging, so a
+row inserted concurrently that sorts *before* the current offset shifts later
+rows and the next batch skips one.
+
+Impact is bounded — roughly one row per extra batch, and only on a table with
+more than 1,000 matching rows in the period — but it is real, since mobile
+clients insert `impression` rows continuously.
+
+The fix is keyset paging (carry the last `(user_id, post_id)` and filter with
+`.or("user_id.gt.<u>,and(user_id.eq.<u>,post_id.gt.<p>)")`), which the existing
+sort-key registry already supplies. Deferred deliberately: it changes the query
+issued on all six analytics endpoints and cannot be proven against a real
+PostgREST by either the unit fake or the e2e mock. Worth doing once the first
+engagement table routinely exceeds one page.

@@ -9,6 +9,7 @@ import {
   type TrainerRow,
   type TrainerSort,
 } from "./data";
+import type { SortDir } from "../list-href";
 
 function row(overrides: Partial<TrainerRow>): TrainerRow {
   return {
@@ -121,18 +122,64 @@ describe("listTrainers — sort wiring", () => {
 
   const orders: { table: string; args: unknown[] }[] = [];
 
+  // SEED ORDER IS LOAD-BEARING. The fake does not implement PostgREST `order=`
+  // — it hands rows back in the order they were seeded — so any assertion that
+  // matches this order proves nothing. The original version of this block
+  // seeded [t1(2 horses), t2(1)] and asserted `horses desc` === ["t1","t2"],
+  // which held with `sortTrainerRows` deleted entirely.
+  //
+  // So: the seed order below is [t2, t1, t3] and NO asserted order equals it.
+  //   horseCount   t1=2  t2=1  t3=0   → asc ["t3","t2","t1"], desc ["t1","t2","t3"]
+  //   displayName  Amy Baker(t2) < Bianca Zeta(t3) < Chris Waller(t1)
+  //   lastPostAt   t3 (Aug 9) > t1 (Aug 1); t2 has none and must sink
+  // Every case asserts BOTH directions, so a comparator stuck on one direction
+  // fails too.
+  const SEED_ORDER = ["t2", "t1", "t3"];
+
+  function trainer(id: string, displayName: string, extra: Record<string, unknown> = {}) {
+    return {
+      id,
+      name: displayName,
+      display_name: displayName,
+      slug: id,
+      stable_name: `${displayName} Stables`,
+      location: "Rosehill, NSW",
+      status: "active",
+      photo_url: null,
+      marketing_visible: false,
+      ...extra,
+    };
+  }
+
   function seed() {
     state.tables.trainer = {
       select: {
         rows: [
-          { id: "t1", name: "Chris Waller", display_name: "Chris Waller", slug: "chris-waller", stable_name: "Chris Waller Racing", location: "Rosehill, NSW", status: "active", photo_url: null, marketing_visible: true },
-          { id: "t2", name: "Amy Baker", display_name: "Amy Baker", slug: "amy-baker", stable_name: "Baker Stables", location: "Warwick Farm, NSW", status: "active", photo_url: null, marketing_visible: false },
+          trainer("t2", "Amy Baker"),
+          trainer("t1", "Chris Waller", { marketing_visible: true }),
+          trainer("t3", "Bianca Zeta"),
         ],
       },
     };
-    state.tables.horse = { select: { rows: [{ trainer_id: "t1" }, { trainer_id: "t1" }, { trainer_id: "t2" }] } };
-    state.tables.post = { select: { rows: [] } };
+    state.tables.horse = {
+      select: { rows: [{ trainer_id: "t1" }, { trainer_id: "t1" }, { trainer_id: "t2" }] },
+    };
+    state.tables.post = {
+      select: {
+        rows: [
+          { source_trainer_id: "t1", published_at: "2026-08-01T00:00:00Z", created_at: "2026-07-01T00:00:00Z" },
+          { source_trainer_id: "t3", published_at: "2026-08-09T00:00:00Z", created_at: "2026-07-01T00:00:00Z" },
+        ],
+      },
+    };
     state.tables.trainer_contact = { select: { rows: [] } };
+  }
+
+  async function listIds(sort: TrainerSort | "", dir: SortDir) {
+    seed();
+    const sb = wrapClient(makeFakeClient(state)) as unknown as SupabaseClient;
+    const { rows } = await listTrainers(sb, sort ? { sort, dir } : {});
+    return rows.map((r) => r.id);
   }
 
   beforeEach(() => {
@@ -140,7 +187,14 @@ describe("listTrainers — sort wiring", () => {
     orders.length = 0;
   });
 
-  it("{sort:'trainer', dir:'desc'} issues an .order() on the trainer table, DB column 'name'", async () => {
+  it("GUARD: the fake returns rows in seed order, so seed order is not an ordering", async () => {
+    // If this ever fails because the fake grew real `order=` support, the
+    // "differs from seed order" argument below needs revisiting — but the
+    // assertions themselves stay valid, since they pin the rendered order.
+    expect(await listIds("", "asc")).toEqual(SEED_ORDER);
+  });
+
+  it("{sort:'trainer'} issues an .order() on the trainer table, DB column 'name'", async () => {
     seed();
     const sb = wrapClient(makeFakeClient(state)) as unknown as SupabaseClient;
     await listTrainers(sb, { sort: "trainer", dir: "desc" });
@@ -148,11 +202,36 @@ describe("listTrainers — sort wiring", () => {
     expect(trainerOrders[0]).toEqual({ table: "trainer", args: ["name", { ascending: false }] });
   });
 
-  it("{sort:'horses', dir:'desc'} returns rows ordered by horseCount desc (derived, sorted in JS)", async () => {
+  it("{sort:'trainer'} ALSO re-sorts the merged rows by displayName, both directions", async () => {
+    // Not redundant with the .order() assertion above: the DB ordered the raw
+    // `name`, the table renders `display_name ?? name`, and this fake ignores
+    // `order=` entirely — so this is the assertion that dies if the
+    // `sortTrainerRows(rows, sort, dir)` call at the end of listTrainers goes.
+    expect(await listIds("trainer", "asc")).toEqual(["t2", "t3", "t1"]);
+    expect(await listIds("trainer", "desc")).toEqual(["t1", "t3", "t2"]);
+  });
+
+  it("{sort:'horses'} orders by the DERIVED horseCount, both directions", async () => {
+    expect(await listIds("horses", "desc")).toEqual(["t1", "t2", "t3"]);
+    expect(await listIds("horses", "asc")).toEqual(["t3", "t2", "t1"]);
+    // And the counts themselves are the merge's, not the seed's.
     seed();
     const sb = wrapClient(makeFakeClient(state)) as unknown as SupabaseClient;
     const { rows } = await listTrainers(sb, { sort: "horses", dir: "desc" });
-    expect(rows.map((r) => r.id)).toEqual(["t1", "t2"]);
-    expect(rows.map((r) => r.horseCount)).toEqual([2, 1]);
+    expect(rows.map((r) => r.horseCount)).toEqual([2, 1, 0]);
+  });
+
+  it("{sort:'lastpost'} orders by the DERIVED lastPostAt, and the trainer with none sinks", async () => {
+    expect(await listIds("lastpost", "desc")).toEqual(["t3", "t1", "t2"]);
+    // t2 has no post at all, so it sinks in ASC too rather than leading it.
+    expect(await listIds("lastpost", "asc")).toEqual(["t1", "t3", "t2"]);
+  });
+
+  it("{sort:'stable'} and {sort:'status'} also come back re-sorted, not in seed order", async () => {
+    // Stable names track the display names here ("<name> Stables").
+    expect(await listIds("stable", "asc")).toEqual(["t2", "t3", "t1"]);
+    expect(await listIds("stable", "desc")).toEqual(["t1", "t3", "t2"]);
+    // All three are `active`, so `status` falls through to its displayName tiebreak.
+    expect(await listIds("status", "asc")).toEqual(["t2", "t3", "t1"]);
   });
 });

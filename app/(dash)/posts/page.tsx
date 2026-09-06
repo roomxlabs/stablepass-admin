@@ -13,6 +13,7 @@ import {
 import type { PostRow, StatusCounts, StatusFilter } from "./types";
 import { HORSE_PHOTO_BUCKET, POST_MEDIA_BUCKET, signPhotoMap } from "@/lib/storage/photos";
 import { muxSignedStreamUrl, muxSignedThumbnailUrl } from "@/lib/mux-playback";
+import { uuidParam } from "@/lib/uuid";
 import "./posts.css";
 
 // Posts library — screens/04-posts.html. Data-bearing (dash) page: it
@@ -71,8 +72,7 @@ export default async function PostsPage({
   const horseId = typeof sp.horseId === "string" ? sp.horseId : "";
   // A uuid, or nothing — a malformed `?trainerId=` is ignored rather than sent
   // to Postgres as a filter value (same rule the Horses list applies).
-  const trainerId =
-    typeof sp.trainerId === "string" && /^[0-9a-f-]{36}$/i.test(sp.trainerId) ? sp.trainerId : "";
+  const trainerId = uuidParam(sp.trainerId);
   const sort = parsePostSort(sp.sort);
   const dir = parseSortDir(sp.dir, sort ? POST_SORT_DEFAULT_DIR[sort] : "desc");
   const offset = Math.max(0, parseInt(typeof sp.offset === "string" ? sp.offset : "0", 10) || 0);

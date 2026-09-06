@@ -3,12 +3,14 @@ import {
   parsePostSort,
   postsOrder,
   postsSelect,
+  HORSE_EMBED,
   HORSE_EMBED_INNER,
   POSTS_API_SELECT,
   POSTS_PAGE_SELECT,
   POST_SORT_KEYS,
   type PostSort,
 } from "./sort";
+import { mapPostRow } from "@/app/(dash)/posts/format";
 
 describe("parsePostSort", () => {
   it("keeps an allow-listed value", () => {
@@ -152,5 +154,103 @@ describe("postsOrder — the tiebreaker is TOTAL, not merely stable", () => {
 
   it("omits nullsFirst for the non-nullable column", () => {
     expect(postsOrder("status", "asc")[0].nullsFirst).toBeUndefined();
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The select strings are LOAD-BEARING, and nothing else can see them.
+//
+// This block exists because of a real near-miss while rebasing ENG-963 onto
+// #86 (ENG-979): the two changes collide on `POST_FIELDS` in
+// app/(dash)/posts/page.tsx — #86 ADDED `label` to it, this PR MOVED it to
+// POSTS_PAGE_SELECT. Resolving that conflict in this PR's favour without
+// re-adding `label` makes every post in the library fall back to
+// "Untitled post" — with a completely GREEN suite, because format.test.ts
+// exercises `mapPostRow` on hand-written row objects and never sees the
+// projection the page actually sends. `tsc` cannot see it either: a too-narrow
+// `.select()` is just a string.
+//
+// So: assert the columns by name, and assert WHY each matters where the
+// consequence is invisible.
+describe("POSTS_PAGE_SELECT — every column mapPostRow reads", () => {
+  // Parse the projection into top-level column names, ignoring what is inside
+  // an embed's parentheses (`horse:horse_id(display_name,...)`).
+  function topLevelColumns(select: string): string[] {
+    let depth = 0;
+    let cur = "";
+    const out: string[] = [];
+    for (const ch of select) {
+      if (ch === "(") depth++;
+      else if (ch === ")") depth--;
+      else if (ch === "," && depth === 0) {
+        out.push(cur.trim());
+        cur = "";
+        continue;
+      }
+      cur += ch;
+    }
+    if (cur.trim()) out.push(cur.trim());
+    return out.map((c) => c.split(":")[0].trim());
+  }
+
+  const pageColumns = topLevelColumns(POSTS_PAGE_SELECT);
+
+  it.each([
+    "id",
+    "horse_id",
+    "type",
+    "status",
+    "title",
+    "label",
+    "body",
+    "media_url",
+    "mux_playback_id",
+    "poster_url",
+    "poster_time_s",
+    "like_count",
+    "published_at",
+    "scheduled_for",
+    "created_at",
+  ])("selects %s", (column) => {
+    expect(pageColumns).toContain(column);
+  });
+
+  it("selects `label` — dropping it renames every post to 'Untitled post'", () => {
+    // The behavioural half of the assertion above. `mapPostRow` names a row by
+    // `label`, falling back to `title` and then to "Untitled post"; a post
+    // authored after ENG-979 has a label and NO title, so losing the column
+    // from the projection is indistinguishable at the mapper from a genuinely
+    // unnamed post. This is the failure the select-string assertion prevents.
+    const authoredAfterEng979 = {
+      id: "p1",
+      horse_id: "h1",
+      type: "photo",
+      status: "published",
+      title: null,
+      label: "Race day",
+      body: "",
+      like_count: 0,
+      published_at: "2026-08-01T00:00:00Z",
+      scheduled_for: null,
+      created_at: "2026-08-01T00:00:00Z",
+      horse: null,
+      trainer: null,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any;
+    expect(mapPostRow(authoredAfterEng979).title).toBe("Race day");
+    // …and the same row as it would arrive if `label` were not selected:
+    expect(mapPostRow({ ...authoredAfterEng979, label: undefined }).title).toBe("Untitled post");
+  });
+
+  it("keeps the horse embed alias the horse sort rewrites", () => {
+    // postsSelect() throws on a miss rather than no-opping, but only if the
+    // alias is what it expects — pin the two together.
+    expect(POSTS_PAGE_SELECT).toContain(HORSE_EMBED);
+    expect(POSTS_API_SELECT).toContain(HORSE_EMBED);
+  });
+
+  it("selects no owner column (guardrail §4: no owner PII)", () => {
+    expect(POSTS_PAGE_SELECT).not.toMatch(/owner/i);
+    expect(POSTS_API_SELECT).not.toMatch(/owner/i);
   });
 });

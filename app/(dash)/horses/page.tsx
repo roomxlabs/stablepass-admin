@@ -3,7 +3,7 @@ import { requireAdminPage } from "@/lib/auth/admin";
 import { Icon } from "../icons";
 import SearchField from "../SearchField";
 import SortSelect from "../SortSelect";
-import { buildListHref, compareValues, parseSortKey } from "../list-href";
+import { buildListHref, parseSortKey } from "../list-href";
 import {
   formatCount,
   horseSubtitle,
@@ -11,15 +11,17 @@ import {
   statusPillClass,
 } from "./format";
 import {
+  embedCount,
   fetchHorseLastPostMap,
   fetchHorses,
   fetchTrainerLabel,
   HORSE_SORT_KEYS,
-  type CountEmbed,
+  sortHorseRows,
   type HorseRow,
   type HorseSort,
 } from "./data";
 import { HORSE_PHOTO_BUCKET, signPhotoMap } from "@/lib/storage/photos";
+import { uuidParam } from "@/lib/uuid";
 import "./horses.css";
 
 // Horses DB — screens/05-horses.html. Data-bearing (dash) page: it re-asserts
@@ -56,10 +58,6 @@ function trainerName(t: HorseRow["trainer"]): string | null {
   if (!t) return null;
   const row = Array.isArray(t) ? t[0] : t;
   return row?.display_name ?? null;
-}
-
-function embedCount(e: CountEmbed | null): number {
-  return e?.[0]?.count ?? 0;
 }
 
 // `filter`, `q` and `trainerId` compose; only `page` is gone. The trainer
@@ -120,8 +118,7 @@ export default async function HorsesPage({
   const q = typeof sp.q === "string" ? sp.q.trim() : "";
   // A uuid, or nothing. Anything else is a malformed link and is ignored
   // rather than sent to Postgres as a filter value.
-  const trainerId =
-    typeof sp.trainerId === "string" && /^[0-9a-f-]{36}$/i.test(sp.trainerId) ? sp.trainerId : "";
+  const trainerId = uuidParam(sp.trainerId);
 
   // "" is not a valid option value here — the select always shows a concrete
   // choice — so an absent/stale `?sort=` resolves to the historical default.
@@ -148,30 +145,10 @@ export default async function HorsesPage({
     return true;
   });
 
-  // `name` / `newest` were already ordered by Postgres inside fetchHorses.
-  // `followers` (an embedded count) and `lastpost` (not a column on `horse` at
-  // all) can only be ordered here — which is exact, not a per-page
-  // approximation, because this grid is UNPAGINATED (hotfix, 25 Aug 2026) and
-  // `all` holds every row the operator can read.
-  const sortedInJs = sort === "followers" || sort === "lastpost";
-  // Parse each timestamp ONCE, not once per comparison: a comparator runs
-  // O(n log n) times, and `new Date(...)` inside it would re-parse the same
-  // strings on every keystroke-triggered reload.
-  const lastPostEpoch = new Map<string, number>();
-  if (lastPostAt) for (const [id, at] of lastPostAt) lastPostEpoch.set(id, new Date(at).getTime());
-  const sortValue = (h: HorseRow): number | null =>
-    sort === "followers" ? embedCount(h.follows) : lastPostEpoch.get(h.id) ?? null;
-  // Both JS sorts read biggest/most-recent first, and `compareValues` sinks
-  // nulls in either direction — a horse that has never been posted about is
-  // unknown, not "the least recent". Ties break on name so the order is total
-  // and identical across reloads.
-  const filtered = sortedInJs
-    ? [...unsorted].sort(
-        (a, b) =>
-          compareValues(sortValue(a), sortValue(b), "desc") ||
-          compareValues(a.display_name, b.display_name, "asc"),
-      )
-    : unsorted;
+  // `name` / `newest` were already ordered by Postgres inside fetchHorses;
+  // `followers` and `lastpost` can only be ordered here. See sortHorseRows —
+  // it lives in data.ts so it is unit-testable (__tests__/sort.test.ts).
+  const filtered = sortHorseRows(unsorted, sort, lastPostAt);
 
   const total = filtered.length;
   // Private bucket: turn each stored photo path into a signed URL for display.

@@ -4,6 +4,7 @@ import { ok, fail } from "@/lib/api/envelope";
 import { createMuxDirectUpload, MuxError } from "@/lib/mux";
 import { isLabelCheckViolation, LABEL_ERROR_MESSAGE, normalisePostLabel } from "@/lib/posts/labels";
 import { MAX_PHOTOS, uploadSlotPath } from "@/lib/posts/media";
+import { isUuid } from "@/lib/uuid";
 import {
   POSTS_API_SELECT,
   POST_SORT_DEFAULT_DIR,
@@ -80,7 +81,7 @@ export async function GET(req: Request) {
   // error.message)` — leaking a schema detail for what is only ever a stale
   // link. Ignored rather than rejected, so a bad bookmark shows the library.
   const trainerId = u.searchParams.get("trainerId");
-  if (trainerId && /^[0-9a-f-]{36}$/i.test(trainerId))
+  if (isUuid(trainerId))
     query = query.eq("source_trainer_id", trainerId);
 
   // Strip the characters that are structural in PostgREST's `.or()` grammar

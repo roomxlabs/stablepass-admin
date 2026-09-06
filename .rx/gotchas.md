@@ -1248,7 +1248,7 @@ passes as a pass.
 
 ## Screenshot fixtures: trainer ids `t1`..`t7` are NOT uuids, so no scoped list can be captured
 `/horses?trainerId=` and `/posts?trainerId=` both ignore a `trainerId` that fails
-`/^[0-9a-f-]{36}$/i` (deliberate — the column is a uuid in Postgres). The TRAINER_SEED ids are `t1`…,
+`isUuid` from `lib/uuid.ts` (deliberate — the column is a uuid in Postgres). The TRAINER_SEED ids are `t1`…,
 so a spec using them silently renders the UNSCOPED list and the scope bar never appears. ENG-963 added
 ONE uuid-id fixture (`9f1c7a2e-…`, Gai Waterhouse) for exactly this. Reuse it rather than adding
 another. Give it no `marketing_visible` — `trainers.spec.ts` asserts the On-site badge count is 2.
@@ -1289,3 +1289,31 @@ or unreadable — from the rows AND from `count:"exact"`. If the screen's chip c
 SEPARATE embed-free query (posts does exactly this), the table's "Showing N of M" can then disagree
 with the chips. Safe here only because `post.horse_id` is NOT NULL and admins read all horses; verify
 that before reusing the pattern on a nullable FK.
+
+## `/^[0-9a-f-]{36}$/i` is NOT a uuid check — 36 dashes passes it (ENG-963 review)
+It matches any 36-character run of hex-or-dash, so `"-".repeat(36)` sails through, reaches Postgres,
+and comes back as `invalid input syntax for type uuid: "---…"`. The BFF route then echoes that
+message via `fail("query_failed", error.message)` and the Server Component turns it into a 500 page
+— i.e. the loose regex produced *exactly* the schema-detail leak the comment above it claimed to
+prevent, and broke the same comment's "a bad bookmark shows the library" promise. There is now ONE
+guard, `lib/uuid.ts#isUuid` / `uuidParam` (8-4-4-4-12), used by the posts route and both list
+screens. Do not re-type a uuid regex at a call site; `lib/uuid.test.ts` pins the all-dashes case.
+
+## A sort test that seeds rows in the order it asserts proves NOTHING (ENG-963 review)
+`lib/testing/supabase-fake.ts` does not implement PostgREST `order=` — it returns rows in the order
+they were seeded. So a wiring test that seeds `[t1, t2]` and asserts `["t1","t2"]` passes with the
+entire sort deleted. Two ENG-963 tests shipped this way (Trainers) and one screen shipped with none
+at all (Horses). Do this: seed in an order that matches NO asserted order, assert BOTH directions,
+and keep an explicit GUARD case pinning "unsorted === seed order" so the argument stays visible. And
+mutation-check it — delete the sort, watch it go red — before claiming a sort is covered. The same
+trap voids the e2e specs: `e2e/mock-supabase.mjs` ignores `order=` too, so an e2e assertion like
+`names[0].localeCompare(names[1]) <= 0` cannot tell sorted from unsorted output.
+
+## A too-narrow `.select()` blanks a column with a GREEN suite (ENG-963 × ENG-979 rebase)
+`tsc` cannot see a projection string, and the row-mapper tests build their own row objects, so they
+never notice a column the query stopped asking for. ENG-963 moved the posts projection into
+`lib/posts/sort.ts#POSTS_PAGE_SELECT` in the same window that ENG-979 (#86) ADDED `label` to it;
+resolving that conflict without re-adding `label` would have renamed every post in the library to
+"Untitled post" with 1100+ tests passing. Any select string a screen depends on gets its columns
+asserted BY NAME next to the string itself — see the `POSTS_PAGE_SELECT` block in
+`lib/posts/sort.test.ts`, which also asserts the *consequence* through `mapPostRow`.

@@ -162,3 +162,62 @@ describe("GET /api/admin/posts — the select string the sort actually sends", (
     expect(postSelects().some((s) => s.includes("!inner"))).toBe(false);
   });
 });
+
+// ENG-963 rework. `?trainerId=` was shape-checked with `/^[0-9a-f-]{36}$/i`,
+// which is not a uuid check — it accepts any 36-char run of hex-or-dash, so a
+// string of 36 DASHES passed it and reached Postgres. There it 400s with
+// `invalid input syntax for type uuid: "---…"`, and this route hands that
+// message straight back via `fail("query_failed", error.message, 400)` — the
+// exact schema-detail leak the comment above the check says it prevents.
+// It is now `isUuid` (lib/uuid.ts), and these are the tests that would have
+// caught it: none of the sort tests above ever passed a malformed id.
+describe("GET /api/admin/posts — ?trainerId= is validated as a uuid", () => {
+  const MALFORMED = [
+    ["36 dashes — what the old regex let through", "-".repeat(36)],
+    ["36 hex chars with no dashes", "9f1c7a2e4b3d4c8a9e172f5b6c0d8a41abcd"],
+    ["dashes in the wrong places", "9f1c7a2e4-b3d-4c8a-9e17-2f5b6c0d8a4"],
+    ["a PostgREST filter injection attempt", "1,id.gt.0"],
+    ["an e2e seed id", "t1"],
+  ] as const;
+
+  it.each(MALFORMED)("%s is IGNORED, not sent to Postgres", async (_label, bad) => {
+    asAdmin();
+    state.tables.post = { select: { rows: [], count: 0 } };
+    const r = await GET(
+      new Request(`http://t/api/admin/posts?trainerId=${encodeURIComponent(bad)}`),
+    );
+    // 200 with the unscoped library, per the route's own comment: "Ignored
+    // rather than rejected, so a bad bookmark shows the library."
+    expect(r.status).toBe(200);
+    expect(postEqs().some((e) => e.column === "source_trainer_id")).toBe(false);
+  });
+
+  it("a malformed id still returns a well-formed envelope, leaking no Postgres text", async () => {
+    asAdmin();
+    state.tables.post = { select: { rows: [{ id: "p1" }], count: 1 } };
+    const r = await GET(new Request(`http://t/api/admin/posts?trainerId=${"-".repeat(36)}`));
+    const body = await r.json();
+    expect(r.status).toBe(200);
+    expect(JSON.stringify(body)).not.toMatch(/invalid input syntax|uuid|22P02/i);
+  });
+
+  it("a WELL-FORMED id is still applied — the guard did not just disable the filter", async () => {
+    asAdmin();
+    state.tables.post = { select: { rows: [], count: 0 } };
+    const good = "9f1c7a2e-4b3d-4c8a-9e17-2f5b6c0d8a41";
+    await GET(new Request(`http://t/api/admin/posts?trainerId=${good}`));
+    expect(postEqs()).toContainEqual({
+      table: "post",
+      column: "source_trainer_id",
+      value: good,
+    });
+  });
+
+  it("an UPPERCASE uuid is accepted (Postgres is case-insensitive here)", async () => {
+    asAdmin();
+    state.tables.post = { select: { rows: [], count: 0 } };
+    const good = "9F1C7A2E-4B3D-4C8A-9E17-2F5B6C0D8A41";
+    await GET(new Request(`http://t/api/admin/posts?trainerId=${good}`));
+    expect(postEqs().some((e) => e.column === "source_trainer_id")).toBe(true);
+  });
+});

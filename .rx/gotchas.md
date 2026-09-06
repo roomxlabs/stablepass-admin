@@ -501,11 +501,11 @@ share a CHECK, the request that moves EITHER one must reconcile the other.
 the operator — `HorseForm.tsx` renders `error.message` verbatim. Log `error.code` server-side, return
 a generic sentence. Both horses routes now do this.
 
-## `e2e/signin-mfa.spec.ts:29` is PRE-EXISTING red — do not chase it
-"wrong code keeps the admin on /signin/mfa to retry" fails a Playwright strict-mode check:
-`getByRole("alert")` matches both the error div and Next's `__next-route-announcer__`. Confirmed by
-running it on a clean worktree at the base commit. Its serial group also skips 4 downstream tests, so
-`npx playwright test` is NOT a green gate right now. Baseline before blaming your diff.
+## ~~`e2e/signin-mfa.spec.ts:29` is PRE-EXISTING red — do not chase it~~ — FIXED in ENG-1019
+"wrong code keeps the admin on /signin/mfa to retry" failed a Playwright strict-mode check:
+`getByRole("alert")` matched both the error div and Next's `__next-route-announcer__`. The locator is
+now scoped to `.signin-error`. The general rule this is an instance of is under **Recurring** at the
+foot of this file — read that before writing any new `role=alert` assertion.
 
 ## The 07-add-horse mockup cannot express "no selection" — code deliberately deviates (ENG-616)
 `06-stage1-design/mockups/web/admin/screens/07-add-horse.html` renders
@@ -1101,13 +1101,21 @@ That is wrong for this repo: `waitlist_select_admin` (is_admin + AAL2) already g
 this file's own first rule forbids a service-role client in admin routes. Build it with
 `requireAdmin()`'s `sb`. The RLS policy is then a second, independent gate behind the route gate.
 
-## `e2e/photo-crop.spec.ts` test 33/34 is RED on `main` (found 4 Sep 2026, ENG-980)
+## ~~`e2e/photo-crop.spec.ts` test 33/34 is RED on `main`~~ — FIXED in ENG-1019 (diagnosis below was WRONG)
 `horse: the crop step opens and stores a square crop (33, 34)` fails at `waitForPreview` —
 `.preview img` never decodes, `naturalWidth` stays 0 past the 20s poll. **Verified pre-existing**: it
 fails identically on a clean worktree at `origin/main` (6a1f65f) with no ENG-980 changes. The three
 sibling tests in the same file pass, as do the ENG-980 specs, so the crop path itself is fine — it is
 the horse form's preview round-trip through the mock Storage. Do NOT treat it as a regression from a
 photo-crop change; baseline it before you chase it.
+**CORRECTION (ENG-1019):** Storage and the round-trip were never involved. The spec's shared
+`waitForPreview()`/`storedObject()` helpers hardcoded `.preview img`, which is TrainerForm's markup.
+HorseForm renders `.preview-set > figure.preview-banner|.preview-square` and has no `.preview`
+element — `.preview` and `.preview-banner` are different class tokens, so `querySelector` returned
+`null` and the poll read `0` until the budget expired. The upload, the crop and the mock were all
+correct; only the assertion's selector was wrong. The helpers now take the selector per subject and
+assert the element EXISTS first — not faster, but the report now NAMES the selector
+(`locator('.preview img') resolved to 0 elements`) instead of "expected > 0, received 0".
 
 ## The crop's zoom floor is per-source, not a constant (ENG-980)
 `photoCrop.ts` used to export `ZOOM_MIN = 1` where zoom 1 is "largest square INSIDE the source". That
@@ -1444,3 +1452,41 @@ harness is `playwright.config.ts` + `e2e/global-setup.ts` + `e2e/mock-supabase.m
 self-contained (mock GoTrue + PostgREST, seeded fixtures, `next build && next start` on :3002), so it
 needs no `.env.playwright` and no real Supabase creds. Sign in with
 `ops@stablepass.co` / `correcthorse` / TOTP `123456`. Reuse it; don't bootstrap a second one.
+
+## Recurring
+
+### An unscoped `getByRole("alert")` / `[aria-live="assertive"]` can NEVER pass (ENG-964, ENG-1019)
+**Symptom:** `strict mode violation: getByRole('alert') resolved to 2 elements` — yours, plus
+`<div role="alert" aria-live="assertive" id="__next-route-announcer__">`. It has now bitten two
+independent specs — `e2e/eng964-feedback.spec.ts` (the error-toast test) and `e2e/signin-mfa.spec.ts`
+("wrong code keeps the admin on /signin/mfa to retry") — so treat it as a property of this stack, not
+a one-off. Named rather than line-numbered on purpose: the line numbers drifted within one ticket.
+**Cause:** Next 16's App Router announcer (`next/dist/client/components/app-router-announcer.js`) sets
+`announcer.role = 'alert'` and `announcer.ariaLive = 'assertive'` on `#__next-route-announcer__`, and
+mounts it in an OPEN shadow root. Playwright's selector engine pierces open shadow roots, so the
+announcer is always a second match. **This is NOT limited to client-side navigation** — `getAnnouncerNode()`
+runs from an unconditional `useEffect(..., [])`, so the node mounts on EVERY App Router page, a hard
+`page.goto` included; only its TEXT stays empty until the first title change, and the role engine
+matches on role regardless of text. Measured on a hard load of `/signin`: `role=alert count=1`,
+announcer text `""`. No timeout, retry or `waitFor` can fix it — the locator is ambiguous by
+construction.
+**Do this:** never assert on a bare `role=alert` / `aria-live` in an e2e spec. Scope to the app's own
+element — `page.locator(".signin-error")`, a `data-testid`, or a container `.getByRole("alert")`.
+Prefer the class/testid form over `.filter({ hasNotText: ... })`, which merely hides the collision.
+Prove the scoped locator BITES: remove the real element and assert it matches 0 while `role=alert`
+still resolves to the announcer (see `e2e/signin-mfa.spec.ts`), otherwise a locator that silently
+matches the announcer would pass too. This affects e2e only — jsdom unit tests never mount the
+announcer, so a green `npm test` says nothing about it.
+
+### Two forms, two preview markups — never share a hardcoded selector (ENG-1019)
+**Symptom:** a poll that waits the full budget and reports `expected > 0, received 0`.
+**Cause:** a spec helper hardcodes one screen's markup (`.preview img`) and is reused for another
+screen that renders different markup. `querySelector` returns `null` silently; `?? 0` turns the miss
+into a plausible-looking value, so the failure reads like a slow upload rather than a wrong selector.
+**Do this:** pass the selector in per subject, and assert `toHaveCount(1)` BEFORE polling the value.
+That does not fail any faster — the count assertion has its own retry budget — but the failure NAMES
+the selector and its 0 matches, which is the difference between a five-minute diagnosis and a wrong
+one. A `?? 0` / `?.` fallback in a poll predicate converts "not found" into "not ready yet"; that is
+what makes this class of bug look like a timeout. Raising the timeout is never the fix. Mutation-check
+it: point the constant back at the other screen's selector and confirm you get the named-selector
+failure, not a silent pass.

@@ -1567,10 +1567,16 @@ which is what makes "the toast is up and the push has NOT happened yet" a real a
 ### Never claim a mutation test you did not run (ENG-1016, 5–6 Sep 2026)
 
 A PR body asserts *"revert X → N tests fail"*, the reviewer reads the table, believes the guard is
-pinned, and approves. The guard is not pinned. This class landed **five verified times across the
-four repos on 5–6 Sep 2026 alone**. Four of the five were caught by the author's own fresh-eyes pass
-and fixed inside the same PR, so the merged state is clean — but every one of them was *written down
-as run* before it was run. That is the failure being recorded here.
+pinned, and approves. The guard is not pinned. This class landed **eight verified times across the
+four repos on 5–6 Sep 2026 alone** — every one re-checked in-repo while writing this, not taken on
+report. Four of the five originally recorded here were caught by the author's own fresh-eyes pass and
+fixed inside the same PR; all eight are fixed at `feature/launch-v1` today, so the merged state is
+clean — but every one of them was *written down as run* before it was run. That is the failure being
+recorded here.
+
+Count with care: an earlier draft of this entry said *five*, having stopped counting at the instances
+that fit the two shapes it had named. The number was not wrong because someone miscounted — it was
+wrong because the taxonomy below was treated as the boundary of the class.
 
 **1. Never write a mutation-test table from reasoning.** Run `delete → test → restore → test` and
 paste both counts. If you did not run it, do not claim it. admin #78 (ENG-950) claimed *"remove
@@ -1623,13 +1629,53 @@ days apart:
   pins it with literals: `expect(HORSE_PROFILE_COLUMNS).toContain("shares_for_sale")` and
   `expect(trainerEmbed).not.toContain("website_url")`.
 
-**The two mechanisms, named.** Nearly every instance is one of:
+**6. The assertion's subject is source text, not behaviour.** admin #83 (ENG-984), at
+`7a65b97:lib/analytics/reset.test.ts:108`:
+
+```js
+it("still defaults to a dry run and only deletes behind --confirm", () => {
+  // Cheap textual guard on the two properties that make this script safe.
+  expect(cliSource).toMatch(/argv\.includes\("--confirm"\)/);
+  expect(cliSource).toMatch(/Dry run — no rows deleted\./);
+});
+```
+
+`cliSource` is a `readFileSync` of the script (declared at `:82`), so the body greps a file instead
+of running it. **This survived deleting both safety gates of a script that wipes four production
+tables** — the highest-severity instance in the set. The signature worth learning: **a test title
+naming runtime behaviour over a body that greps source.** Fixed at base by a real behavioural gate,
+`reset CLI — GATE B: dry run is the default`, which asserts on the rows actually deleted.
+
+**7. The harness supplies the thing the claim attributes to production code.** admin #85 (ENG-964),
+at `4f2e75f:app/(dash)/posts/PostActions.test.tsx:190`:
+
+```jsx
+// ...and the layout mounts the single region alongside them.
+render(<ToastRegion />);
+```
+
+The comment credits `layout.tsx`; the line directly under it mounts the region **in the harness**.
+Every other toast test mounted it the same way, so nothing pinned the layout's own mount and
+deleting `<ToastRegion />` from `layout.tsx` left the suite green. Fixed at base twice over: the
+comment now states exactly what the harness does and does not prove, and `app/(dash)/layout.test.tsx`
+pins the layout mount for real, mutation-proven.
+
+**The shapes seen so far — an open list, not a checklist.** Do **not** stop looking when an instance
+matches none of these; an incomplete taxonomy asserted as complete is worse than none, because it
+tells you when to stop:
 
 - **a fixture that satisfies the assertion either way** — ENG-963 (pre-sorted seed), ENG-954
-  (assertion routed through a decoder), ENG-993 (containment matcher); and
+  (assertion routed through a decoder), ENG-993 (containment matcher);
 - **a mock that discards the thing being asserted** — ENG-950 (`supabase-fake`'s `in` was a no-op),
-  ENG-958 (the projection pinned against its own imported constant).
+  ENG-958 (the projection pinned against its own imported constant);
+- **an assertion whose subject is source text, not behaviour** — ENG-984 (6 above);
+- **a harness that supplies the thing the claim attributes to production code** — ENG-964 (7 above);
+  and
+- **a wait that resolves on a weaker proxy than the precondition it stands for** — ENG-1024, where
+  `findByTestId("photo-crop-dialog")` proves only that the dialog MOUNTED, never that it is USABLE,
+  so the click that followed took `apply()`'s `if (!loaded) applyAsIs()` path and `cropToBlob` never
+  ran at all.
 
-ENG-993 fixed the second *mechanism* in `supabase-fake` (8 query methods that silently no-opped).
-Nothing prevents either mechanism from being **claimed** without being run — which is what this
-entry exists to prevent.
+ENG-993 fixed the *mechanism* behind the second shape in `supabase-fake` (8 query methods that
+silently no-opped). Nothing prevents any of these from being **claimed** without being run — which
+is what this entry exists to prevent.

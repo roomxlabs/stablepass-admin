@@ -29,7 +29,17 @@ import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
-import { isLabelCheckViolation, isPostLabel, normalisePostLabel, POST_LABEL_PRESETS } from "./labels";
+import {
+  foldLabelName,
+  isBannedLabel,
+  labelDuplicateKey,
+  orderLabels,
+  isLabelCheckViolation,
+  isPostLabel,
+  MAX_LABEL_LENGTH,
+  normalisePostLabel,
+  POST_LABEL_PRESETS,
+} from "./labels";
 
 /**
  * Locate the sibling stablepass-be checkout.
@@ -271,9 +281,29 @@ describe("post label presets — drift guard against stablepass-be", () => {
   // by be's closed CHECK; ENG-978 dropped it, so the database will now accept
   // any inserted `post_label` row. That makes this admin-side echo the only
   // automated check over the presets admin itself ships.
-  it("contains no betting or bookmaker terminology", () => {
-    const banned = /\b(odds|bet|betting|bookmaker|wager|tip|tips|tipping|punt|market)\b/i;
-    for (const preset of POST_LABEL_PRESETS) expect(preset).not.toMatch(banned);
+  // TWO checks on purpose, and the duplication is the point.
+  //
+  // The production pattern screens the presets — but a test that ONLY calls
+  // `isBannedLabel` still passes if someone guts `BANNED_LABEL_PATTERN`, which
+  // makes it useless as a drift guard for exactly the failure it exists to
+  // catch. So an INDEPENDENT literal regex runs alongside it as a tripwire.
+  const INDEPENDENT_BANNED =
+    /\b(gambl|odds|bet|bets|betting|bookmaker|bookie|wager|tip|tips|tipping|punt|market)\b/i;
+
+  it("contains no betting or bookmaker terminology (independent regex)", () => {
+    for (const preset of POST_LABEL_PRESETS) expect(preset).not.toMatch(INDEPENDENT_BANNED);
+  });
+
+  it("and the production check agrees with that independent regex", () => {
+    for (const preset of POST_LABEL_PRESETS) expect(isBannedLabel(preset)).toBe(false);
+  });
+
+  it("the production check has not been gutted — it still blocks the obvious terms", () => {
+    // The tripwire. If `BANNED_LABEL_PATTERN` is ever weakened to something
+    // permissive, this fails even though every preset still passes.
+    for (const term of ["Gambling", "Betting Tips", "Best Odds", "Bookmaker Corner"]) {
+      expect(isBannedLabel(term)).toBe(true);
+    }
   });
 });
 
@@ -287,12 +317,204 @@ describe("isPostLabel / normalisePostLabel", () => {
     expect(isPostLabel(null)).toBe(false);
   });
 
-  it("normalises an explicit clear to null and an off-list value to undefined", () => {
+  it("normalises an explicit clear to null and an unusable value to undefined", () => {
     expect(normalisePostLabel("Trackwork")).toBe("Trackwork");
     expect(normalisePostLabel(null)).toBeNull();
     expect(normalisePostLabel("")).toBeNull();
     expect(normalisePostLabel("Betting Tips")).toBeUndefined();
     expect(normalisePostLabel(42)).toBeUndefined();
+  });
+
+  // -------------------------------------------------------------------------
+  // ENG-979 — the validator stopped being the gate on WHICH labels exist.
+  //
+  // Since ENG-978 the live allowed set is the `post_label` TABLE, which an
+  // admin adds to at runtime. A validator pinned to this compile-time array
+  // would reject the very categories Add-new creates, so it now screens only
+  // for things that are wrong regardless of the table's contents, and lets
+  // `post_label_name_fk` decide the rest.
+  // -------------------------------------------------------------------------
+  describe("ENG-979 · runtime-added labels pass through to the FK", () => {
+    it("accepts a well-formed name that is in no preset array", () => {
+      expect(normalisePostLabel("Owner Update")).toBe("Owner Update");
+    });
+
+    it("accepts the hyphen near-miss — the DATABASE refuses it, not this", () => {
+      // It names no `post_label` row, so the foreign key rejects it with 23503
+      // and both post routes map that to a 400. The validator cannot tell a
+      // typo from a category created five minutes ago.
+      expect(normalisePostLabel("Race Day - Today")).toBe("Race Day - Today");
+    });
+
+    it("trims, because the column's own constraint requires a btrim'd name", () => {
+      // `post_label_name_not_blank` is `name = btrim(name)`, so an untrimmed
+      // value could never match a stored row.
+      expect(normalisePostLabel("  Owner Update  ")).toBe("Owner Update");
+      expect(normalisePostLabel("   ")).toBeNull();
+    });
+
+    it("still refuses a non-string — that is a type error, not a category", () => {
+      expect(normalisePostLabel(42)).toBeUndefined();
+      expect(normalisePostLabel({})).toBeUndefined();
+      expect(normalisePostLabel(true)).toBeUndefined();
+    });
+
+    it("still refuses an over-long name", () => {
+      expect(normalisePostLabel("x".repeat(MAX_LABEL_LENGTH))).toBe("x".repeat(MAX_LABEL_LENGTH));
+      expect(normalisePostLabel("x".repeat(MAX_LABEL_LENGTH + 1))).toBeUndefined();
+    });
+
+    // Guardrail 6 stays a HARD reject on the write path, independently of the
+    // Add-new route: a post write is a second way to put a name on a member's
+    // screen, and be's database no longer refuses one on its own.
+    it.each(["Betting Tips", "Best Odds", "Bookmaker Corner", "Tipping Update", "Punting Notes", "Market Movers"])(
+      "still refuses the gambling-flavoured name %s",
+      (name) => {
+        expect(normalisePostLabel(name)).toBeUndefined();
+        expect(isBannedLabel(name)).toBe(true);
+      },
+    );
+
+    // The bypass table from review. The FIRST version of this check enumerated
+    // singulars only (`bookmaker`, `tip`, `punt`) and was `\\b`-anchored, so every
+    // one of these passed straight through — and `Bookmakers` / `Tipsters` /
+    // `Punters` are what an operator would actually type, not exotic attacks.
+    // These cases exist so a future "tidy-up" of the pattern cannot silently
+    // reopen the hole.
+    it.each([
+      "Bookmakers",
+      "Bookmaking",
+      "Tipster",
+      "Tipsters",
+      "Tipped",
+      "Punters",
+      "Bettor",
+      "Bettors",
+      "Wagerings",
+      "Multibet",
+      "Sportsbet",
+      "Betfair",
+      "Trifecta",
+      "Exotics",
+      "Each-Way Odds",
+      // Second-review leaks: a plain English word the first pattern missed
+      // entirely, the dominant AU wagering brand, and AU exotics/multi
+      // vocabulary an operator would plausibly type.
+      "Gambling",
+      "Gamble",
+      "TAB Update",
+      "Neds",
+      "Unibet",
+      "PointsBet",
+      "Same Race Multi",
+      "Quaddie",
+      "Quadrella",
+      "First Four",
+      "Each Way",
+      "Roughies",
+      "Blackbook",
+      "Staking Plan",
+      // U+00AD SOFT HYPHEN — renders as "Odds"/"betting", split the word for a
+      // \\b match, and was NOT stripped by the first fix.
+      "Od\u00adds",
+      "Ti\u00adps",
+      "b\u00adetting",
+      // Compatibility + zero-width evasions, folded by NFKC / stripping.
+      "\uff42\uff45\uff54\uff54\uff49\uff4e\uff47",
+      "bett\u200bing",
+      "bet\ufeffting",
+    ])("refuses the near-miss %s", (name) => {
+      expect(isBannedLabel(name)).toBe(true);
+      expect(normalisePostLabel(name)).toBeUndefined();
+    });
+
+    it("does not refuse ordinary racing vocabulary", () => {
+      // Word-boundary anchored, so a banned token inside a longer legitimate
+      // word does not trip it.
+      // "Better Days" is the reason the bet/bets/betting stems are enumerated
+      // individually instead of a blanket `bet\\w*`.
+      for (const ok of [
+        "Trackwork",
+        "Barrier Trial Debrief",
+        "Stable Update",
+        "Marketing Notes",
+        "Better Days",
+        "Trainer Comments",
+        // Words that merely CONTAIN a banned stem — the false-positive guard.
+        "Bettina",
+        "Betts Stable",
+        "Bookings",
+        "Bookkeeping",
+        "Oddity",
+        "Supermarket Run",
+      ]) {
+        expect(isBannedLabel(ok)).toBe(false);
+        expect(normalisePostLabel(ok)).toBe(ok);
+      }
+    });
+  });
+});
+
+// ENG-979 — the duplicate fold. One exported copy, used by the Add-new route's
+// pre-check, the name it stores, and the compose client, so they cannot
+// disagree about what "the same category" means.
+describe("foldLabelName / labelDuplicateKey", () => {
+  it("collapses case, surrounding and inner whitespace", () => {
+    expect(labelDuplicateKey("  TRACKWORK ")).toBe("trackwork");
+    expect(labelDuplicateKey("Race  Day")).toBe(labelDuplicateKey("Race Day"));
+    expect(labelDuplicateKey("trackwork")).toBe(labelDuplicateKey("Trackwork"));
+  });
+
+  it("NFKC-normalises, so a fullwidth or decomposed spelling is not a second category", () => {
+    // Fullwidth T. Without NFKC this is a distinct row that looks identical in
+    // the picker.
+    expect(labelDuplicateKey("\uff34rackwork")).toBe("trackwork");
+    // NFD (e + combining acute) vs NFC (é) — the same word to a human.
+    expect(labelDuplicateKey("Cafe\u0301 Notes")).toBe(labelDuplicateKey("Caf\u00e9 Notes"));
+  });
+
+  it("strips invisible characters, so a zero-width twin is not a second category", () => {
+    // Also means the ZWSP is never STORED — an invisible character inside a
+    // string that renders on a member's feed is not something anyone can debug.
+    expect(labelDuplicateKey("Track\u200bwork")).toBe(labelDuplicateKey("Trackwork"));
+    expect(foldLabelName("Track\u200bwork")).toBe("Trackwork");
+    expect(foldLabelName("Race\u00adDay")).toBe("RaceDay");
+  });
+
+  it("keeps genuinely different names apart", () => {
+    expect(labelDuplicateKey("Trackwork")).not.toBe(labelDuplicateKey("Trackwork Extras"));
+  });
+
+  it("foldLabelName preserves the canonical casing it was given", () => {
+    // The fold used for STORING must not lowercase — the stored spelling is
+    // what members see.
+    expect(foldLabelName("  Owner   Update ")).toBe("Owner Update");
+  });
+});
+
+describe("orderLabels", () => {
+  it("puts builtins first in sort_order, then admin-added ones alphabetically", () => {
+    const rows = [
+      { name: "Zebra", is_builtin: false, sort_order: 0 },
+      { name: "Trial", is_builtin: true, sort_order: 5 },
+      { name: "Owner Update", is_builtin: false, sort_order: 0 },
+      { name: "Stable Update", is_builtin: true, sort_order: 1 },
+    ];
+    expect(orderLabels(rows).map((r) => r.name)).toEqual([
+      "Stable Update",
+      "Trial",
+      "Owner Update",
+      "Zebra",
+    ]);
+  });
+
+  it("does not mutate its input", () => {
+    const rows = [
+      { name: "B", is_builtin: false, sort_order: 0 },
+      { name: "A", is_builtin: true, sort_order: 1 },
+    ];
+    orderLabels(rows);
+    expect(rows[0].name).toBe("B");
   });
 });
 

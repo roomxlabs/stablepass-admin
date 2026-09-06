@@ -182,3 +182,21 @@ export async function uploadPhotoToStorage(args: {
     .uploadToSignedUrl(args.path, args.token, args.file);
   if (error) throw new Error(error.message);
 }
+
+/**
+ * ENG-979 — Add-new: create an editorial category and get it back.
+ *
+ * Returns the row whether it was created (201) or already existed (200): the
+ * route is idempotent by folded name, so an operator who retypes a category
+ * they already have ends up selecting the one they have instead of getting an
+ * error. The caller only needs `name` — that string is what `post.label`
+ * stores, and no `post_label` id is ever sent to a member surface.
+ */
+export async function createPostLabel(name: string): Promise<{ name: string }> {
+  const res = await fetch("/api/admin/post-labels", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name }),
+  });
+  return readData<{ name: string }>(res);
+}

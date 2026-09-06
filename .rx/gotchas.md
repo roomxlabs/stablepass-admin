@@ -1155,3 +1155,44 @@ and a best-effort dispatch helper swallows that to 0. The cron has fallbacks
 `title?.trim() || "New post"`, `body?.trim() || title?.trim() || "A new update is available."` —
 or the two publish paths diverge for the same row. More generally: when admin duplicates a fan-out
 the be cron already does, diff the two payload builders, don't just match the ticket's field list.
+
+## A second `drainBody(req)` in `e2e/mock-supabase.mjs` HANGS the request forever (ENG-979)
+**Symptom:** a new write branch in the mock never responds. No error, no 500, no failed request —
+the browser's `fetch` just sits there, the UI stays on its "working" label, and the Playwright test
+fails 15s later on a value that never arrives. Looks exactly like a frontend bug.
+**Cause:** the server handler drains the body ONCE, near the top (`const rawBody = await
+drainBody(req)`), and every branch reads that string. Calling `drainBody(req)` again inside a branch
+attaches fresh `data`/`end` listeners to a stream that has already ended, so the promise never
+settles.
+**Do this:** in any new POST/PATCH branch use `rawBody` (`JSON.parse(rawBody || "{}")` in a
+try/catch), never `await drainBody(req)`. Same rule as the existing `/rest/v1/trainer` POST branch.
+
+## `/rest/v1/post_label` needs its OWN mock branch, and it is order-sensitive (ENG-979)
+The generic reader is read-only, so Add-new (a POST) needs a dedicated branch. Two traps:
+- `url.pathname.startsWith("/rest/v1/post")` **also matches `/rest/v1/post_label`**. The existing
+  posts-library branch is saved only by its extra `url.search.includes("status")` guard. Any new
+  `startsWith("/rest/v1/post")` branch must be narrowed, or it will swallow post_label reads.
+- The fixture array is MUTATED by Add-new and the specs run **serially against one mock server**, so
+  a label created in one test is visible to every test after it. Do not assert a hardcoded full
+  option list in more than one spec — the second one goes red as soon as anything upstream adds a
+  label. Assert `toContain` / a count instead.
+
+## Since ENG-978 the label allow-list is a TABLE, so admin must not validate against the array (ENG-979)
+`lib/posts/labels.ts#POST_LABEL_PRESETS` is a compile-time copy of be's **seeded builtins** and is a
+FLOOR, not the allowed set. Validating a write against it rejects exactly the runtime labels
+Add-new exists to create. Let well-formed names through to Postgres and rely on
+`post_label_name_fk`; `isLabelCheckViolation` already maps its `23503` to a 400.
+**But:** the dropped CHECK was guardrail 6's database-level enforcement, and be deliberately shipped
+no DB denylist (its SQL linter greps the migration text for the very tokens it would have to name),
+leaving only a detective CI grep — see ENG-994. Admin's Add-new route is the only **UI** path that authors a
+`post_label` row, so the guardrail-6 check lives in admin (`isBannedLabel`), on both the Add-new
+route and `normalisePostLabel`.
+**Do not call it a security boundary.** be grants `insert/update/delete on post_label` to any AAL2
+admin and admin ships a browser Supabase client, so devtools bypasses the route entirely; and
+`post_label_name_fk` is `on update cascade`, so renaming an existing row rewrites `post.label` on
+every post using it, bypassing both this check and `post`'s RLS. It prevents an ACCIDENT through the
+product; ENG-994 owns the database-side gap.
+Anchoring on `\b` also needs the input NFKC-normalised with invisible characters
+(**incl. U+00AD SOFT HYPHEN**, the one usually forgotten) stripped first, or `Od<AD>ds` sails
+through. Widen by STEM where safe (`bookmak\w*`) but enumerate `bet`/`bets`/`betting` — a bare
+`bet\w*` eats "Better Days".

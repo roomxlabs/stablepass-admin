@@ -26,6 +26,41 @@ test("posts library — populated", async ({ page }) => {
   await page.screenshot({ path: "e2e/__screenshots__/04-posts-list.png", fullPage: true });
 });
 
+// ENG-979 — the row's NAME. This is the whole of Mel's complaint, and a
+// screenshot alone would not prove it: the shot shows text, not which column it
+// came from. These assert the three states the fixtures seed.
+test("ENG-979: the list shows the label, and 'Untitled post' only when truly unnamed", async ({
+  page,
+}) => {
+  test.setTimeout(60000);
+  await signIn(page);
+  await page.goto("/posts");
+  await expect(page.locator(".adm-table tbody tr").first()).toBeVisible({ timeout: 30000 });
+
+  const table = page.locator(".adm-table tbody");
+
+  // 1. A labelled post is named by its LABEL, not its old title. p1 carries
+  //    label "Trackwork" AND title "Last fast gallop before Saturday".
+  await expect(table.getByText("Trackwork", { exact: true })).toBeVisible();
+  await expect(table.getByText("Last fast gallop before Saturday")).toHaveCount(0);
+
+  // 2. A runtime-added label renders like any other (p2 → "Owner Update"),
+  //    which is what proves the list is not pinned to the preset array.
+  await expect(table.getByText("Owner Update", { exact: true })).toBeVisible();
+
+  // 3. The UN-BACKFILLED case (p4): a typed title, no label. It keeps showing
+  //    its title rather than regressing to "Untitled post". These are Mel's
+  //    live posts; see the PR body — nothing was backfilled.
+  await expect(table.getByText("Routine day — barrier trial complete")).toBeVisible();
+
+  // 4. "Untitled post" survives for exactly one row (p5), which has neither a
+  //    label nor a title. Counting is what stops this passing because the
+  //    string happens to appear somewhere.
+  await expect(table.getByText("Untitled post", { exact: true })).toHaveCount(1);
+
+  await page.screenshot({ path: "e2e/__screenshots__/26-posts-labelled.png", fullPage: true });
+});
+
 test("posts library — empty", async ({ page }) => {
   test.setTimeout(60000);
   await signIn(page);

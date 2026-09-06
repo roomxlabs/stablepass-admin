@@ -271,17 +271,44 @@ describe("ENG-748 · post_media set + media_url mirror", () => {
     expect(state.calls.mutations.some((m) => m.table === "post_media")).toBe(false);
   });
 
-  it("F1 REGRESSION: an off-list label rejects the whole save without rewriting the order", async () => {
-    // The route's own 23514 backstop exists precisely for a preset this build
-    // does not know about — a realistic failure, and one that used to land
-    // after the rows had been rewritten.
+  it("F1 REGRESSION: a rejected label rejects the whole save without rewriting the order", async () => {
+    // A label rejection must land BEFORE the media rows are rewritten — the
+    // regression this test was written for.
+    //
+    // ENG-979 changed WHICH label gets rejected here, not the ordering rule.
+    // "Not A Real Preset" used to 400 at the validator; it no longer does,
+    // because the live allowed set is now `post_label` and only the database
+    // knows it (an unknown name comes back as a 23503 instead — see the test
+    // below). A guardrail-6 name is still refused up front, so it is what
+    // exercises this ordering guarantee now.
     asAdmin();
     const r = await PATCH(
-      patchReq({ media: ["p1/photo-2", "p1/original"], label: "Not A Real Preset" }),
+      patchReq({ media: ["p1/photo-2", "p1/original"], label: "Betting Tips" }),
       ctx("p1"),
     );
     expect(r.status).toBe(400);
     expect(state.calls.mutations.some((m) => m.table === "post_media")).toBe(false);
+  });
+
+  it("ENG-979: an unknown-but-well-formed label reaches the DB and 400s on the FK", async () => {
+    // The other half of the change above. A name that breaks no admin-side rule
+    // is now passed through to Postgres, where `post_label_name_fk` is the
+    // authority on whether the category exists. This is the path that makes a
+    // runtime-added label usable at all, so it must stay reachable.
+    asAdmin();
+    state.tables.post = {
+      mutate: {
+        error: {
+          code: "23503",
+          message:
+            'insert or update on table "post" violates foreign key constraint "post_label_name_fk"',
+        },
+      },
+    };
+    const r = await PATCH(patchReq({ label: "Not A Real Preset" }), ctx("p1"));
+    expect(r.status).toBe(400);
+    const j = await r.json();
+    expect(j.error.code).toBe("validation_failed");
   });
 
   // ENG-748 C3/C4 (mutations that SURVIVED the first review) — the module's doc

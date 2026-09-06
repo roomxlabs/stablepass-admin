@@ -1,4 +1,5 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
+import { compareValues, type SortDir } from "../list-href";
 
 // Server-side data access for the admin Trainers list. Kept out of the page
 // component so it can be unit-tested against the Supabase fake. Uses flat,
@@ -129,7 +130,62 @@ export function toTrainerFormSeed(t: TrainerDetailRow): TrainerFormSeed {
   };
 }
 
-export type TrainerListParams = { status?: string | null; q?: string | null };
+/**
+ * The `?sort=` values the Trainers table accepts (ENG-963), with the direction
+ * a first click produces. `trainer`/`stable`/`status` order in Postgres; the
+ * two DERIVED columns (`horses`, `lastpost`) are merged in JS from flat
+ * per-trainer reads, so they are ordered here after the merge — which is exact,
+ * not an approximation, because this list is unpaginated: `listTrainers`
+ * already holds every row the filter matched, so sorting them in JS orders the
+ * whole set, never one page of it.
+ */
+export const TRAINER_SORT_KEYS = ["trainer", "stable", "horses", "lastpost", "status"] as const;
+export type TrainerSort = (typeof TRAINER_SORT_KEYS)[number];
+
+export const TRAINER_SORT_DEFAULT_DIR: Record<TrainerSort, SortDir> = {
+  trainer: "asc",
+  stable: "asc",
+  horses: "desc",
+  lastpost: "desc",
+  status: "asc",
+};
+
+/** Columns that Postgres can order directly, by DB column name. */
+const TRAINER_DB_ORDER: Partial<Record<TrainerSort, string>> = {
+  trainer: "name",
+  stable: "stable_name",
+  status: "status",
+};
+
+/** The value each sort key compares on, read off the merged row. */
+const TRAINER_SORT_VALUE: Record<TrainerSort, (r: TrainerRow) => string | number | null> = {
+  trainer: (r) => r.displayName,
+  stable: (r) => r.stableName,
+  horses: (r) => r.horseCount,
+  // Compared as an epoch, not as an ISO string: the strings are only
+  // lexicographically ordered while every one of them shares a format and a
+  // zone, which is a property of today's data, not a guarantee.
+  lastpost: (r) => (r.lastPostAt ? new Date(r.lastPostAt).getTime() : null),
+  status: (r) => r.status,
+};
+
+export function sortTrainerRows(rows: TrainerRow[], sort: TrainerSort | "", dir: SortDir): TrainerRow[] {
+  if (!sort) return rows;
+  const value = TRAINER_SORT_VALUE[sort];
+  // Copy before sorting: `listTrainers` hands its caller the array it built, and
+  // an in-place sort of a shared array is a side effect waiting to surprise.
+  // Ties break on display name so the order is total and stable across reloads.
+  return [...rows].sort(
+    (a, b) => compareValues(value(a), value(b), dir) || compareValues(a.displayName, b.displayName, "asc"),
+  );
+}
+
+export type TrainerListParams = {
+  status?: string | null;
+  q?: string | null;
+  sort?: TrainerSort | "";
+  dir?: SortDir;
+};
 
 export type TrainerList = {
   rows: TrainerRow[];
@@ -172,11 +228,18 @@ export async function listTrainers(
 ): Promise<TrainerList> {
   const status = params.status === "active" || params.status === "onboarding" ? params.status : null;
   const text = params.q ? sanitize(params.q) : "";
+  const sort = params.sort ?? "";
+  const dir: SortDir = params.dir ?? (sort ? TRAINER_SORT_DEFAULT_DIR[sort] : "asc");
 
+  // Direct columns are ordered by Postgres; the derived ones fall back to the
+  // name order here and are re-sorted after the merge below. `name` stays the
+  // trailing tiebreaker either way, so equal-valued rows keep a stable order.
+  const dbOrder = sort ? TRAINER_DB_ORDER[sort] : undefined;
   let query = sb
     .from("trainer")
     .select("id,name,display_name,slug,stable_name,location,status,photo_url,marketing_visible")
-    .order("name", { ascending: true });
+    .order(dbOrder ?? "name", { ascending: dbOrder ? dir === "asc" : true });
+  if (dbOrder && dbOrder !== "name") query = query.order("name", { ascending: true });
   if (status) query = query.eq("status", status);
   if (text) {
     const like = `%${text}%`;
@@ -239,7 +302,13 @@ export async function listTrainers(
     onboarding: all.filter((s) => s.status === "onboarding").length,
   };
 
-  return { rows, counts };
+  // `sortTrainerRows` is the authority for the rendered order, for every sort
+  // key — the derived columns (`horses`, `lastpost`) BECAUSE Postgres never saw
+  // them, and the direct ones because the table renders `displayName`
+  // (`display_name ?? name`) while Postgres ordered the raw `name`. Two rows
+  // whose display names and real names disagree would otherwise appear out of
+  // alphabetical order in a list that claims to be sorted by trainer.
+  return { rows: sortTrainerRows(rows, sort, dir), counts };
 }
 
 // The two counts that can refuse a trainer delete: `horse.trainer_id` and
@@ -273,4 +342,17 @@ export async function countTrainerReferences(
 export function trainerHorsesHref(trainerId: string, horseCount: number): string | null {
   if (horseCount <= 0) return null;
   return `/horses?trainerId=${encodeURIComponent(trainerId)}`;
+}
+
+/**
+ * The posts half of the two-way jump (ENG-963): the Trainers list's "Last post"
+ * cell opens that trainer's posts, exactly as the horse count opens their
+ * horses, and each scoped list links across to the other.
+ *
+ * Null for a trainer who has never posted — same reasoning as the horse count:
+ * an empty scoped list is a dead end, so the cell stays plain text.
+ */
+export function trainerPostsHref(trainerId: string, lastPostAt: string | null): string | null {
+  if (!lastPostAt) return null;
+  return `/posts?trainerId=${encodeURIComponent(trainerId)}`;
 }

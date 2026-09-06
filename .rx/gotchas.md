@@ -1234,3 +1234,86 @@ mutation record) and ENG-993's comparator pinning exercise the same recording. R
 ENG-993's full comparator set with ENG-950's rationale for `in` folded into it. **The one resolution
 that must never be taken here is restoring any `() => b` no-op to make the suite green** — that is the
 precise defect this ticket exists to remove, and it would silently un-pin every conditional write.
+## The e2e mock's dashboard branch shadowed the posts library's STATUS-FILTERED read (ENG-963)
+Symptom: `/posts?status=published` rendered Next's error page (`TypeError: Cannot read properties
+of undefined (reading 'label')`) while every spec stayed green. Cause: `e2e/mock-supabase.mjs`'s
+dashboard block matches ANY `/rest/v1/post` read carrying `status=eq.published` and answers with
+`DASH_POSTS` — rows with no `status` column — so `statusMeta(undefined).label` threw in
+`rows.map(mapPostRow)`. It went unnoticed for months because no spec had ever visited a
+status-filtered posts URL, and `page.waitForURL()`/`toHaveURL()` are perfectly happy with an error
+page. Do-this: (1) the dashboard branch now excludes the library read via `!qs.includes("poster_time_s")`
+(a library-only column) — keep a similar discriminator when adding any new `/rest/v1/post` branch;
+(2) after a `waitForURL`, ALWAYS assert something rendered (`.adm-table tbody tr` visible), or a 500
+passes as a pass.
+
+## Screenshot fixtures: trainer ids `t1`..`t7` are NOT uuids, so no scoped list can be captured
+`/horses?trainerId=` and `/posts?trainerId=` both ignore a `trainerId` that fails
+`isUuid` from `lib/uuid.ts` (deliberate — the column is a uuid in Postgres). The TRAINER_SEED ids are `t1`…,
+so a spec using them silently renders the UNSCOPED list and the scope bar never appears. ENG-963 added
+ONE uuid-id fixture (`9f1c7a2e-…`, Gai Waterhouse) for exactly this. Reuse it rather than adding
+another. Give it no `marketing_visible` — `trainers.spec.ts` asserts the On-site badge count is 2.
+
+## `git stash pop` in a worktree silently drops the TRACKED half when screenshots differ
+Re-running the e2e suite rewrites `e2e/__screenshots__/*.png`, so a later `git stash pop` conflicts on
+those binaries, restores only the UNTRACKED (new) files and leaves every tracked edit in the stash —
+while printing something that reads like success. If you stash to measure a baseline, run
+`git checkout -- e2e/__screenshots__` before popping, and verify with a `grep -c` on a symbol you
+added rather than trusting the pop's output.
+
+## A user-controlled param that shapes a QUERY makes a swallowed `error` a real bug
+`app/(dash)/posts/page.tsx` destructured `{ data, count }` for years without harm. The moment
+`?sort=` started deciding the ORDER GRAMMAR, that omission became a silent-empty-library bug: a
+rejected order returns `data: null`, which renders "No posts yet · Showing 0 of 0" — identical to an
+empty library and to an RLS regression. Rule: any Server-Component read whose SHAPE depends on a URL
+param must handle `error` (throw, per `horses/data.ts#unwrap`). Grep for `const { data` without
+`error` in `(dash)` before adding a param to a query.
+
+## `String.replace` is the wrong tool for a REQUIRED rewrite — it no-ops silently
+`postsSelect()` rewrites `horse:horse_id(` → `horse:horse_id!inner(` because PostgREST will not order
+parent rows by an embedded column without an inner join. `replace` with a needle that does not match
+returns the input UNCHANGED, so a reformatted select string would silently degrade the sort to
+"orders nothing" while still emitting a valid query — invisible to every test. Do-this: throw when
+the needle is absent, and assert the helper against the REAL exported select constant, never against
+a literal retyped in the test file (a test that invents its own input proves the helper and nothing
+about the wiring).
+
+## `created_at desc` is a STABLE tiebreaker, not a TOTAL one
+Seeded/imported/bulk-created rows share a timestamp, so `order=created_at.desc` alone still lets a row
+appear on two pages of an offset-paginated query, or on neither. Append the PK
+(`.order("id", {ascending:false})`). Cheap, and it is what makes the "pagination stays correct" claim
+actually true.
+
+## `!inner` on an embed changes the RESULT SET, not just the order
+Adding `!inner` to make an embedded-column sort work also drops any parent row whose embed is missing
+or unreadable — from the rows AND from `count:"exact"`. If the screen's chip counts come from a
+SEPARATE embed-free query (posts does exactly this), the table's "Showing N of M" can then disagree
+with the chips. Safe here only because `post.horse_id` is NOT NULL and admins read all horses; verify
+that before reusing the pattern on a nullable FK.
+
+## `/^[0-9a-f-]{36}$/i` is NOT a uuid check — 36 dashes passes it (ENG-963 review)
+It matches any 36-character run of hex-or-dash, so `"-".repeat(36)` sails through, reaches Postgres,
+and comes back as `invalid input syntax for type uuid: "---…"`. The BFF route then echoes that
+message via `fail("query_failed", error.message)` and the Server Component turns it into a 500 page
+— i.e. the loose regex produced *exactly* the schema-detail leak the comment above it claimed to
+prevent, and broke the same comment's "a bad bookmark shows the library" promise. There is now ONE
+guard, `lib/uuid.ts#isUuid` / `uuidParam` (8-4-4-4-12), used by the posts route and both list
+screens. Do not re-type a uuid regex at a call site; `lib/uuid.test.ts` pins the all-dashes case.
+
+## A sort test that seeds rows in the order it asserts proves NOTHING (ENG-963 review)
+`lib/testing/supabase-fake.ts` does not implement PostgREST `order=` — it returns rows in the order
+they were seeded. So a wiring test that seeds `[t1, t2]` and asserts `["t1","t2"]` passes with the
+entire sort deleted. Two ENG-963 tests shipped this way (Trainers) and one screen shipped with none
+at all (Horses). Do this: seed in an order that matches NO asserted order, assert BOTH directions,
+and keep an explicit GUARD case pinning "unsorted === seed order" so the argument stays visible. And
+mutation-check it — delete the sort, watch it go red — before claiming a sort is covered. The same
+trap voids the e2e specs: `e2e/mock-supabase.mjs` ignores `order=` too, so an e2e assertion like
+`names[0].localeCompare(names[1]) <= 0` cannot tell sorted from unsorted output.
+
+## A too-narrow `.select()` blanks a column with a GREEN suite (ENG-963 × ENG-979 rebase)
+`tsc` cannot see a projection string, and the row-mapper tests build their own row objects, so they
+never notice a column the query stopped asking for. ENG-963 moved the posts projection into
+`lib/posts/sort.ts#POSTS_PAGE_SELECT` in the same window that ENG-979 (#86) ADDED `label` to it;
+resolving that conflict without re-adding `label` would have renamed every post in the library to
+"Untitled post" with 1100+ tests passing. Any select string a screen depends on gets its columns
+asserted BY NAME next to the string itself — see the `POSTS_PAGE_SELECT` block in
+`lib/posts/sort.test.ts`, which also asserts the *consequence* through `mapPostRow`.

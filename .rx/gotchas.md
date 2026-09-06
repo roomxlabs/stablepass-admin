@@ -1490,3 +1490,29 @@ one. A `?? 0` / `?.` fallback in a poll predicate converts "not found" into "not
 what makes this class of bug look like a timeout. Raising the timeout is never the fix. Mutation-check
 it: point the constant back at the other screen's selector and confirm you get the named-selector
 failure, not a silent pass.
+
+### Fixing a serial group's FIRST failure changes the denominator (ENG-1019)
+**Symptom:** you fix 2 reds and the pass count jumps by 6, which looks like you touched more than you
+did — or, worse, a downstream test that has never run in living memory turns out to be red and gets
+mistaken for your regression.
+**Cause:** `test.describe.configure({ mode: "serial" })` reports the tests after a failure as
+**"did not run"**, not as failures. `e2e/signin-mfa.spec.ts` is serial by design (later tests assert on
+the `/__audit` log earlier ones wrote), so its one red masked 4 downstream tests. One of them was
+independently broken and had been invisible for as long as the first test was red.
+**Do this:** read the baseline line in full — `N passed, N failed, N skipped, N did not run` — and
+carry ALL FOUR numbers, not just "passed". Expect `passed_before + failed_fixed + did_not_run =
+passed_after` and state that arithmetic in the PR; if it doesn't reconcile, something was skipped or
+deleted. Budget for the unblocked tests being red too: unblocking is not the same as fixing.
+
+### Measure the baseline on the base you will actually PR against (ENG-1019)
+**Symptom:** review says your test counts are wrong by 10 and the totals don't match the suite.
+**Cause:** the integration branch advanced mid-ticket (two PRs merged, adding two whole spec files),
+so a baseline captured at fork time counted a different suite than the one the reviewer ran. Both
+numbers were right; they described different bases.
+**Do this:** after the pre-PR rebase, re-measure BOTH sides on the new base — restore just the files
+you changed (`git checkout <base> -- <your files>`), run, then restore your work — so before/after
+are the same suite. Always cite the base commit next to the numbers. And note `npx playwright test
+--list` prints the true total, which is the cheapest way to catch a stale denominator.
+**Trap:** that `git checkout <base> -- ...` is the same one the "commit BEFORE mutation testing"
+gotcha above warns about — it silently discards UNCOMMITTED work in those files. Commit your fixes
+first, including any review follow-ups, or you will re-apply them from memory.

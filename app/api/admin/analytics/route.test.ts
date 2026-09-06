@@ -110,3 +110,47 @@ describe("GET /api/admin/analytics", () => {
     expect(j.data.quietHorses).toEqual([]);
   });
 });
+
+// ---------------------------------------------------------------------------
+// ERROR PATH (ENG-984 review, MUST-FIX 1)
+//
+// ENG-984 made this route throwable for the first time: `getAnalytics` now
+// calls `getAdminUserIds`, which throws by design rather than silently
+// returning an empty admin set. Before this diff every read here degraded to
+// `?? 0` / `?? []` and the route could not reject, so it carried no boundary.
+// Without one the rejection escapes `lib/api/envelope.ts` completely — the
+// client gets no `{ok:false, code}` body AND the raw Postgres message rides
+// out with it.
+//
+// This mirrors `posts/[id]/route.test.ts`'s
+// "500s with a generic message when the post read errors (no schema/SQL
+// leakage)" — the same property, on the one route that was missing it.
+// ---------------------------------------------------------------------------
+describe("GET /api/admin/analytics — error path", () => {
+  it("500s in the envelope when the admin-exclusion read fails (no schema/SQL leakage)", async () => {
+    asAdmin();
+    // The admin-ids read is the first thing `getAnalytics` does, and the one
+    // this diff made throwing. Raw Postgres text, exactly as PostgREST returns.
+    state.tables.app_user = {
+      select: {
+        single: { is_admin: true },
+        error: { message: 'relation "app_user" does not exist' },
+      },
+    };
+
+    const r = await GET();
+    expect(r.status).toBe(500);
+
+    const body = await r.json();
+    expect(body.data, "an error response must carry no data payload").toBeUndefined();
+    expect(body.error.code).toBe("query_failed");
+    expect(body.error.message).toBe("Could not load analytics.");
+
+    // The whole serialised response must not carry schema or SQL detail.
+    const raw = JSON.stringify(body);
+    expect(raw).not.toMatch(/relation/i);
+    expect(raw).not.toMatch(/app_user/);
+    expect(raw).not.toMatch(/does not exist/i);
+    expect(raw).not.toMatch(/admin exclusion/i);
+  });
+});

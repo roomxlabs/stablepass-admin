@@ -108,3 +108,50 @@ launch-from-zero behaviour, but worth knowing before you look at the feed.
 > flagged it as an open decision. That was wrong — the trigger handles it. The
 > claim is corrected here rather than deleted, because a destructive runbook
 > that has been wrong once should show its correction.
+
+## Where the safety gates are tested
+
+Both gates are **behaviourally tested**, not asserted as source text. The
+script (`scripts/reset-analytics.mjs`) is a thin effect wrapper; all of its
+logic — argument parsing, ref derivation, and both gates — lives in
+`scripts/reset-analytics.core.mjs`, which `lib/analytics/reset.test.ts`
+imports and drives against a fake client.
+
+What is pinned:
+
+| Gate | Test proves |
+|---|---|
+| Dry run is the default | a run **without** `--confirm` issues **zero** deletes |
+| `--confirm` | deletes **only** the four reset tables, each on its own timestamp column |
+| `--project-ref` missing | refuses, deletes nothing, and **opens no client at all** |
+| `--project-ref` mismatched | refuses, deletes nothing, opens no client |
+| Mismatch message | does not echo the derived ref or the host (type-to-confirm, not copy-paste) |
+| Post-delete re-count | non-zero exit if any row survives |
+
+Deleting either gate turns the suite **red** — verified by mutation
+(`if (!confirm)` → `if (false)` and `if (!projectRef || ...)` → `if (false)`).
+The earlier version of this test only checked that two strings appeared in the
+script's source, which survived both of those mutations.
+
+## Operational limit: 100,000 rows per table per analytics read
+
+Not part of the reset, but the same launch-day concern, so it is recorded here.
+
+`lib/analytics/admin-exclusion.ts` pages every engagement read at
+`PAGE_SIZE` 1,000 with a `MAX_BATCHES` runaway guard of 100 — a hard ceiling of
+**100,000 rows per table per read**.
+
+`impression` is primary-keyed `(user_id, post_id)`, so it grows as
+*members × posts* and will reach this first. On crossing it, `fetchAllRows`
+**throws**, and because every analytics endpoint and the dashboard read through
+it, they all return 500 until the limit is raised.
+
+This is deliberate — a silently truncated aggregate reported as fact is worse
+than an outage — but it is a real ceiling. **Raising it means pushing the
+aggregation into SQL** (a `join app_user au on au.id = <t>.user_id where not
+au.is_admin` inside the `admin_*` RPCs, the shape `admin_trials_by_month`
+already uses), not bumping the constant: 200 batches of serial round-trips
+would time out long before it helped. That is a `stablepass-be` change.
+
+Rough headroom check: at 500 members and 200 posts, `impression` tops out near
+100,000 — so this should be tracked as the member count grows, not filed away.

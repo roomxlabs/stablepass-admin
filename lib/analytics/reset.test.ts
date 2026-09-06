@@ -1,6 +1,4 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
 import { makeFakeClient, blankState, type FakeState } from "@/lib/testing/supabase-fake";
 import { planReset, runReset, RESET_TABLES, TS_COLUMN } from "./reset";
 
@@ -73,41 +71,232 @@ describe("runReset", () => {
   });
 });
 
-// The CLI that actually runs on launch day (`scripts/reset-analytics.mjs`)
-// cannot import this module without a TS loader, so it hand-copies the table
-// list and timestamp map. That means the code under test above is NOT the code
-// that deletes production rows. This guard is what stops the two drifting:
-// if someone adds a table to one copy and not the other, this fails.
-describe("scripts/reset-analytics.mjs stays in step with this module", () => {
-  const cliSource = readFileSync(
-    join(process.cwd(), "scripts", "reset-analytics.mjs"),
-    "utf8",
-  );
 
+// ===========================================================================
+// scripts/reset-analytics.core.mjs — THE CODE THAT ACTUALLY DELETES ROWS
+// (ENG-984 review, MUST-FIX 4)
+//
+// The tests above cover `lib/analytics/reset.ts`, which is well covered but is
+// NOT what runs on launch day. The CLI is. Review proved both of the CLI's
+// safety gates could be deleted with a fully green suite:
+//
+//   A. project-ref guard  `if (!projectRef || projectRef !== derivedRef)` → `if (false)`  → green
+//   B. dry-run default    `if (!confirm)`                                → `if (false)`  → green
+//
+// because the only test covering them asserted that two STRINGS APPEARED IN
+// THE SOURCE. A source-text guard on a script that wipes four tables proves
+// nothing about what the script does; it survives any mutation that keeps the
+// text. Those assertions are deleted, not weakened, and replaced with the
+// behaviour: what is deleted, and what is NOT.
+//
+// The gates are now importable (the CLI is a thin effect wrapper), so these
+// drive the real code path with a fake client and an injected client factory.
+// Nothing here touches a network, a project, or a real row.
+// ===========================================================================
+import {
+  runResetCli,
+  parseArgs,
+  deriveProjectRef,
+  RESET_TABLES as CLI_RESET_TABLES,
+  TS_COLUMN as CLI_TS_COLUMN,
+} from "../../scripts/reset-analytics.core.mjs";
+
+const LIVE_URL = "https://abcdefghijklmnop.supabase.co";
+
+/**
+ * Records every table a delete was issued against, and every client made.
+ *
+ * The row counts are STATEFUL — a delete actually empties the fake table — so
+ * the CLI's post-delete verification re-count sees the real effect rather than
+ * a frozen number. `survives` lets one table refuse to empty, which is the
+ * only way to reach the "rows survived the reset" branch.
+ */
+function cliHarness(opts: { survives?: string } = {}) {
+  const deleted: string[] = [];
+  const clientsMade: string[] = [];
+  const out: string[] = [];
+  const err: string[] = [];
+  const rows: Record<string, number> = {
+    impression: 7,
+    reaction: 7,
+    bookmark: 7,
+    trainer_website_click: 7,
+  };
+
+  const table = (name: string) => ({
+    select: () => Promise.resolve({ count: rows[name] ?? 0, error: null }),
+    delete: () => ({
+      gte: (column: string) => {
+        deleted.push(`${name}.${column}`);
+        if (name !== opts.survives) rows[name] = 0;
+        return Promise.resolve({ error: null });
+      },
+    }),
+  });
+
+  return {
+    deleted,
+    clientsMade,
+    out,
+    err,
+    args: {
+      env: { SUPABASE_URL: LIVE_URL, SUPABASE_SERVICE_ROLE_KEY: "service-key" },
+      makeClient: (url: string) => {
+        clientsMade.push(url);
+        return { from: table };
+      },
+      out: (l: string) => out.push(l),
+      err: (l: string) => err.push(l),
+    },
+  };
+}
+
+describe("reset CLI — GATE B: dry run is the default", () => {
+  it("DELETES NOTHING without --confirm, even with a correct --project-ref", async () => {
+    const h = cliHarness();
+    const code = await runResetCli({
+      argv: ["--project-ref=abcdefghijklmnop"],
+      ...h.args,
+    });
+
+    // The gate that matters: zero mutations.
+    expect(h.deleted, "a dry run issued a DELETE").toEqual([]);
+    expect(code).toBe(0);
+    // ...and it says so, so the operator is never left guessing.
+    expect(h.out.join("\n")).toContain("Dry run — no rows deleted.");
+    // It still did the read-only pre-flight, which is the point of a dry run.
+    expect(h.out.join("\n")).toContain("impression");
+  });
+
+  it("with --confirm, deletes ONLY the four reset tables, each on its own timestamp column", async () => {
+    const h = cliHarness();
+    const code = await runResetCli({
+      argv: ["--confirm", "--project-ref=abcdefghijklmnop"],
+      ...h.args,
+    });
+
+    expect(code).toBe(0);
+    expect([...h.deleted].sort()).toEqual(
+      (CLI_RESET_TABLES as string[])
+        .map((t) => `${t}.${(CLI_TS_COLUMN as Record<string, string>)[t]}`)
+        .sort(),
+    );
+    // The tables this reset must never touch — accounts, money, content, and
+    // `follow`, which is member STATE rather than an analytics row.
+    const hit = h.deleted.map((d) => d.split(".")[0]);
+    for (const safe of ["app_user", "subscription", "post", "horse", "trainer", "follow"]) {
+      expect(hit, `reset deleted from ${safe}`).not.toContain(safe);
+    }
+  });
+});
+
+describe("reset CLI — GATE A: the project-ref type-to-confirm guard", () => {
+  it("refuses, deletes nothing and OPENS NO CLIENT when --project-ref is missing", async () => {
+    const h = cliHarness();
+    const code = await runResetCli({ argv: ["--confirm"], ...h.args });
+
+    expect(code).toBe(1);
+    expect(h.deleted).toEqual([]);
+    // A run aimed at an unnamed project must not even connect to it.
+    expect(h.clientsMade, "a refused run still opened a client").toEqual([]);
+    expect(h.err.join("\n")).toContain("Refusing to run");
+  });
+
+  it("refuses, deletes nothing and OPENS NO CLIENT when --project-ref names a different project", async () => {
+    const h = cliHarness();
+    const code = await runResetCli({
+      argv: ["--confirm", "--project-ref=some-other-project"],
+      ...h.args,
+    });
+
+    expect(code).toBe(1);
+    expect(h.deleted).toEqual([]);
+    expect(h.clientsMade).toEqual([]);
+  });
+
+  it("does not echo the derived ref or the host on a mismatch (a type-to-confirm, not a copy-paste prompt)", async () => {
+    const h = cliHarness();
+    await runResetCli({ argv: ["--confirm", "--project-ref=wrong"], ...h.args });
+
+    const text = h.err.join("\n");
+    expect(text).not.toContain("abcdefghijklmnop");
+    expect(text).not.toContain("supabase.co");
+  });
+
+  it("guards the dry run too — a wrong ref never even reaches the pre-flight counts", async () => {
+    const h = cliHarness();
+    const code = await runResetCli({ argv: ["--project-ref=wrong"], ...h.args });
+    expect(code).toBe(1);
+    expect(h.clientsMade).toEqual([]);
+  });
+});
+
+describe("reset CLI — parseArgs / deriveProjectRef", () => {
+  it("treats a bare run as a dry run with no ref", () => {
+    expect(parseArgs([])).toEqual({ confirm: false, projectRef: null });
+  });
+
+  it("only honours the exact --confirm flag", () => {
+    expect(parseArgs(["--confirm"]).confirm).toBe(true);
+    // Near-misses must NOT arm the delete.
+    expect(parseArgs(["--confirm=yes"]).confirm).toBe(false);
+    expect(parseArgs(["-c"]).confirm).toBe(false);
+    expect(parseArgs(["confirm"]).confirm).toBe(false);
+  });
+
+  it("reads the project ref out of --project-ref=", () => {
+    expect(parseArgs(["--project-ref=abc123"]).projectRef).toBe("abc123");
+  });
+
+  it("derives the ref from a Supabase host, and 'local' from localhost", () => {
+    expect(deriveProjectRef("https://abcdefghijklmnop.supabase.co")).toBe("abcdefghijklmnop");
+    expect(deriveProjectRef("http://localhost:54321")).toBe("local");
+    expect(deriveProjectRef("http://127.0.0.1:54321")).toBe("local");
+  });
+
+  it("falls back to the whole host for a non-Supabase URL, so it can never accidentally MATCH", () => {
+    // A self-hosted/proxied URL derives to its full host; a ref typed as the
+    // first label alone will not match, which fails CLOSED.
+    expect(deriveProjectRef("https://db.internal.example.com")).toBe("db.internal.example.com");
+  });
+});
+
+// The CLI can't import the TS module (it runs under a bare `node`, no TS
+// loader), so it re-declares the table list. This used to be policed by
+// REGEXING the CLI's source. Now that the CLI's core is importable, the two
+// are compared BY VALUE — which is both stronger and immune to formatting.
+describe("scripts/reset-analytics.core.mjs stays in step with lib/analytics/reset.ts", () => {
   it("declares the same RESET_TABLES, in the same order", () => {
-    const m = /const RESET_TABLES = \[([^\]]*)\]/.exec(cliSource);
-    expect(m, "could not find RESET_TABLES in the CLI").not.toBeNull();
-    const cliTables = m![1]
-      .split(",")
-      .map((s) => s.trim().replace(/^["']|["']$/g, ""))
-      .filter(Boolean);
-    expect(cliTables).toEqual([...RESET_TABLES]);
+    expect(CLI_RESET_TABLES).toEqual([...RESET_TABLES]);
   });
 
   it("declares the same TS_COLUMN mapping", () => {
-    const m = /const TS_COLUMN = \{([^}]*)\}/.exec(cliSource);
-    expect(m, "could not find TS_COLUMN in the CLI").not.toBeNull();
-    const cliMap: Record<string, string> = {};
-    for (const line of m![1].split(",")) {
-      const kv = /^\s*([A-Za-z_]+)\s*:\s*["']([^"']+)["']\s*$/.exec(line);
-      if (kv) cliMap[kv[1]] = kv[2];
-    }
-    expect(cliMap).toEqual(TS_COLUMN);
+    expect(CLI_TS_COLUMN).toEqual(TS_COLUMN);
+  });
+});
+
+describe("reset CLI — post-delete verification", () => {
+  it("exits non-zero and names the survivors when rows outlive the reset", async () => {
+    // `remaining !== 0` is the only thing separating "deleted" from "attempted
+    // to delete". A reset that silently reports success over surviving rows is
+    // worse than one that fails, because launch then starts from dirty data.
+    const h = cliHarness({ survives: "reaction" });
+    const code = await runResetCli({
+      argv: ["--confirm", "--project-ref=abcdefghijklmnop"],
+      ...h.args,
+    });
+
+    expect(code).toBe(1);
+    expect(h.err.join("\n")).toMatch(/row\(s\) survived the reset/);
+    expect(h.out.join("\n")).toContain("** NOT EMPTY **");
   });
 
-  it("still defaults to a dry run and only deletes behind --confirm", () => {
-    // Cheap textual guard on the two properties that make this script safe.
-    expect(cliSource).toMatch(/argv\.includes\("--confirm"\)/);
-    expect(cliSource).toMatch(/Dry run — no rows deleted\./);
+  it("reports before -> after from a RE-COUNT, not from the plan", async () => {
+    const h = cliHarness();
+    await runResetCli({ argv: ["--confirm", "--project-ref=abcdefghijklmnop"], ...h.args });
+    const text = h.out.join("\n");
+    expect(text).toContain("Deleted (before -> after):");
+    expect(text).toMatch(/impression\s+7 -> 0/);
+    expect(text).toContain("All engagement/analytics rows cleared.");
   });
 });

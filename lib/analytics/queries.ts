@@ -245,7 +245,12 @@ export async function getEngagement(sb: SupabaseClient, since: string | null): P
   // member activity. `opens`/`reactions`/`saves`/`websiteClicks` are
   // recomputed member-only from the raw tables below and substituted in.
   // p_limit 100 (not 10) so re-ranking topPosts by member opens can't miss a
-  // post that only looked top because of admin opens.
+  // post that only looked top because of admin opens. 100 is not a free
+  // choice — it is the RPC's own HARD CEILING
+  // (`least(greatest(coalesce(p_limit,10),1),100)` in stablepass-be
+  // 20260719120000_analytics.sql), so asking for more silently returns 100.
+  // If member-side re-ranking ever needs a deeper pool, the ceiling has to be
+  // raised in the BE first; bumping this number alone would do nothing.
   const [trainerRows, horseRows, topPostRows] = await Promise.all([
     callRpc<TrainerEngagementRow>(sb, "admin_trainer_engagement", { p_since: since }),
     callRpc<HorseEngagementRow>(sb, "admin_horse_engagement", { p_since: since }),
@@ -422,8 +427,15 @@ export async function getTrials(sb: SupabaseClient): Promise<Trials> {
 
   // Every signup gets a trial subscription — including operators, who are just
   // app_user rows promoted to is_admin afterwards (ENG-314). The trials list /
-  // CSV is member data, so staff accounts are filtered out here; the by-month
-  // RPC applies the same exclusion BE-side.
+  // CSV is member data, so staff accounts are filtered out here.
+  //
+  // `admin_trials_by_month` is the ONE RPC that applies this exclusion BE-side
+  // (`where not au.is_admin`, added by ENG-314). Read that narrowly: of the
+  // nine `admin_*` RPCs it is the only one that does. Assuming the others
+  // "do the same thing BE-side" is exactly the belief that let operator
+  // activity sit in every other analytics number for months — which is why
+  // ENG-984 moved all of them to member-side aggregation through
+  // lib/analytics/admin-exclusion.ts. This sentence applies to TRIALS ONLY.
   const rows = ((unwrap(subsRes, "trials subscriptions query") ?? []) as SubscriptionRow[]).filter(
     (r) => !one(r.user)?.is_admin,
   );

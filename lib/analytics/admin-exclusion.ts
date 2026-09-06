@@ -86,7 +86,63 @@ export function excludeAdminRows<T extends UserOwnedRow>(rows: T[], adminIds: Se
 // default), so a batch can come back short while rows remain.
 const PAGE_SIZE = 1000;
 // Runaway guard only. Hitting it is an ERROR, not a stopping condition.
+//
+// OPERATIONAL LIMIT: MAX_BATCHES * PAGE_SIZE = 100,000 rows per table per
+// read. `impression` is PK'd `(user_id, post_id)`, so it grows as
+// members x posts and is the table that will reach this first. On crossing it
+// `fetchAllRows` THROWS, and because every analytics endpoint (and the
+// dashboard) reads through here, they all 500 until the limit is raised. That
+// is deliberate — a truncated aggregate reported as fact is a worse failure
+// than an outage — but it is a real ceiling, not a theoretical one, and it is
+// stated in docs/ops/launch-reset.md so it is found before it is hit rather
+// than after. Raising it means pushing the aggregation into SQL (see the
+// FOLLOW-UP note at the top of this file), not bumping the constant.
 const MAX_BATCHES = 100;
+
+/**
+ * The deterministic sort key each engagement table is paged on.
+ *
+ * WHY THIS EXISTS — `.range()` WITHOUT AN `ORDER BY` IS NOT PAGING.
+ * Postgres gives no ordering guarantee between two separate unordered queries.
+ * `synchronize_seqscans` (on by default) can start the second scan at a
+ * different block than the first, and any concurrent insert or delete shifts
+ * the rows under the offset. Batch 2 then repeats rows batch 1 already
+ * returned and omits others entirely. Termination here is on
+ * `all.length >= total`, so the loop still stops at the right COUNT with the
+ * WRONG ROWS — silently double-counting some members and dropping others. That
+ * is precisely the "is the reported number true" surface this module exists to
+ * protect, so the ordering is not optional and not left to the caller.
+ *
+ * The key must be UNIQUE, otherwise ties are still free to reorder between
+ * queries and the same tearing returns on a smaller scale. These are the
+ * tables' primary keys, from stablepass-be `20260704120001_schema.sql` /
+ * `20260719120000_analytics.sql`:
+ *   impression / reaction / bookmark  primary key (user_id, post_id)
+ *   follow / trainer_website_click    primary key (id)
+ *
+ * A table with no entry is a hard ERROR rather than an unordered read: a
+ * future caller adding a sixth engagement table must state its key, and cannot
+ * silently opt back into the torn-paging bug by forgetting to.
+ */
+const PAGE_ORDER_KEY: Record<string, readonly string[]> = {
+  impression: ["user_id", "post_id"],
+  reaction: ["user_id", "post_id"],
+  bookmark: ["user_id", "post_id"],
+  follow: ["id"],
+  trainer_website_click: ["id"],
+};
+
+export function pageOrderKey(table: string): readonly string[] {
+  const key = PAGE_ORDER_KEY[table];
+  if (!key) {
+    throw new Error(
+      `admin exclusion: no paging sort key registered for "${table}" — ` +
+        "add its unique key to PAGE_ORDER_KEY in lib/analytics/admin-exclusion.ts. " +
+        "Paging with .range() and no ORDER BY silently repeats and drops rows.",
+    );
+  }
+  return key;
+}
 
 /**
  * Fetch EVERY matching row, not just the first page.
@@ -113,20 +169,31 @@ async function fetchAllRows<T>(
 ): Promise<T[]> {
   const all: T[] = [];
   let total: number | null = null;
+  // Resolved once, OUTSIDE the loop, so an unregistered table fails before a
+  // single row is read rather than after the first batch.
+  const orderKey = pageOrderKey(table);
+
+  type Pageable = {
+    order: (column: string, options: { ascending: boolean }) => Pageable;
+    range: (from: number, to: number) => PromiseLike<{
+      data: unknown;
+      error: { message: string } | null;
+      count: number | null;
+    }>;
+  };
 
   for (let batch = 0; batch < MAX_BATCHES; batch++) {
     const base = sb.from(table).select(columns, { count: "exact" });
-    const shaped = (shape ? shape(base as never) : base) as unknown as {
-      range: (from: number, to: number) => PromiseLike<{
-        data: unknown;
-        error: { message: string } | null;
-        count: number | null;
-      }>;
-    };
+    const shaped = (shape ? shape(base as never) : base) as unknown as Pageable;
+
+    // ORDER BEFORE RANGE — see PAGE_ORDER_KEY. Applied here rather than in each
+    // caller's `shape` callback so no endpoint can page unordered by omission.
+    let ordered = shaped;
+    for (const column of orderKey) ordered = ordered.order(column, { ascending: true });
 
     // Advance by rows actually RECEIVED, never by the requested batch size.
     const from = all.length;
-    const { data, error, count } = await shaped.range(from, from + PAGE_SIZE - 1);
+    const { data, error, count } = await ordered.range(from, from + PAGE_SIZE - 1);
     if (error) throw new Error(`${table} query: ${error.message}`);
     if (count != null) total = count;
 

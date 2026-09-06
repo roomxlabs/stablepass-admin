@@ -19,6 +19,7 @@ const PRIMARY: NavItem[] = [
 const LIBRARY: NavItem[] = [
   { href: "/horses", label: "Horses", icon: "horseHead" },
   { href: "/trainers", label: "Trainers", icon: "user" },
+  { href: "/subscribers", label: "Subscribers", icon: "user" },
   { href: "/waitlist", label: "Waitlist", icon: "bookmark" },
 ];
 

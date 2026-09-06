@@ -1,15 +1,34 @@
-# `.rx/gotchas.md` is an append-only log — every agent appends its lesson at EOF.
-# Two agents branching from the same base therefore collide there every single
-# time, even though their entries are semantically independent. `merge=union`
-# keeps both sides instead of raising a conflict. (ENG-1012)
+# `.rx/gotchas.md` is written by every agent, appending its lesson at EOF. Two
+# agents branching from the same base therefore collide there every time, on
+# entries that are semantically independent and merely textually adjacent. It
+# blocked 3 of 3 admin PRs at once on 5 Sep 2026 and recurred 7 more times in
+# the next 24 hours; every resolution was identical — keep both blocks, order
+# irrelevant. `merge=union` does exactly that, automatically. (ENG-1012)
 #
-# Deliberately NOT applied to `.rx/guardrails.md` or `.rx/mockups.md`: those hold
-# rules and references that agents EDIT rather than append to. Union is dumb — on
-# an edited line it silently keeps BOTH versions rather than asking a human, which
-# for a guardrail would mean two contradictory rules shipping unnoticed. A conflict
-# in those files is the correct outcome, so they stay unmanaged.
+# SCOPE — deliberately NOT applied to `.rx/guardrails.md` or `.rx/mockups.md`.
+# Those hold rules and references that agents EDIT in place, and union is dumb:
+# on an edited line it keeps BOTH versions rather than conflicting, which for a
+# guardrail would mean two contradictory rules shipping unnoticed. A conflict in
+# those files is the correct outcome, so they stay unmanaged.
 #
-# The same caveat applies here in the rare case two agents edit the SAME existing
-# gotchas entry: both rewrites survive, adjacent. For an append-only log that is
-# visible and harmless; for a rule file it would not be.
+# KNOWN LIMIT — this file is mostly-append, NOT purely append. Measured across
+# the four repos: 39 of 172 commits touching gotchas.md (~23%) contain
+# deletions, because entries get CORRECTED in place once they turn out to be
+# wrong. This repo family has an entry that has been rewritten three times,
+# its own headings reading "CORRECTED" and "RE-CORRECTED". If two CONCURRENT
+# branches correct the SAME entry, union keeps the stale text AND the corrected
+# text, adjacent, with no conflict — leaving a document that asserts both.
+# Requiring concurrency makes that much rarer than 23%, but not rare enough to
+# ignore. Detection is cheap: after a merge that touched this file, grep for
+# adjacent duplicate `##` headings.
+#
+# WHERE THIS APPLIES — git reads .gitattributes from the checked-out worktree,
+# so this takes effect on LOCAL merge and rebase, which is where the integrate
+# loop resolves these. A bare server-side merge does NOT consult it: verified
+# with `git merge-tree` in a bare clone, which still conflicts. So expect GitHub
+# to keep reporting CONFLICTING on this file — that is the expected outcome, not
+# a regression. Resolve by local rebase, which now needs no hand-editing.
+#
+# The durable fix is one file per entry (`.rx/gotchas/NNN-slug.md`), which has
+# neither limitation — ENG-1012 option 1.
 .rx/gotchas.md merge=union

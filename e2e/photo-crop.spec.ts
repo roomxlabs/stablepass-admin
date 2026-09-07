@@ -77,15 +77,49 @@ async function pickWidePhoto(page: Page) {
   });
 }
 
-/** Wait for the stored photo to come back from the mock and actually decode. */
-async function waitForPreview(page: Page) {
+/**
+ * Where the stored photo is rendered back, per subject — the two forms do NOT
+ * share preview markup.
+ *
+ * TrainerForm renders a single `.preview` box. HorseForm renders the dual
+ * preview Justin asked for on 26 Aug (`.preview-set` wrapping a
+ * `.preview-banner` and a `.preview-square` figure) and has no `.preview`
+ * element at all — `.preview` and `.preview-banner` are different class tokens,
+ * so `.preview img` silently matches NOTHING on the horse form. That is what
+ * failed `photo-crop.spec.ts:210`: the helpers below hardcoded the trainer
+ * selector, so the horse poll read `null?.naturalWidth ?? 0` forever and died
+ * on the 20s budget. The photo, the upload and the crop were all fine — the
+ * assertion was looking at the wrong element. Do not "fix" that class of
+ * failure by raising the timeout.
+ */
+const TRAINER_PREVIEW_IMG = ".preview img";
+const HORSE_PREVIEW_IMG = '[data-testid="horse-preview-square"] img';
+
+/**
+ * Wait for the stored photo to come back from the mock and actually decode.
+ *
+ * Asserts the preview element EXISTS first. This does not fail any FASTER — the
+ * count assertion retries for its own 20s — but it fails HONESTLY: the report
+ * reads `locator('.preview img') ... resolved to 0 elements` and names the
+ * selector, instead of the meaningless "expected > 0, received 0" that sent the
+ * original investigation looking at mock Storage. Verified by mutation: point
+ * HORSE_PREVIEW_IMG back at `.preview img` and this is the failure you get.
+ */
+async function waitForPreview(page: Page, previewImg: string) {
+  await expect(page.locator(previewImg)).toHaveCount(1, { timeout: 20000 });
   await expect
     .poll(
       async () =>
-        page.evaluate(() => {
-          const img = document.querySelector<HTMLImageElement>(".preview img");
-          return img?.naturalWidth ?? 0;
-        }),
+        page.evaluate((sel) => {
+          const img = document.querySelector<HTMLImageElement>(sel);
+          // THROW rather than `?? 0`. A missing element must not masquerade as
+          // "decoded 0px so far" — that fallback is exactly what turned this
+          // bug into a 20s timeout and sent the first investigation looking at
+          // mock Storage. The toHaveCount above already makes this unreachable;
+          // it stays so the predicate cannot silently regrow the fallback.
+          if (!img) throw new Error(`no preview image matched ${sel}`);
+          return img.naturalWidth;
+        }, previewImg),
       { timeout: 20000 },
     )
     .toBeGreaterThan(0);
@@ -102,12 +136,16 @@ async function waitForPreview(page: Page) {
  * about the wire. Reading it back through the same signed URL the <img> uses
  * is what closes that gap.
  */
-async function storedObject(page: Page): Promise<{ src: string; contentType: string | null }> {
-  return page.evaluate(async () => {
-    const img = document.querySelector<HTMLImageElement>(".preview img")!;
+async function storedObject(
+  page: Page,
+  previewImg: string,
+): Promise<{ src: string; contentType: string | null }> {
+  return page.evaluate(async (sel) => {
+    const img = document.querySelector<HTMLImageElement>(sel);
+    if (!img) throw new Error(`no preview image matched ${sel}`);
     const res = await fetch(img.src);
     return { src: img.src, contentType: res.headers.get("content-type") };
-  });
+  }, previewImg);
 }
 
 /** Drag the photo left, which moves the crop window right onto the subject. */
@@ -148,15 +186,16 @@ test("trainer: BEFORE — Use as-is stores the raw wide photo (30)", async ({ pa
   await page.getByTestId("photo-crop-use-as-is").click();
 
   await expect(page.getByText("Photo added")).toBeVisible({ timeout: 20000 });
-  await waitForPreview(page);
+  await waitForPreview(page, TRAINER_PREVIEW_IMG);
   // The stored object is the untouched 1600x800 original: this is exactly what
   // every trainer photo looked like before this ticket.
   expect(
     await page.evaluate(
-      () => document.querySelector<HTMLImageElement>(".preview img")!.naturalWidth,
+      (sel) => document.querySelector<HTMLImageElement>(sel)!.naturalWidth,
+      TRAINER_PREVIEW_IMG,
     ),
   ).toBe(1600);
-  const object = await storedObject(page);
+  const object = await storedObject(page, TRAINER_PREVIEW_IMG);
   expect(object.contentType).toBe("image/jpeg");
   expect(object.src).toMatch(/\.jpg\?/);
 
@@ -181,15 +220,15 @@ test("trainer: AFTER — dragging onto the subject stores a square crop (31, 32)
 
   await page.getByTestId("photo-crop-apply").click();
   await expect(page.getByText("Photo added")).toBeVisible({ timeout: 20000 });
-  await waitForPreview(page);
+  await waitForPreview(page, TRAINER_PREVIEW_IMG);
 
   // The stored object is now SQUARE, and capped at the 1200px max edge. Proving
   // this from the decoded image is the assertion that a renamed-but-uncropped
   // upload could not fake.
-  const stored = await page.evaluate(() => {
-    const img = document.querySelector<HTMLImageElement>(".preview img")!;
+  const stored = await page.evaluate((sel) => {
+    const img = document.querySelector<HTMLImageElement>(sel)!;
     return { w: img.naturalWidth, h: img.naturalHeight };
-  });
+  }, TRAINER_PREVIEW_IMG);
   expect(stored.w).toBe(stored.h);
   expect(stored.w).toBe(800);
 
@@ -197,7 +236,7 @@ test("trainer: AFTER — dragging onto the subject stores a square crop (31, 32)
   // object is served as image/jpeg from a .jpg key. ENG-766's marketing copy
   // derives the PUBLIC object's key from this one, so a disagreement here is
   // what would put mislabelled bytes on a public origin.
-  const object = await storedObject(page);
+  const object = await storedObject(page, TRAINER_PREVIEW_IMG);
   expect(object.contentType).toBe("image/jpeg");
   expect(object.src).toMatch(/\.jpg\?/);
 
@@ -224,15 +263,15 @@ test("horse: the crop step opens and stores a square crop (33, 34)", async ({ pa
 
   await page.getByTestId("photo-crop-apply").click();
   await expect(page.getByText("Photo uploaded")).toBeVisible({ timeout: 20000 });
-  await waitForPreview(page);
+  await waitForPreview(page, HORSE_PREVIEW_IMG);
 
-  const stored = await page.evaluate(() => {
-    const img = document.querySelector<HTMLImageElement>(".preview img")!;
+  const stored = await page.evaluate((sel) => {
+    const img = document.querySelector<HTMLImageElement>(sel)!;
     return { w: img.naturalWidth, h: img.naturalHeight };
-  });
+  }, HORSE_PREVIEW_IMG);
   expect(stored.w).toBe(stored.h);
 
-  const object = await storedObject(page);
+  const object = await storedObject(page, HORSE_PREVIEW_IMG);
   expect(object.contentType).toBe("image/jpeg");
   expect(object.src).toMatch(/\.jpg\?/);
 

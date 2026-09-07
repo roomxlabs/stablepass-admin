@@ -2,6 +2,8 @@
 // Kept apart from the components so the mapping + filter model are unit-testable
 // without rendering.
 
+import { buildListHref, type SortDir } from "../list-href";
+import { POST_SORT_DEFAULT_DIR, type PostSort } from "@/lib/posts/sort";
 import type { PostRow, PostStatus, PostView, StatusFilter } from "./types";
 
 // Filter chips, in mockup order. The chip key doubles as the `?status=` value
@@ -74,7 +76,26 @@ export function mapPostRow(row: PostRow): PostView {
   const engaged = row.status === "published" || row.status === "unpublished";
   return {
     id: row.id,
-    title: row.title?.trim() || "Untitled post",
+    // ENG-979 — the LABEL names the row, not the old free-text title.
+    //
+    // Compose now offers ONE field (a picker over `post_label` + Add new), so
+    // `label` is what an operator actually sets on a new post and `title` is a
+    // legacy column with no input behind it. Mel's complaint was that the
+    // library said "Untitled post" for posts she had named, so she could not
+    // tell them apart without opening each one.
+    //
+    // `title` is kept as a DISPLAY-ONLY fallback, deliberately. Posts written
+    // before this ticket carry a typed `title` and a null `label`; reading
+    // label-only would have regressed those rows to "Untitled post" — the very
+    // symptom this ticket exists to remove — and the only alternative was a
+    // backfill, which is a data write the human owner has not approved (the
+    // ticket says to ask first, and Mel has live posts in this state). A read
+    // fallback fixes the symptom, writes nothing, and leaves the backfill
+    // decision open. See the PR body.
+    //
+    // So "Untitled post" now survives only for a post with NO label and NO
+    // title — genuinely unnamed, rather than merely unlabelled.
+    title: row.label?.trim() || row.title?.trim() || "Untitled post",
     excerpt: (row.body ?? "").trim(),
     horseName: horse?.display_name || horse?.racing_name || "Unassigned",
     trainerName: trainer?.name ?? null,
@@ -100,18 +121,45 @@ export function mapPostRow(row: PostRow): PostView {
   };
 }
 
-/** Build a `/posts` URL preserving the active filter + search across nav. */
+/**
+ * Build a `/posts` URL preserving the active filter + search + sort across nav.
+ *
+ * Now a thin wrapper over the shared `buildListHref` (ENG-963) so posts,
+ * horses and trainers drop empty params identically. `sort`/`dir` ride the same
+ * rails as the filters, which is what makes a sorted view refreshable and
+ * shareable.
+ *
+ * `dir` is only emitted alongside a `sort` — `?dir=asc` on its own orders
+ * nothing and would just be noise in a shared link.
+ */
 export function buildPostsHref(p: {
   status?: StatusFilter;
   q?: string;
   horseId?: string;
+  trainerId?: string;
+  sort?: PostSort | "";
+  dir?: SortDir;
   offset?: number;
 }): string {
-  const params = new URLSearchParams();
-  if (p.status && p.status !== "all") params.set("status", p.status);
-  if (p.q) params.set("q", p.q);
-  if (p.horseId) params.set("horseId", p.horseId);
-  if (p.offset && p.offset > 0) params.set("offset", String(p.offset));
-  const s = params.toString();
-  return s ? `/posts?${s}` : "/posts";
+  return buildListHref("/posts", {
+    status: p.status && p.status !== "all" ? p.status : "",
+    q: p.q,
+    horseId: p.horseId,
+    trainerId: p.trainerId,
+    sort: p.sort,
+    dir: p.sort ? p.dir : "",
+    offset: p.offset,
+  });
 }
+
+/**
+ * The columns the Posts table can be sorted by, in render order, with the
+ * direction a first click produces. Kept here (not in the component) so the
+ * header set is unit-testable and stays in step with `lib/posts/sort.ts`.
+ */
+export const POST_SORT_COLUMNS: { column: PostSort; label: string; defaultDir: SortDir }[] = [
+  { column: "horse", label: "Horse / trainer", defaultDir: POST_SORT_DEFAULT_DIR.horse },
+  { column: "status", label: "Status", defaultDir: POST_SORT_DEFAULT_DIR.status },
+  { column: "published", label: "Published", defaultDir: POST_SORT_DEFAULT_DIR.published },
+  { column: "engagement", label: "Engagement", defaultDir: POST_SORT_DEFAULT_DIR.engagement },
+];

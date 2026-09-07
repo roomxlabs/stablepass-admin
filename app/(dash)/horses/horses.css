@@ -292,3 +292,70 @@ textarea.adm-input { min-height: 110px; resize: vertical; font-family: var(--fon
   color: var(--brand-green);
   text-decoration: none;
 }
+
+/* Sort select (ENG-963) — the card grid's equivalent of a sortable column
+   header, sitting in the filter bar beside the mini search. Matches
+   `.search-mini`'s height, radius and border so the bar reads as one row of
+   controls rather than a native select dropped into a designed surface. */
+.sort-select {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 12px;
+  height: 34px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-pill);
+  background: var(--white);
+}
+.sort-select-label {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+}
+.sort-select select {
+  border: none;
+  background: transparent;
+  font-family: inherit;
+  font-size: 12.5px;
+  color: var(--ink);
+  cursor: pointer;
+  padding-right: 2px;
+}
+.sort-select select:focus-visible {
+  outline: 2px solid var(--brand-green);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+/* The no-JS / keyboard submit. Visually collapsed rather than display:none so
+   it stays focusable and reachable by Tab — a keyboard user who changes the
+   select without firing navigation still has a real control to activate. */
+.sort-select-go {
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  border: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  background: transparent;
+  color: inherit;
+}
+.sort-select-go:focus-visible {
+  width: auto;
+  height: auto;
+  clip-path: none;
+  padding: 4px 10px;
+  border: 1px solid var(--brand-green);
+  border-radius: var(--radius-pill);
+  font-size: 12px;
+}
+
+/* Two ways out of a scoped list (ENG-963): across to the same trainer's posts,
+   or back to everything. */
+.adm-scope-bar .scope-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}

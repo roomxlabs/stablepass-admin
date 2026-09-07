@@ -1,4 +1,5 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
+import { compareValues } from "../list-href";
 
 // Server-side read for the Horses DB list screen. A resource LIST screen has no
 // BFF endpoint here — the Server Component reads through the caller's RLS admin
@@ -6,6 +7,22 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 // unit-testable against a scriptable fake.
 
 export type CountEmbed = { count: number }[];
+
+/**
+ * The Horses grid's `?sort=` values (ENG-963). A card grid has no column
+ * headers to click, so this is driven by a `<select>` — but it rides the same
+ * URL rails as the filters, so a sorted view is still shareable.
+ *
+ * "" (absent) keeps the historical default, `created_at desc` (= "newest").
+ */
+export const HORSE_SORT_KEYS = ["name", "newest", "followers", "lastpost"] as const;
+export type HorseSort = (typeof HORSE_SORT_KEYS)[number];
+
+/** Columns Postgres can order directly; `[column, ascending]`. */
+const HORSE_DB_ORDER: Partial<Record<HorseSort, [string, boolean]>> = {
+  name: ["display_name", true],
+  newest: ["created_at", false],
+};
 
 export type HorseRow = {
   id: string;
@@ -57,11 +74,20 @@ export async function fetchHorses(
   sb: SupabaseClient,
   q: string,
   trainerId: string | null = null,
+  sort: HorseSort | "" = "",
 ): Promise<HorseRow[]> {
+  // `name` and `newest` are real columns, so Postgres orders them. `followers`
+  // is a PostgREST embedded COUNT and `lastpost` is not on this table at all —
+  // neither is orderable here, so both keep the default order and are sorted by
+  // the page after the counts are read. That is exact rather than a
+  // one-page approximation because this list is UNPAGINATED (hotfix, 25 Aug
+  // 2026): `fetchHorses` returns every row the operator can read, so ordering
+  // them in JS orders the whole set.
+  const [orderColumn, orderAsc] = HORSE_DB_ORDER[sort || "newest"] ?? ["created_at", false];
   let query = sb
     .from("horse")
     .select(HORSE_LIST_SELECT)
-    .order("created_at", { ascending: false });
+    .order(orderColumn, { ascending: orderAsc });
 
   if (trainerId) query = query.eq("trainer_id", trainerId);
 
@@ -81,6 +107,98 @@ export async function fetchHorses(
   }
 
   return (unwrap(await query, "horse") ?? []) as HorseRow[];
+}
+
+/**
+ * Most-recent post per HORSE, for the grid's "last post" sort (ENG-963).
+ *
+ * One flat read of the whole `post` table, merged in JS — the same shape the
+ * Trainers list already uses for its own last-post column, and for the same
+ * reason: PostgREST cannot return a per-parent MAX through an embed. It is
+ * called ONLY when that sort is active, so the default grid load still makes
+ * exactly the round-trips it made before this ticket.
+ *
+ * `published_at ?? created_at`: a scheduled or draft post has no published_at,
+ * and a horse whose only activity is a draft has still been touched more
+ * recently than one with nothing at all.
+ */
+// PostgREST caps an unbounded read at `max_rows` (1000, per
+// stablepass-be/supabase/config.toml). A single `.select()` past that point
+// returns the FIRST 1000 rows with a 200 and no error, so "Recently posted"
+// would be silently wrong for arbitrary horses — the same class of invisible
+// failure as a swallowed error. So the read is explicitly PAGED, and a page
+// that comes back full is followed by another.
+const LAST_POST_PAGE = 1000;
+
+export async function fetchHorseLastPostMap(sb: SupabaseClient): Promise<Map<string, string>> {
+  const last = new Map<string, string>();
+  for (let offset = 0; ; offset += LAST_POST_PAGE) {
+    const res = await sb
+      .from("post")
+      .select("horse_id,published_at,created_at")
+      // `.order` on the PK makes the pages disjoint: without a total order,
+      // offset paging can return a row twice and miss another entirely.
+      .order("id", { ascending: true })
+      .range(offset, offset + LAST_POST_PAGE - 1);
+    const rows = (unwrap(res, "post") ?? []) as {
+      horse_id: string;
+      published_at: string | null;
+      created_at: string;
+    }[];
+    for (const r of rows) {
+      if (!r.horse_id) continue;
+      const at = r.published_at ?? r.created_at;
+      const cur = last.get(r.horse_id);
+      if (!cur || new Date(at) > new Date(cur)) last.set(r.horse_id, at);
+    }
+    // A short page is the last page. (A page that is exactly full and happens
+    // to be the last costs one extra empty read, which is the cheap side of
+    // the trade against silently truncating.)
+    if (rows.length < LAST_POST_PAGE) return last;
+  }
+}
+
+/** An embedded PostgREST `count` aggregate, defaulting to 0 when absent. */
+export function embedCount(e: CountEmbed | null): number {
+  return e?.[0]?.count ?? 0;
+}
+
+/**
+ * The grid's JS sort, for the two keys Postgres cannot order (ENG-963).
+ *
+ * `name` and `newest` are real columns and are already ordered by `fetchHorses`
+ * — for those this returns the input UNCHANGED (same reference), so the default
+ * grid load does no work at all. `followers` is a PostgREST embedded COUNT and
+ * `lastpost` is not on `horse` at all; both can only be ordered here. That is
+ * exact rather than a per-page approximation because the grid is UNPAGINATED
+ * (hotfix, 25 Aug 2026), so `rows` is the whole set.
+ *
+ * Lives here, not inline in page.tsx, so it can be unit-tested: an inline
+ * comparator in a Server Component is only reachable through the e2e mock,
+ * which does not implement `order=` and so cannot tell sorted from unsorted.
+ */
+export function sortHorseRows(
+  rows: HorseRow[],
+  sort: HorseSort | "",
+  lastPostAt: Map<string, string> | null,
+): HorseRow[] {
+  if (sort !== "followers" && sort !== "lastpost") return rows;
+  // Parse each timestamp ONCE, not once per comparison: a comparator runs
+  // O(n log n) times, and `new Date(...)` inside it would re-parse the same
+  // strings on every keystroke-triggered reload.
+  const lastPostEpoch = new Map<string, number>();
+  if (lastPostAt) for (const [id, at] of lastPostAt) lastPostEpoch.set(id, new Date(at).getTime());
+  const sortValue = (h: HorseRow): number | null =>
+    sort === "followers" ? embedCount(h.follows) : lastPostEpoch.get(h.id) ?? null;
+  // Both JS sorts read biggest/most-recent first, and `compareValues` sinks
+  // nulls in either direction — a horse that has never been posted about is
+  // unknown, not "the least recent". Ties break on name so the order is total
+  // and identical across reloads.
+  return [...rows].sort(
+    (a, b) =>
+      compareValues(sortValue(a), sortValue(b), "desc") ||
+      compareValues(a.display_name, b.display_name, "asc"),
+  );
 }
 
 /**

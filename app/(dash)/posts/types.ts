@@ -20,6 +20,11 @@ export type PostRow = {
   type: string;
   status: PostStatus;
   title: string | null;
+  /**
+   * The editorial category, FK to `post_label(name)` (ENG-978). Since ENG-979
+   * this is what names the row in the library — see `mapPostRow`.
+   */
+  label: string | null;
   body: string | null;
   media_url: string | null;
   mux_playback_id: string | null;

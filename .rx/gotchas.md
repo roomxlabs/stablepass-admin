@@ -501,11 +501,11 @@ share a CHECK, the request that moves EITHER one must reconcile the other.
 the operator — `HorseForm.tsx` renders `error.message` verbatim. Log `error.code` server-side, return
 a generic sentence. Both horses routes now do this.
 
-## `e2e/signin-mfa.spec.ts:29` is PRE-EXISTING red — do not chase it
-"wrong code keeps the admin on /signin/mfa to retry" fails a Playwright strict-mode check:
-`getByRole("alert")` matches both the error div and Next's `__next-route-announcer__`. Confirmed by
-running it on a clean worktree at the base commit. Its serial group also skips 4 downstream tests, so
-`npx playwright test` is NOT a green gate right now. Baseline before blaming your diff.
+## ~~`e2e/signin-mfa.spec.ts:29` is PRE-EXISTING red — do not chase it~~ — FIXED in ENG-1019
+"wrong code keeps the admin on /signin/mfa to retry" failed a Playwright strict-mode check:
+`getByRole("alert")` matched both the error div and Next's `__next-route-announcer__`. The locator is
+now scoped to `.signin-error`. The general rule this is an instance of is under **Recurring** at the
+foot of this file — read that before writing any new `role=alert` assertion.
 
 ## The 07-add-horse mockup cannot express "no selection" — code deliberately deviates (ENG-616)
 `06-stage1-design/mockups/web/admin/screens/07-add-horse.html` renders
@@ -713,8 +713,36 @@ commit. Harmless here (same behaviour, 575 px / 0.026% apart) but it breaks prov
 tell it explicitly not to run `npm run e2e` / `npx playwright`. If it already ran, re-shoot from the
 clean tree before committing and say so.
 
+## A cross-repo "contract" test asserts PRESENCE, not equality (ENG-989)
+**Symptom:** `lib/posts/labels.test.ts` went red on EVERY admin PR — "expected 13, got 14" — with
+nothing in the PR touching labels. It stayed red for days because it looks like someone else's bug.
+**Cause:** it pinned admin's preset array byte-equal to a list in **stablepass-be**, which moved
+twice without admin (a 14th preset `Trainer Comments` on 26 Aug, then ENG-978 replacing the closed
+`post_label_preset` CHECK with a `post_label` LOOKUP TABLE + `post_label_name_fk`). A cross-repo
+equality assertion makes the OTHER repo's normal progress your red build.
+**Do this:** for any cross-repo contract guard, assert the other side's set is **PRESENT** (and in
+its relative order), never that it is exhaustive — the far side is a floor that grows. Reserve
+equality for something the far side has pinned immutable. Corollaries learned here:
+- **Point the guard at the CURRENT enforcement.** It was reading `20260819120001_post_label.sql`,
+  which still parses and still says 13 — inert history. A migration file that still exists is not
+  evidence it still describes the schema.
+- **The freshness predicate must key on the NEW thing** (`\`Trainer Comments\``), not on something
+  every old rev also has (`\`Stable Update\``), or the rev-fallback chain "succeeds" on a stale
+  checkout and you debug a phantom drift.
+- **Error codes move with the constraint.** CHECK → FK changed rejection from `23514` to `23503`
+  and the constraint name from `post_label_preset` to `post_label_name_fk`. Match on code AND name,
+  and keep the old pair so a not-yet-migrated local stack still reports correctly.
+- **A count in a string is a landmine.** `LABEL_ERROR_MESSAGE` interpolates `.length`, but two route
+  tests asserted the literal `"13 presets"` — so the sync broke `app/api/**` tests that no ticket
+  surface mentioned. Grep the repo for the bare number before changing any list length.
+- **Losing a DB constraint can silently demote a guardrail.** The dropped CHECK was guardrail 6's
+  (no betting terms) database-level enforcement; the admin-side test over the array is now the ONLY
+  automated control. When a far-side change removes a preventive control, say so where the detective
+  one lives.
+
 ## A cross-repo "contract" test must read git REVS, not the sibling's working tree (ENG-745)
-**Symptom:** `lib/posts/labels.test.ts` — which pins admin's 13 post-label presets against
+**Symptom (ENG-745; the equality it describes was later replaced — see the ENG-989 entry above):**
+`lib/posts/labels.test.ts` — which pins admin's post-label presets against
 stablepass-be's `docs/specs/api-contract.md` + the `post_label_preset` migration — failed with
 "cannot reach the preset source of truth", pointing at a path that was *correct*.
 **Cause:** the sibling repo was checked out on `main`, where the round-6 label work does not exist
@@ -1073,13 +1101,21 @@ That is wrong for this repo: `waitlist_select_admin` (is_admin + AAL2) already g
 this file's own first rule forbids a service-role client in admin routes. Build it with
 `requireAdmin()`'s `sb`. The RLS policy is then a second, independent gate behind the route gate.
 
-## `e2e/photo-crop.spec.ts` test 33/34 is RED on `main` (found 4 Sep 2026, ENG-980)
+## ~~`e2e/photo-crop.spec.ts` test 33/34 is RED on `main`~~ — FIXED in ENG-1019 (diagnosis below was WRONG)
 `horse: the crop step opens and stores a square crop (33, 34)` fails at `waitForPreview` —
 `.preview img` never decodes, `naturalWidth` stays 0 past the 20s poll. **Verified pre-existing**: it
 fails identically on a clean worktree at `origin/main` (6a1f65f) with no ENG-980 changes. The three
 sibling tests in the same file pass, as do the ENG-980 specs, so the crop path itself is fine — it is
 the horse form's preview round-trip through the mock Storage. Do NOT treat it as a regression from a
 photo-crop change; baseline it before you chase it.
+**CORRECTION (ENG-1019):** Storage and the round-trip were never involved. The spec's shared
+`waitForPreview()`/`storedObject()` helpers hardcoded `.preview img`, which is TrainerForm's markup.
+HorseForm renders `.preview-set > figure.preview-banner|.preview-square` and has no `.preview`
+element — `.preview` and `.preview-banner` are different class tokens, so `querySelector` returned
+`null` and the poll read `0` until the budget expired. The upload, the crop and the mock were all
+correct; only the assertion's selector was wrong. The helpers now take the selector per subject and
+assert the element EXISTS first — not faster, but the report now NAMES the selector
+(`locator('.preview img') resolved to 0 elements`) instead of "expected > 0, received 0".
 
 ## The crop's zoom floor is per-source, not a constant (ENG-980)
 `photoCrop.ts` used to export `ZOOM_MIN = 1` where zoom 1 is "largest square INSIDE the source". That
@@ -1096,3 +1132,569 @@ with zero pan slack on both axes, so dragging does nothing — it reads as "the 
 forms now hold a `sessionPick` ({file, crop}) and re-open that. Set it ONLY in the upload's SUCCESS
 branch: adopting at pick time means a cancelled pick (or a failed upload) leaves "Reposition"
 pointing at a file the admin backed out of, which silently swaps the stored photo on the next Apply.
+
+## A status pre-check is not a guard — scope the UPDATE too (ENG-950)
+**Symptom:** `POST /posts/:id/publish` read the row, checked `status`, computed "is this the first
+publish?" from `published_at`, then wrote with `.eq("id", id)` alone. Two concurrent publishes both
+read `published_at: null`, both wrote, and **both fanned out a `new_post` push to every opted-in
+member**. Reachable by an operator double-click *and* by an admin publish racing the be
+`scheduled-post-publisher` cron on a post whose `scheduled_for` has just come due — the cron's own
+write is correctly guarded (`.eq("status","scheduled").lte(...)`), so it is the admin side that
+interleaves.
+**Cause:** read-then-write TOCTOU. The pre-check proves the state was legal a moment ago, not that it
+still is at write time. A `published_at`-null flag computed before the write inherits the same
+staleness.
+**Do this:** re-assert the precondition on the mutation itself —
+`.update(...).eq("id", id).in("status", ["draft","scheduled"]).select(...).maybeSingle()` — and treat
+0 rows as "someone else won" (409, and do NOT fire the side effect). `DELETE` in
+`app/api/admin/posts/[id]/route.ts` already does exactly this and says why in a comment; publish
+simply omitted it. **Audit the other transition routes** (`schedule`, `unpublish`, `republish`) — they
+have the same read-then-`.eq("id", id)`-write shape, and any of them that grows a side effect grows
+this bug. Note a unit test cannot catch it: it only fails once you script the fake's mutate to return
+0 rows, so write that test deliberately.
+
+## Nullable `title`/`body` silently kill an admin push (ENG-950)
+**Symptom:** publishing a caption-less photo post from admin sent no notification, while the be cron
+publishing the identical post did. No error surfaced — the operator saw `200 {notificationsSent: 0}`.
+**Cause:** `post.title`/`post.body` are nullable columns; `push-dispatch` 422s on empty title/body,
+and a best-effort dispatch helper swallows that to 0. The cron has fallbacks
+(`buildNewPostEvent` in `scheduled-post-publisher`); admin passed the raw columns through.
+**Do this:** any new admin caller of `push-dispatch` must reuse the cron's fallbacks verbatim —
+`title?.trim() || "New post"`, `body?.trim() || title?.trim() || "A new update is available."` —
+or the two publish paths diverge for the same row. More generally: when admin duplicates a fan-out
+the be cron already does, diff the two payload builders, don't just match the ticket's field list.
+
+## A second `drainBody(req)` in `e2e/mock-supabase.mjs` HANGS the request forever (ENG-979)
+**Symptom:** a new write branch in the mock never responds. No error, no 500, no failed request —
+the browser's `fetch` just sits there, the UI stays on its "working" label, and the Playwright test
+fails 15s later on a value that never arrives. Looks exactly like a frontend bug.
+**Cause:** the server handler drains the body ONCE, near the top (`const rawBody = await
+drainBody(req)`), and every branch reads that string. Calling `drainBody(req)` again inside a branch
+attaches fresh `data`/`end` listeners to a stream that has already ended, so the promise never
+settles.
+**Do this:** in any new POST/PATCH branch use `rawBody` (`JSON.parse(rawBody || "{}")` in a
+try/catch), never `await drainBody(req)`. Same rule as the existing `/rest/v1/trainer` POST branch.
+
+## `/rest/v1/post_label` needs its OWN mock branch, and it is order-sensitive (ENG-979)
+The generic reader is read-only, so Add-new (a POST) needs a dedicated branch. Two traps:
+- `url.pathname.startsWith("/rest/v1/post")` **also matches `/rest/v1/post_label`**. The existing
+  posts-library branch is saved only by its extra `url.search.includes("status")` guard. Any new
+  `startsWith("/rest/v1/post")` branch must be narrowed, or it will swallow post_label reads.
+- The fixture array is MUTATED by Add-new and the specs run **serially against one mock server**, so
+  a label created in one test is visible to every test after it. Do not assert a hardcoded full
+  option list in more than one spec — the second one goes red as soon as anything upstream adds a
+  label. Assert `toContain` / a count instead.
+
+## Since ENG-978 the label allow-list is a TABLE, so admin must not validate against the array (ENG-979)
+`lib/posts/labels.ts#POST_LABEL_PRESETS` is a compile-time copy of be's **seeded builtins** and is a
+FLOOR, not the allowed set. Validating a write against it rejects exactly the runtime labels
+Add-new exists to create. Let well-formed names through to Postgres and rely on
+`post_label_name_fk`; `isLabelCheckViolation` already maps its `23503` to a 400.
+**But:** the dropped CHECK was guardrail 6's database-level enforcement, and be deliberately shipped
+no DB denylist (its SQL linter greps the migration text for the very tokens it would have to name),
+leaving only a detective CI grep — see ENG-994. Admin's Add-new route is the only **UI** path that authors a
+`post_label` row, so the guardrail-6 check lives in admin (`isBannedLabel`), on both the Add-new
+route and `normalisePostLabel`.
+**Do not call it a security boundary.** be grants `insert/update/delete on post_label` to any AAL2
+admin and admin ships a browser Supabase client, so devtools bypasses the route entirely; and
+`post_label_name_fk` is `on update cascade`, so renaming an existing row rewrites `post.label` on
+every post using it, bypassing both this check and `post`'s RLS. It prevents an ACCIDENT through the
+product; ENG-994 owns the database-side gap.
+Anchoring on `\b` also needs the input NFKC-normalised with invisible characters
+(**incl. U+00AD SOFT HYPHEN**, the one usually forgotten) stripped first, or `Od<AD>ds` sails
+through. Widen by STEM where safe (`bookmak\w*`) but enumerate `bet`/`bets`/`betting` — a bare
+`bet\w*` eats "Better Days".
+
+## `lib/testing/supabase-fake.ts` is the fake for ROUTES — not every module (ENG-993, 5 Sep 2026)
+`lib/mux-playback.ts` does **not** use it: it declares its own narrow `PlaybackDb` interface and
+`mux-playback.test.ts` hand-rolls a matching fake. So "fix the shared fake" did **not** by itself pin
+that module's guard — the shared fake only reaches it via `app/api/admin/posts/[id]/preview/route.ts`,
+which passes the real `sb`. **Before claiming a call site is unprotected by the shared fake, check
+whether the module even takes the Supabase client** — several take a narrow structural interface
+instead, and each of those has its own fake with its own blind spots.
+
+Comparator recording idiom (post-ENG-993): `eq` records `{column, value}` **bare** — four existing
+tests do `toEqual([{column, value}])`, so adding an `op` to `eq` would break them. Every other
+comparator records `{column, value, op}`. `order`/`range` are result-shaping, never filters, and go to
+`calls.modifiers` — putting them in `filters` corrupts "which row did this write target".
+
+Mutation records get their **own** filter array, seeded from a separate `base` (the filters chained
+before ANY mutation) — `filters = [...base]`, **not** `[...filters]`. They used to share one array per
+builder, so two mutations off one `from()` cross-contaminated in BOTH directions. Watch the second
+direction: it is the dangerous one and the obvious `[...filters]` snapshot does **not** fix it. Seeding
+from the running array means a later mutation inherits the earlier one's guards, so an **unfiltered
+`.delete()` — the statement that would wipe the table — records as though it carried a row selector and
+a precondition**, and "we only deleted that one row" passes for a statement that deleted everything.
+Both directions are pinned by tests in `supabase-fake.test.ts`; assert them with `toEqual`, never
+`toContainEqual`, which passes on an array that has picked up extra entries — i.e. on the bug itself.
+
+## Branch drift between `main` and `feature/launch-v1` (ENG-993)
+A ticket written off one branch can describe code that differs on its declared base. ENG-993 said `in`
+was already fixed (true on `main` via ENG-950/PR #78) but it was still a no-op on `feature/launch-v1`
+when this branch was cut. **Read the actual file on the ticket's `Base branch:`, not the ticket's
+description of it.**
+
+ENG-950 has since merged into `feature/launch-v1`, so `in` arrived from two directions and the rebase
+conflicted on it. The two fixes were **convergent, not contradictory** — both record
+`{column, value, op: "in"}`, so ENG-950's publish-race tests
+(`app/api/admin/posts/[id]/publish/route.test.ts`, which assert the `.in("status", [...])` guard on the
+mutation record) and ENG-993's comparator pinning exercise the same recording. Resolved by keeping
+ENG-993's full comparator set with ENG-950's rationale for `in` folded into it. **The one resolution
+that must never be taken here is restoring any `() => b` no-op to make the suite green** — that is the
+precise defect this ticket exists to remove, and it would silently un-pin every conditional write.
+## The e2e mock's dashboard branch shadowed the posts library's STATUS-FILTERED read (ENG-963)
+Symptom: `/posts?status=published` rendered Next's error page (`TypeError: Cannot read properties
+of undefined (reading 'label')`) while every spec stayed green. Cause: `e2e/mock-supabase.mjs`'s
+dashboard block matches ANY `/rest/v1/post` read carrying `status=eq.published` and answers with
+`DASH_POSTS` — rows with no `status` column — so `statusMeta(undefined).label` threw in
+`rows.map(mapPostRow)`. It went unnoticed for months because no spec had ever visited a
+status-filtered posts URL, and `page.waitForURL()`/`toHaveURL()` are perfectly happy with an error
+page. Do-this: (1) the dashboard branch now excludes the library read via `!qs.includes("poster_time_s")`
+(a library-only column) — keep a similar discriminator when adding any new `/rest/v1/post` branch;
+(2) after a `waitForURL`, ALWAYS assert something rendered (`.adm-table tbody tr` visible), or a 500
+passes as a pass.
+
+## Screenshot fixtures: trainer ids `t1`..`t7` are NOT uuids, so no scoped list can be captured
+`/horses?trainerId=` and `/posts?trainerId=` both ignore a `trainerId` that fails
+`isUuid` from `lib/uuid.ts` (deliberate — the column is a uuid in Postgres). The TRAINER_SEED ids are `t1`…,
+so a spec using them silently renders the UNSCOPED list and the scope bar never appears. ENG-963 added
+ONE uuid-id fixture (`9f1c7a2e-…`, Gai Waterhouse) for exactly this. Reuse it rather than adding
+another. Give it no `marketing_visible` — `trainers.spec.ts` asserts the On-site badge count is 2.
+
+## `git stash pop` in a worktree silently drops the TRACKED half when screenshots differ
+Re-running the e2e suite rewrites `e2e/__screenshots__/*.png`, so a later `git stash pop` conflicts on
+those binaries, restores only the UNTRACKED (new) files and leaves every tracked edit in the stash —
+while printing something that reads like success. If you stash to measure a baseline, run
+`git checkout -- e2e/__screenshots__` before popping, and verify with a `grep -c` on a symbol you
+added rather than trusting the pop's output.
+
+## A user-controlled param that shapes a QUERY makes a swallowed `error` a real bug
+`app/(dash)/posts/page.tsx` destructured `{ data, count }` for years without harm. The moment
+`?sort=` started deciding the ORDER GRAMMAR, that omission became a silent-empty-library bug: a
+rejected order returns `data: null`, which renders "No posts yet · Showing 0 of 0" — identical to an
+empty library and to an RLS regression. Rule: any Server-Component read whose SHAPE depends on a URL
+param must handle `error` (throw, per `horses/data.ts#unwrap`). Grep for `const { data` without
+`error` in `(dash)` before adding a param to a query.
+
+## `String.replace` is the wrong tool for a REQUIRED rewrite — it no-ops silently
+`postsSelect()` rewrites `horse:horse_id(` → `horse:horse_id!inner(` because PostgREST will not order
+parent rows by an embedded column without an inner join. `replace` with a needle that does not match
+returns the input UNCHANGED, so a reformatted select string would silently degrade the sort to
+"orders nothing" while still emitting a valid query — invisible to every test. Do-this: throw when
+the needle is absent, and assert the helper against the REAL exported select constant, never against
+a literal retyped in the test file (a test that invents its own input proves the helper and nothing
+about the wiring).
+
+## `created_at desc` is a STABLE tiebreaker, not a TOTAL one
+Seeded/imported/bulk-created rows share a timestamp, so `order=created_at.desc` alone still lets a row
+appear on two pages of an offset-paginated query, or on neither. Append the PK
+(`.order("id", {ascending:false})`). Cheap, and it is what makes the "pagination stays correct" claim
+actually true.
+
+## `!inner` on an embed changes the RESULT SET, not just the order
+Adding `!inner` to make an embedded-column sort work also drops any parent row whose embed is missing
+or unreadable — from the rows AND from `count:"exact"`. If the screen's chip counts come from a
+SEPARATE embed-free query (posts does exactly this), the table's "Showing N of M" can then disagree
+with the chips. Safe here only because `post.horse_id` is NOT NULL and admins read all horses; verify
+that before reusing the pattern on a nullable FK.
+
+## `/^[0-9a-f-]{36}$/i` is NOT a uuid check — 36 dashes passes it (ENG-963 review)
+It matches any 36-character run of hex-or-dash, so `"-".repeat(36)` sails through, reaches Postgres,
+and comes back as `invalid input syntax for type uuid: "---…"`. The BFF route then echoes that
+message via `fail("query_failed", error.message)` and the Server Component turns it into a 500 page
+— i.e. the loose regex produced *exactly* the schema-detail leak the comment above it claimed to
+prevent, and broke the same comment's "a bad bookmark shows the library" promise. There is now ONE
+guard, `lib/uuid.ts#isUuid` / `uuidParam` (8-4-4-4-12), used by the posts route and both list
+screens. Do not re-type a uuid regex at a call site; `lib/uuid.test.ts` pins the all-dashes case.
+
+## A sort test that seeds rows in the order it asserts proves NOTHING (ENG-963 review)
+`lib/testing/supabase-fake.ts` does not implement PostgREST `order=` — it returns rows in the order
+they were seeded. So a wiring test that seeds `[t1, t2]` and asserts `["t1","t2"]` passes with the
+entire sort deleted. Two ENG-963 tests shipped this way (Trainers) and one screen shipped with none
+at all (Horses). Do this: seed in an order that matches NO asserted order, assert BOTH directions,
+and keep an explicit GUARD case pinning "unsorted === seed order" so the argument stays visible. And
+mutation-check it — delete the sort, watch it go red — before claiming a sort is covered. The same
+trap voids the e2e specs: `e2e/mock-supabase.mjs` ignores `order=` too, so an e2e assertion like
+`names[0].localeCompare(names[1]) <= 0` cannot tell sorted from unsorted output.
+
+## A too-narrow `.select()` blanks a column with a GREEN suite (ENG-963 × ENG-979 rebase)
+`tsc` cannot see a projection string, and the row-mapper tests build their own row objects, so they
+never notice a column the query stopped asking for. ENG-963 moved the posts projection into
+`lib/posts/sort.ts#POSTS_PAGE_SELECT` in the same window that ENG-979 (#86) ADDED `label` to it;
+resolving that conflict without re-adding `label` would have renamed every post in the library to
+"Untitled post" with 1100+ tests passing. Any select string a screen depends on gets its columns
+asserted BY NAME next to the string itself — see the `POSTS_PAGE_SELECT` block in
+`lib/posts/sort.test.ts`, which also asserts the *consequence* through `mapPostRow`.
+
+## `loading.tsx` cannot be surfaced by stalling the RSC fetch from the browser (ENG-964)
+**Symptom:** a Playwright proof that intercepted `GET /<route>?_rsc=…` and delayed it never saw
+`loading.tsx` — `location.pathname` stayed on the OLD route for the whole stall and the skeleton
+never mounted.
+**Cause:** Next commits a soft navigation only once the RSC payload arrives. A delayed *response*
+therefore just freezes the current page; the loading boundary is what the SERVER streams first while
+it is still rendering, so the delay has to be on the server side, not the wire. `<Link>` prefetching
+compounds it — a prefetched dynamic route resolves from cache on click and skips the boundary
+entirely.
+**Do this:** to screenshot a skeleton, slow the DATA the server reads, not the page request: run a
+delay proxy in front of `e2e/mock-supabase.mjs` and rebuild with `NEXT_PUBLIC_SUPABASE_URL` pointed
+at it (`NEXT_PUBLIC_*` is inlined at BUILD time — setting it only at `next start` changes nothing).
+~900ms is the sweet spot: enough that a multi-query page (posts) holds its skeleton for seconds,
+little enough that the `(dash)` layout's own `requireAdminPage()` gate still commits the shell —
+at 2.5s the gate itself blocks and you get a blank page instead of the skeleton.
+
+## An always-mounted toast region must NOT carry `role="status"`/`role="alert"` (ENG-964)
+**Symptom:** adding a shared `<ToastRegion>` to TrainerForm broke 9 unrelated TrainerForm tests with
+"Found multiple elements with the role alert", and the slug-collision assertions read `''`.
+**Cause:** a live region only announces mutations that happen while it is ALREADY in the DOM, so the
+regions are mounted permanently, even when empty. Tagging them with a role therefore puts a permanent
+EMPTY alert on every screen that mounts a toast — and being earlier in the DOM it won
+`getByRole("alert")` over the form's real error banner.
+**Do this:** put `aria-live="polite"`/`"assertive"` on the regions and NO role. The roles are only
+implicit `aria-live` values, so nothing is lost from the announcement, and a screen's own
+`role="alert"` banner stays the only alert on the page. Mount the region as the LAST child too, so it
+can never shadow a first-match query.
+
+## `.adm-card { overflow: hidden }` silently kills a sticky `thead` (ENG-964)
+**Symptom:** `thead th { position: sticky; top: … }` on `.adm-table` did nothing — the header just sat
+at the top of the card.
+**Cause:** `.adm-card` is declared separately in SIX per-screen sheets — posts.css, dashboard.css,
+horses.css, trainers.css, analytics.css and waitlist.css (the last two are easy to miss; count before
+you trust a fix). Each clips its corners with `overflow: hidden`, which makes it the table's nearest
+SCROLL container. A
+sticky element resolves against that container, and the card never scrolls, so it never moves.
+**Do this:** `overflow: clip` clips identically WITHOUT creating a scroll container. ENG-964 applied it
+as `.admin-main .adm-card { overflow: clip }` from globals.css — specificity (0,2,0) beats all six
+per-screen `.adm-card` rules (0,1,0), so it wins regardless of stylesheet order and no per-screen sheet
+has to be touched (they were owned by a concurrent ticket).
+
+## ONE toast live region per page, mounted from the layout — never per row (ENG-964)
+**Symptom:** the toast overlap this ticket set out to fix survived the fix. Probing the real posts
+table: `rows= 20  polite= 20  assertive= 20  stacks= 20`.
+**Cause:** `<ToastRegion/>` was rendered inside `PostActions`, which is per table row, and the toast
+queue lived in that component's `useToast()` state. Merging the two regions into one stack therefore
+only helped WITHIN a row; the named repro (unpublish one row, publish another that 409s) spans two
+rows, so it still painted two fixed stacks at the same coordinates on top of each other.
+**Do this:** put the queue in MODULE state (`showToast()` is a plain exported function, not a hook
+result) and mount `<ToastRegion/>` exactly once, in `app/(dash)/layout.tsx`, so it also survives route
+changes. Callers import `showToast` and never own a region. `ToastRegion` additionally elects a single
+owner, so a stray second mount renders `null` rather than a duplicate live region. Assert the count
+against a MULTI-ROW table — a single-component harness cannot see this class of bug.
+
+## Never hide an `aria-live` region, not even with `:empty` (ENG-964)
+**Symptom:** none in any test. jsdom applies no stylesheets, so a render test sees a perfectly healthy
+live region while real assistive tech hears nothing.
+**Cause:** `.adm-toast-region:empty { display: none }`, added to stop an empty region contributing a
+flex `gap`. `:empty` matches until the FIRST toast, and `display: none` takes the node out of the
+accessibility tree — so the region became observable and gained its message in the same commit, which
+is the silent-live-region bug the always-mounted architecture exists to prevent.
+**Do this:** never `display: none` / `visibility: hidden` / `content-visibility: hidden` a live region,
+and never gate one on `:empty`. For the spacing, drop the container `gap` to 0 and put the spacing on
+each toast's own `margin-top`. Guard it by reading the rule TEXT out of globals.css (with comments
+stripped) — that is the only way to test a stylesheet fact from jsdom.
+
+## The `admin_*` analytics RPCs count OPERATOR activity — only trials was ever fixed (ENG-984)
+All nine SECURITY DEFINER analytics RPCs in stablepass-be (`20260719120000_analytics.sql`) aggregate
+`impression`/`reaction`/`bookmark`/`trainer_website_click` with no `is_admin` filter. Only
+`admin_trials_by_month` excludes staff (ENG-314's `20260721120000_trials_exclude_admin.sql`).
+The comment in `lib/analytics/queries.ts` saying "the by-month RPC applies the same exclusion BE-side"
+was true of trials ONLY and read as if it covered everything — that is how opens/engagement/clicks
+/per-post stayed contaminated for months. **Any new analytics number must go through
+`lib/analytics/admin-exclusion.ts` (`memberRows`/`countMemberRows`), not straight to an RPC.** The
+RPCs are still fine for structure/content columns (ids, names, posts/horses counts) — those are not
+user activity. The exclusion is applied in TS, not pushed down as `not.in.(...)`, partly so it stays
+unit-testable and partly because the supabase fake's builder has **no `.not()` method**.
+
+## The e2e mock answered every `app_user` read with `is_admin` and no `id` (ENG-984)
+`e2e/mock-supabase.mjs` had one `app_user` handler returning `{ is_admin: true }` for everything. The
+admin GATE wants exactly that (`?select=is_admin&id=eq.<uid>`, `.single()`), but an ID-based read
+(`?select=id&is_admin=eq.true`) got rows with no `id` — so an exclusion set built from it is a set of
+`undefined` and silently excludes NOTHING, while every test still looks green. The handler is now
+keyed on the `is_admin=eq.true` filter. If you add an app_user read shape, check this handler first.
+
+## Don't build mock fixtures out of an LCG's low bits (ENG-984)
+A `seed = (seed * 1103515245 + 12345) & 0x7fffffff` generator with `% 4` put ~every row on the same
+post: the engagement table screenshotted as 892 / 8 / 0 / 0 across four trainers. LCG low bits cycle.
+Fixtures here are deterministic index arithmetic with an explicit weight table instead — and note that
+a perfectly even spread looks just as fake (219/221/220/219), so weight it.
+
+## The e2e mock swallows EVERY `/rest/v1/subscription` read — add a branch AHEAD of it (ENG-982)
+`e2e/mock-supabase.mjs`'s dashboard block answers `p.startsWith("/rest/v1/subscription")` with
+`sendTable(res, method, [], 412)` — an empty list plus the Members-tile count. That is deliberate for
+the tile, but it shadows any NEW subscription-reading screen: the Subscribers page rendered "No
+subscribers yet" against perfectly good fixtures until its own branch was inserted *above* the
+dashboard block. Discriminate on a column only your read selects (`current_period_end` here; the
+analytics trials branch uses `trial_ends_at` the same way).
+
+Read that column name off **`url.searchParams.get("select")`, which is already percent-decoded**.
+Do NOT reach for `decodeURIComponent(url.search)`: a search string carrying a bare `%` wildcard
+(`email=ilike.%term%`, which the waitlist and trainers searches both send) makes it throw `URIError`
+and kill the mock server outright — every later spec then fails with `ERR_CONNECTION_REFUSED`, which
+reads like a flaky suite rather than a one-line bug. That is the same crash the waitlist branch
+already documents inline; it was re-hit writing ENG-982's branch.
+
+## `subscription` has NO `canceled_at` column — a cancellation date is `updated_at`, and that is lossy
+`docs/specs/database.sql` gives `subscription` only `created_at` / `updated_at` / `current_period_end`
+/ `trial_ends_at`. Any "when did they cancel" feature therefore derives the date from `updated_at` on a
+`canceled` row, which moves on ANY later write to that row. Ship it labelled as an approximation (see
+`app/(dash)/subscribers/data.ts`), and do not let a ticket assume the column exists — a real
+`canceled_at` is a backend change.
+
+## Staff exclusion forces JS-side filtering AND JS-side paging (ENG-315 → ENG-982)
+`is_admin` lives on the EMBEDDED `app_user`, not on `subscription`, so PostgREST cannot filter it in
+the query. That means a subscriber list cannot page in SQL either: `LIMIT/OFFSET` before dropping
+staff rows leaves holes and miscounts. The working shape is fetch-all-batched → drop staff in JS →
+filter → slice. It also makes "the CSV covers every page" fall out for free. Do not "optimise" this
+back into `.range()`-per-page without solving the embed filter first.
+
+## `.rx/fe-harness.md` does not exist, but the harness does (noted 5 Sep 2026)
+The implement skill's pre-flight asks for `.rx/fe-harness.md`; this repo has never had one. The actual
+harness is `playwright.config.ts` + `e2e/global-setup.ts` + `e2e/mock-supabase.mjs` — fully
+self-contained (mock GoTrue + PostgREST, seeded fixtures, `next build && next start` on :3002), so it
+needs no `.env.playwright` and no real Supabase creds. Sign in with
+`ops@stablepass.co` / `correcthorse` / TOTP `123456`. Reuse it; don't bootstrap a second one.
+
+## Recurring
+
+### An unscoped `getByRole("alert")` / `[aria-live="assertive"]` can NEVER pass (ENG-964, ENG-1019)
+**Symptom:** `strict mode violation: getByRole('alert') resolved to 2 elements` — yours, plus
+`<div role="alert" aria-live="assertive" id="__next-route-announcer__">`. It has now bitten two
+independent specs — `e2e/eng964-feedback.spec.ts` (the error-toast test) and `e2e/signin-mfa.spec.ts`
+("wrong code keeps the admin on /signin/mfa to retry") — so treat it as a property of this stack, not
+a one-off. Named rather than line-numbered on purpose: the line numbers drifted within one ticket.
+**Cause:** Next 16's App Router announcer (`next/dist/client/components/app-router-announcer.js`) sets
+`announcer.role = 'alert'` and `announcer.ariaLive = 'assertive'` on `#__next-route-announcer__`, and
+mounts it in an OPEN shadow root. Playwright's selector engine pierces open shadow roots, so the
+announcer is always a second match. **This is NOT limited to client-side navigation** — `getAnnouncerNode()`
+runs from an unconditional `useEffect(..., [])`, so the node mounts on EVERY App Router page, a hard
+`page.goto` included; only its TEXT stays empty until the first title change, and the role engine
+matches on role regardless of text. Measured on a hard load of `/signin`: `role=alert count=1`,
+announcer text `""`. No timeout, retry or `waitFor` can fix it — the locator is ambiguous by
+construction.
+**Do this:** never assert on a bare `role=alert` / `aria-live` in an e2e spec. Scope to the app's own
+element — `page.locator(".signin-error")`, a `data-testid`, or a container `.getByRole("alert")`.
+Prefer the class/testid form over `.filter({ hasNotText: ... })`, which merely hides the collision.
+Prove the scoped locator BITES: remove the real element and assert it matches 0 while `role=alert`
+still resolves to the announcer (see `e2e/signin-mfa.spec.ts`), otherwise a locator that silently
+matches the announcer would pass too. This affects e2e only — jsdom unit tests never mount the
+announcer, so a green `npm test` says nothing about it.
+
+### Two forms, two preview markups — never share a hardcoded selector (ENG-1019)
+**Symptom:** a poll that waits the full budget and reports `expected > 0, received 0`.
+**Cause:** a spec helper hardcodes one screen's markup (`.preview img`) and is reused for another
+screen that renders different markup. `querySelector` returns `null` silently; `?? 0` turns the miss
+into a plausible-looking value, so the failure reads like a slow upload rather than a wrong selector.
+**Do this:** pass the selector in per subject, and assert `toHaveCount(1)` BEFORE polling the value.
+That does not fail any faster — the count assertion has its own retry budget — but the failure NAMES
+the selector and its 0 matches, which is the difference between a five-minute diagnosis and a wrong
+one. A `?? 0` / `?.` fallback in a poll predicate converts "not found" into "not ready yet"; that is
+what makes this class of bug look like a timeout. Raising the timeout is never the fix. Mutation-check
+it: point the constant back at the other screen's selector and confirm you get the named-selector
+failure, not a silent pass.
+
+### Fixing a serial group's FIRST failure changes the denominator (ENG-1019)
+**Symptom:** you fix 2 reds and the pass count jumps by 6, which looks like you touched more than you
+did — or, worse, a downstream test that has never run in living memory turns out to be red and gets
+mistaken for your regression.
+**Cause:** `test.describe.configure({ mode: "serial" })` reports the tests after a failure as
+**"did not run"**, not as failures. `e2e/signin-mfa.spec.ts` is serial by design (later tests assert on
+the `/__audit` log earlier ones wrote), so its one red masked 4 downstream tests. One of them was
+independently broken and had been invisible for as long as the first test was red.
+**Do this:** read the baseline line in full — `N passed, N failed, N skipped, N did not run` — and
+carry ALL FOUR numbers, not just "passed". Expect `passed_before + failed_fixed + did_not_run =
+passed_after` and state that arithmetic in the PR; if it doesn't reconcile, something was skipped or
+deleted. Budget for the unblocked tests being red too: unblocking is not the same as fixing.
+
+### Measure the baseline on the base you will actually PR against (ENG-1019)
+**Symptom:** review says your test counts are wrong by 10 and the totals don't match the suite.
+**Cause:** the integration branch advanced mid-ticket (two PRs merged, adding two whole spec files),
+so a baseline captured at fork time counted a different suite than the one the reviewer ran. Both
+numbers were right; they described different bases.
+**Do this:** after the pre-PR rebase, re-measure BOTH sides on the new base — restore just the files
+you changed (`git checkout <base> -- <your files>`), run, then restore your work — so before/after
+are the same suite. Always cite the base commit next to the numbers. And note `npx playwright test
+--list` prints the true total, which is the cheapest way to catch a stale denominator.
+**Trap:** that `git checkout <base> -- ...` is the same one the "commit BEFORE mutation testing"
+gotcha above warns about — it silently discards UNCOMMITTED work in those files. Commit your fixes
+first, including any review follow-ups, or you will re-apply them from memory.
+## A crop-dialog testid resolving means MOUNTED, not USABLE — the async-decode trap (ENG-1024)
+`PhotoCropField` renders its dialog root (`photo-crop-dialog`) and its action buttons
+(`photo-crop-apply`, `photo-crop-cancel`, `photo-crop-use-as-is`) IMMEDIATELY, but the viewport, the
+zoom slider (`photo-crop-zoom`) and the meta line sit behind `{image ? … : "Preparing photo…"}` — i.e.
+behind the ASYNC `loadImage` decode. So `await screen.findByTestId("photo-crop-dialog")` (or
+`"photo-crop-apply"`) proves only that the dialog MOUNTED, never that it is USABLE.
+
+**Symptom, two flavours, both intermittent and both blamed on "slow CI":**
+- Clicking Apply inside that window hits `apply()`'s `if (!loaded) applyAsIs()` guard, which uploads
+  the ORIGINAL file and closes the dialog. `cropToBlob` is never called, so a `waitFor` on the encode
+  (`h.script.releaseCrop`) burns its whole 1000ms budget and the test reads as a timeout.
+- Reading `photo-crop-zoom` in that window finds nothing, because the slider genuinely is not in the
+  tree yet — reported as "the crop dialog is absent".
+
+**Do this:** wait on the decode-gated element, never on the dialog root, before touching the dialog:
+```ts
+const cropReady = async () => {
+  await screen.findByTestId("photo-crop-dialog");
+  await screen.findByTestId("photo-crop-zoom"); // only exists once loadImage resolved
+};
+```
+This is an explicit await on the real precondition — NOT a raised timeout and NOT a retry. Raising the
+timeout here would have masked the wrong-state bug rather than fixing it.
+
+**How to prove it deterministically** (the flake itself is only ~1-in-10 under CPU load): add
+`await new Promise((r) => setTimeout(r, 20));` to the top of the `loadImage` mock in
+`TrainerForm.test.tsx`. On the unfixed file that fails 12 tests across the crop block; on the fixed
+file all 55 pass under the identical injection. Same trap applies to `HorseForm`'s crop tests.
+
+## A real timer whose interval equals `findByText`'s poll interval has ZERO margin (ENG-1024)
+`form-toast.test.tsx` set the save hold to 50ms and then `await screen.findByText(...)`, whose own
+polling interval is ALSO 50ms, before asserting `expect(push).not.toHaveBeenCalled()`. The deferred
+`router.push` and the assertion were racing by construction — ~1-in-13 full-suite runs went red.
+Do not "fix" this by nudging the hold up; use FAKE timers so the clock cannot move underneath the
+assertion:
+```ts
+vi.useFakeTimers();
+setSaveToastHoldMs(SAVE_TOAST_HOLD_MS);      // the REAL hold, not a shrunken one
+// …submit…
+await act(async () => { await vi.advanceTimersByTimeAsync(0); });  // drain microtasks, clock frozen
+expect(push).not.toHaveBeenCalled();                                // now deterministic
+await act(async () => { await vi.advanceTimersByTimeAsync(SAVE_TOAST_HOLD_MS); });
+expect(push).toHaveBeenCalledWith("/horses");
+```
+`advanceTimersByTimeAsync(0)` flushes the promise chain repeatedly while advancing zero milliseconds,
+which is what makes "the toast is up and the push has NOT happened yet" a real assertion.
+## Recurring — grill-time prevention
+
+### Never claim a mutation test you did not run (ENG-1016, 5–6 Sep 2026)
+
+A PR body asserts *"revert X → N tests fail"*, the reviewer reads the table, believes the guard is
+pinned, and approves. The guard is not pinned. This class landed **eight verified times across the
+four repos on 5–6 Sep 2026 alone** — every one re-checked in-repo while writing this, not taken on
+report. Four of the five originally recorded here were caught by the author's own fresh-eyes pass and
+fixed inside the same PR; all eight are fixed at `feature/launch-v1` today, so the merged state is
+clean — but every one of them was *written down as run* before it was run. That is the failure being
+recorded here.
+
+Count with care: an earlier draft of this entry said *five*, having stopped counting at the instances
+that fit the two shapes it had named. The number was not wrong because someone miscounted — it was
+wrong because the taxonomy below was treated as the boundary of the class.
+
+**1. Never write a mutation-test table from reasoning.** Run `delete → test → restore → test` and
+paste both counts. If you did not run it, do not claim it. admin #78 (ENG-950) claimed *"remove
+`.in("status", ...)` → race test fails (`expected 200 to be 409`)"*. Deleting
+`.in("status", ["draft","scheduled"])` from the route actually left the publish suite **12/12
+green** — `supabase-fake`'s `in` was a no-op. The claim only became true at commit `32117af`, and
+the PR body now says so in exactly those words.
+
+**2. Reviewer's rule: re-checking a corrected claim means re-RUNNING the mutation, not re-reading
+the prose.** The prose was confidently wrong the first time. mobile #112 (ENG-954) is the case: the
+original claim was, in the author's own words, "honest but coarse" — every existing test reached
+`stripUrlQuery` through `redactText`, which percent-decodes **first**, so the `%3F|%23` alternation
+was pinned by nothing and deleting it left **37/37 green**. No amount of re-reading that sentence
+would have surfaced it; running it did. The fix was a `describe` block calling `stripUrlQuery`
+directly.
+
+**3. Apply the mutation, then `git diff` to confirm you changed the line you meant** — before you
+believe a green result. A mutation that silently no-ops is indistinguishable from an un-pinned
+guard, and it lies in *both* directions: it makes a real guard look vacuous as easily as it lets a
+vacuous one look pinned. Prefer a **python exact-match edit** over `perl -0pi -e 's/…/…/'`: an
+escaped-regex payload silently substitutes nothing, and a non-global substitution hits the **first**
+match, which is usually a doc comment rather than the code. That bit the integrate loop twice in one
+day, in opposite directions.
+
+**4. Two fixture smells that make an assertion vacuous.**
+
+- **A seed that already satisfies the assertion in both directions.** admin #84 (ENG-963) seeded
+  `[t1 (2 horses), t2 (1 horse)]` and asserted `horses desc === ["t1","t2"]` — which is just the
+  fetch order, so deleting `sortTrainerRows` outright left the suite green. The fix reorders the
+  seed so that **no** asserted order equals it; the merged test carries a `SEED ORDER IS
+  LOAD-BEARING` comment explaining why. (The suite here is 1321 tests / 75 files — if you are
+  quoting a count, re-measure it rather than copying one from another PR body.)
+- **`toContainEqual`/`toContain` where `toEqual`/`toBe` is meant.** A containment matcher passes on a
+  **superset** — i.e. on the leak itself. admin #79 (ENG-993) pinned a filter-leak test with
+  `expect(second.filters).toContainEqual({ column: "archived_at", value: null, op: "is" })` in
+  commit `c3d075d`: that passes on an array that has picked up extra entries, which is precisely the
+  bug the test was written to catch. Replaced with `expect(first.filters).toEqual([...])` in
+  `af4c5e8`.
+
+**5. Pin with literals, not by re-importing the constant under test.**
+`expect(x).toBe(IMPORTED_CONST)` is vacuous *with respect to that constant's content*: widening the
+constant widens the assertion along with it. The cleanest contrast is two PRs in the same repo,
+days apart:
+
+- **web #90 (ENG-958) — wrong.** `test/horses-route.test.ts` imports `HORSE_PROFILE_COLUMNS` and
+  asserts `expect(horseSelectMock).toHaveBeenCalledWith(HORSE_PROFILE_COLUMNS)` — the same constant
+  the route uses to build its own `.select()`. The advertised `photo_url` strip therefore survives
+  deletion with the suite green **and** `tsc` clean.
+- **web #91 — right.** `test/horse-status-scale.test.tsx` treats the constant as the *subject* and
+  pins it with literals: `expect(HORSE_PROFILE_COLUMNS).toContain("shares_for_sale")` and
+  `expect(trainerEmbed).not.toContain("website_url")`.
+
+**6. The assertion's subject is source text, not behaviour.** admin #83 (ENG-984), at
+`7a65b97:lib/analytics/reset.test.ts:108`:
+
+```js
+it("still defaults to a dry run and only deletes behind --confirm", () => {
+  // Cheap textual guard on the two properties that make this script safe.
+  expect(cliSource).toMatch(/argv\.includes\("--confirm"\)/);
+  expect(cliSource).toMatch(/Dry run — no rows deleted\./);
+});
+```
+
+`cliSource` is a `readFileSync` of the script (declared at `:82`), so the body greps a file instead
+of running it. **This survived deleting both safety gates of a script that wipes four production
+tables** — the highest-severity instance in the set. The signature worth learning: **a test title
+naming runtime behaviour over a body that greps source.** Fixed at base by a real behavioural gate,
+`reset CLI — GATE B: dry run is the default`, which asserts on the rows actually deleted.
+
+**7. The harness supplies the thing the claim attributes to production code.** admin #85 (ENG-964),
+at `4f2e75f:app/(dash)/posts/PostActions.test.tsx:190`:
+
+```jsx
+// ...and the layout mounts the single region alongside them.
+render(<ToastRegion />);
+```
+
+The comment credits `layout.tsx`; the line directly under it mounts the region **in the harness**.
+Every other toast test mounted it the same way, so nothing pinned the layout's own mount and
+deleting `<ToastRegion />` from `layout.tsx` left the suite green. Fixed at base twice over: the
+comment now states exactly what the harness does and does not prove, and `app/(dash)/layout.test.tsx`
+pins the layout mount for real, mutation-proven.
+
+**The shapes seen so far — an open list, not a checklist.** Do **not** stop looking when an instance
+matches none of these; an incomplete taxonomy asserted as complete is worse than none, because it
+tells you when to stop:
+
+- **a fixture that satisfies the assertion either way** — ENG-963 (pre-sorted seed), ENG-954
+  (assertion routed through a decoder), ENG-993 (containment matcher);
+- **a mock that discards the thing being asserted** — ENG-950 (`supabase-fake`'s `in` was a no-op),
+  ENG-958 (the projection pinned against its own imported constant);
+- **an assertion whose subject is source text, not behaviour** — ENG-984 (6 above);
+- **a harness that supplies the thing the claim attributes to production code** — ENG-964 (7 above);
+  and
+- **a wait that resolves on a weaker proxy than the precondition it stands for** — ENG-1024, where
+  `findByTestId("photo-crop-dialog")` proves only that the dialog MOUNTED, never that it is USABLE,
+  so the click that followed took `apply()`'s `if (!loaded) applyAsIs()` path and `cropToBlob` never
+  ran at all.
+
+ENG-993 fixed the *mechanism* behind the second shape in `supabase-fake` (8 query methods that
+silently no-opped). Nothing prevents any of these from being **claimed** without being run — which
+is what this entry exists to prevent.
+
+## PR screenshots live in `e2e/__screenshots__` — put it in the SURFACE of every UI ticket (ENG-1047)
+`gh` cannot upload an image to a PR, and there is no other image host wired up, so every prior UI PR
+here (ENG-252, ENG-980, …) commits its evidence PNGs as `e2e/__screenshots__/<next-number>-<ticket>-*.png`
+and links them `…/blob/<branch>/e2e/__screenshots__/<file>?raw=true`. ENG-1047's surface listed only
+the CSS + its test, so the PNGs were an undeclared (collision-free) widening. grill-me: declare
+`e2e/__screenshots__/<N>-<ticket>-*.png (new)` on any ticket that requires a screenshot on the PR.
+Number from `ls e2e/__screenshots__ | grep -oE '^[0-9]+' | sort -n | tail -1`, and still never
+regenerate the existing baselines (see the `page.screenshot({path})` entry above).
+
+## Screenshotting an upload MID-flight (ENG-1047)
+The committed specs only ever await `upload-done`, so there is no "uploading" state to shoot. Two
+freezes that work under the mock-Supabase harness, from a throwaway spec (not committed — e2e specs are
+usually outside the ticket surface): **video** — `page.addInitScript` patching
+`XMLHttpRequest.prototype.send` to dispatch one `ProgressEvent("progress", {lengthComputable:true,
+loaded:42,total:100})` on `xhr.upload` for URLs containing `mock-upload` and never call the real send;
+**photo** — `page.route("**/storage/v1/**", () => new Promise(() => {}))` so the Storage PUT never
+settles (pct stays 0, tiles stay `uploading…`). Screenshot `page.locator('[class*="progressTrack"]').locator("..")`
+for the zone + footer.

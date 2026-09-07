@@ -95,13 +95,13 @@ const HORSE_FIXTURES = HORSE_SEED.map((h) => ({
 // statuses so the row-action variants render. photo_url is null so the neutral
 // thumb fallback shows (no external asset needed).
 const POST_FIXTURES = [
-  { id: "p1", horse_id: "h1", type: "video", status: "published", title: "Last fast gallop before Saturday", body: "He's spot-on. Track was rolling and he came home strong.", like_count: 142, published_at: "2026-07-11T04:10:00Z", scheduled_for: null, created_at: "2026-07-11T04:00:00Z", horse: { display_name: "Mahogany", racing_name: "MAHOGANY (AUS)", photo_url: null }, trainer: { name: "Chris Waller" } },
-  { id: "p2", horse_id: "h3", type: "photo", status: "published", title: "Track session — three furlongs strong", body: "Morning at Caulfield, going was good.", like_count: 89, published_at: "2026-07-11T00:10:00Z", scheduled_for: null, created_at: "2026-07-11T00:00:00Z", horse: { display_name: "Black Caviar", racing_name: "BLACK CAVIAR (AUS)", photo_url: null }, trainer: { name: "Peter Moody" } },
-  { id: "p3", horse_id: "h4", type: "video", status: "scheduled", title: "Saturday preview — race morning walk", body: "Set to go live race morning, 6:00am.", like_count: 0, published_at: null, scheduled_for: "2026-07-18T20:00:00Z", created_at: "2026-07-10T22:00:00Z", horse: { display_name: "Northern Star", racing_name: null, photo_url: null }, trainer: { name: "Peter Moody" } },
-  { id: "p4", horse_id: "h2", type: "text", status: "published", title: "Routine day — barrier trial complete", body: "Pleased with the way he finished off.", like_count: 56, published_at: "2026-07-10T09:00:00Z", scheduled_for: null, created_at: "2026-07-10T09:00:00Z", horse: { display_name: "Verry Elleegant", racing_name: "VERRY ELLEEGANT (NZ)", photo_url: null }, trainer: { name: "Chris Waller" } },
-  { id: "p5", horse_id: "h6", type: "photo", status: "draft", title: "Quiet day in the box", body: "Draft, waiting on photo from Chris.", like_count: 0, published_at: null, scheduled_for: null, created_at: "2026-07-10T06:00:00Z", horse: { display_name: "Winx", racing_name: "WINX (AUS)", photo_url: null }, trainer: { name: "Chris Waller" } },
-  { id: "p6", horse_id: "h1", type: "video", status: "published", title: "Track gallop — pack work", body: "Group session from Rosehill.", like_count: 118, published_at: "2026-07-09T05:00:00Z", scheduled_for: null, created_at: "2026-07-09T05:00:00Z", horse: { display_name: "Mahogany", racing_name: "MAHOGANY (AUS)", photo_url: null }, trainer: { name: "Chris Waller" } },
-  { id: "p7", horse_id: "h1", type: "photo", status: "unpublished", title: "Stable life — Mahogany on the walker", body: "Cool-down after morning work.", like_count: 34, published_at: "2026-07-08T05:00:00Z", scheduled_for: null, created_at: "2026-07-08T05:00:00Z", horse: { display_name: "Mahogany", racing_name: "MAHOGANY (AUS)", photo_url: null }, trainer: { name: "Chris Waller" } },
+  { id: "p1", horse_id: "h1", type: "video", status: "published", label: "Trackwork", title: "Last fast gallop before Saturday", body: "He's spot-on. Track was rolling and he came home strong.", like_count: 142, published_at: "2026-07-11T04:10:00Z", scheduled_for: null, created_at: "2026-07-11T04:00:00Z", horse: { display_name: "Mahogany", racing_name: "MAHOGANY (AUS)", photo_url: null }, trainer: { name: "Chris Waller" } },
+  { id: "p2", horse_id: "h3", type: "photo", status: "published", label: "Owner Update", title: "Track session — three furlongs strong", body: "Morning at Caulfield, going was good.", like_count: 89, published_at: "2026-07-11T00:10:00Z", scheduled_for: null, created_at: "2026-07-11T00:00:00Z", horse: { display_name: "Black Caviar", racing_name: "BLACK CAVIAR (AUS)", photo_url: null }, trainer: { name: "Peter Moody" } },
+  { id: "p3", horse_id: "h4", type: "video", status: "scheduled", label: "Race Preview", title: "Saturday preview — race morning walk", body: "Set to go live race morning, 6:00am.", like_count: 0, published_at: null, scheduled_for: "2026-07-18T20:00:00Z", created_at: "2026-07-10T22:00:00Z", horse: { display_name: "Northern Star", racing_name: null, photo_url: null }, trainer: { name: "Peter Moody" } },
+  { id: "p4", horse_id: "h2", type: "text", status: "published", label: null, title: "Routine day — barrier trial complete", body: "Pleased with the way he finished off.", like_count: 56, published_at: "2026-07-10T09:00:00Z", scheduled_for: null, created_at: "2026-07-10T09:00:00Z", horse: { display_name: "Verry Elleegant", racing_name: "VERRY ELLEEGANT (NZ)", photo_url: null }, trainer: { name: "Chris Waller" } },
+  { id: "p5", horse_id: "h6", type: "photo", status: "draft", label: null, title: null, body: "Draft, waiting on photo from Chris.", like_count: 0, published_at: null, scheduled_for: null, created_at: "2026-07-10T06:00:00Z", horse: { display_name: "Winx", racing_name: "WINX (AUS)", photo_url: null }, trainer: { name: "Chris Waller" } },
+  { id: "p6", horse_id: "h1", type: "video", status: "published", label: "Race Day \u00b7 Today", title: "Track gallop — pack work", body: "Group session from Rosehill.", like_count: 118, published_at: "2026-07-09T05:00:00Z", scheduled_for: null, created_at: "2026-07-09T05:00:00Z", horse: { display_name: "Mahogany", racing_name: "MAHOGANY (AUS)", photo_url: null }, trainer: { name: "Chris Waller" } },
+  { id: "p7", horse_id: "h1", type: "photo", status: "unpublished", label: "Stable Update", title: "Stable life — Mahogany on the walker", body: "Cool-down after morning work.", like_count: 34, published_at: "2026-07-08T05:00:00Z", scheduled_for: null, created_at: "2026-07-08T05:00:00Z", horse: { display_name: "Mahogany", racing_name: "MAHOGANY (AUS)", photo_url: null }, trainer: { name: "Chris Waller" } },
 ];
 
 const ADMIN_USER = {
@@ -163,6 +163,12 @@ const TRAINER_SEED = [
   { id: "t5", name: "Ciaron Maher", stable_name: "Ciaron Maher Racing", location: "Ballarat, VIC", status: "active", horses: 1, email: "team@maherracing.com", lastPost: 3 * D },
   { id: "t6", name: "Kris Lees", stable_name: "Lees Racing", location: "Newcastle, NSW", status: "active", horses: 1, email: "kris@leesracing.com.au", lastPost: 5 * D },
   { id: "t7", name: "John Thompson", stable_name: "Thompson Stables", location: "Warwick Farm, NSW", status: "onboarding", horses: 1, email: "john@thompsonracing.au", lastPost: null },
+  // ENG-963: the ONLY fixture with a uuid-shaped id. Both scoped lists
+  // (`/horses?trainerId=`, `/posts?trainerId=`) ignore a `trainerId` that is
+  // not a uuid — a deliberate guard, since the column is a uuid in Postgres —
+  // so the short `t1`..`t7` ids can never exercise the scope bar. This row
+  // exists so the two-way trainers ⇄ posts ⇄ horses jump is screenshot-able.
+  { id: "9f1c7a2e-4b3d-4a5f-8c6e-2d1b0a9f8e7d", name: "Gai Waterhouse", stable_name: "Waterhouse & Bott", location: "Randwick, NSW", status: "active", horses: 5, email: "gai@waterhousebott.com.au", lastPost: 4 * H },
 ];
 
 function buildDb(seed) {
@@ -196,6 +202,13 @@ function setEmpty(empty) {
   DB = empty ? { trainer: [], horse: [], post: [], trainer_contact: [] } : buildDb(TRAINER_SEED);
   ANALYTICS_EMPTY = empty;
 }
+
+// ENG-984. Whether the mock reports the operator account as staff. Defaults to
+// TRUE (the shipped behaviour: operators are excluded from analytics). The
+// analytics-admin-exclusion spec flips it to false to capture the "before"
+// screenshot from the SAME seeded rows, so the only variable between the two
+// pictures is the exclusion itself.
+let EXCLUDE_ADMIN = true;
 
 // ---- Analytics fixtures (ENG-276 / A4) --------------------------------------
 // Seeded, fake data only. Shapes are the snake_case rows the A3 RPCs return
@@ -253,6 +266,150 @@ const TRIALS_BY_MONTH = [
 const CLICKS_BY_TRAINER = TRAINER_ENGAGEMENT.map((t) => ({
   trainer_id: t.trainer_id, name: t.name, clicks: t.website_clicks, last_click: null,
 }));
+
+// ---- ENG-984: row-level engagement fixtures ---------------------------------
+// The analytics BFF no longer takes its engagement NUMBERS from the admin_*
+// RPCs (those count operator activity too — see lib/analytics/admin-exclusion.ts).
+// It now reads the raw engagement tables and tallies them with staff removed,
+// so this mock has to serve ROWS for those tables rather than a pre-baked
+// aggregate. The RPCs are still called for the skeleton (entity ids, names,
+// post/horse counts), so their fixtures above stay exactly as they were.
+//
+// Every row carries a `user_id`, and roughly a third of them belong to
+// ADMIN_USER_ID — that is the point: it is what makes the before/after
+// screenshots differ. Fake members only, no real data.
+const MEMBER_IDS = ["m-0001", "m-0002", "m-0003", "m-0004"];
+
+// Posts spread across all four seeded trainers/horses so no engagement row in
+// the table renders as an empty zero row.
+const ENGAGEMENT_POSTS = [
+  { id: "pa1", source_trainer_id: "t1", horse_id: "h1" },
+  { id: "pa2", source_trainer_id: "t2", horse_id: "h2" },
+  { id: "pa3", source_trainer_id: "t3", horse_id: "h3" },
+  { id: "pa4", source_trainer_id: "t4", horse_id: "h4" },
+];
+
+// Picking posts round-robin gave every trainer an near-identical row
+// (219/221/220/219 opens), which reads as fake just as badly as the skew an
+// LCG produced. This weighting is a 40/30/20/10 split, so the engagement
+// tables have a believable head and tail.
+const POST_WEIGHTS = [0, 0, 0, 0, 1, 1, 1, 2, 2, 3];
+function weightedPost(n) {
+  return ENGAGEMENT_POSTS[POST_WEIGHTS[n % POST_WEIGHTS.length]];
+}
+
+// Fully deterministic (no PRNG) so the screenshots are byte-stable across runs.
+//
+// An LCG was tried here first and produced badly skewed fixtures: its low bits
+// cycle, so `seed % 4` mapped almost every row onto the SAME post and the
+// engagement table read 892 / 8 / 0 / 0 across the four trainers. Index
+// arithmetic spreads the rows evenly and is easier to reason about anyway.
+//
+// `adminEvery` = 1 in N rows is the operator's. Tuned so removing staff makes a
+// clearly visible dent without emptying the charts.
+function engagementRow(seq, post, isAdmin, stamp, extra) {
+  return {
+    user_id: isAdmin ? ADMIN_USER_ID : MEMBER_IDS[seq % MEMBER_IDS.length],
+    post_id: post.id,
+    // The engagement read asks for `post:post_id(id,source_trainer_id,horse_id)`.
+    post: { id: post.id, source_trainer_id: post.source_trainer_id, horse_id: post.horse_id },
+    ...stamp,
+    ...(extra ?? {}),
+  };
+}
+
+// Per-day open volumes, shaped like the mockup (two race-day peaks) rather than
+// a flat line — a uniform bar chart reads as obviously fake.
+const DAY_VOLUMES = [48, 62, 40, 73, 54, 94, 78, 46, 60, 38, 68, 56, 90, 72];
+// Weighted so 6-8am and 6-8pm AEST dominate, matching the "Opens by time of
+// day" panel's intended shape (those are UTC 20-21 and UTC 08-09).
+const HOUR_WEIGHTS = [20, 20, 21, 8, 8, 9, 22, 0, 2, 12];
+
+const IMPRESSION_ROWS = (() => {
+  const rows = [];
+  let seq = 0;
+  DAY_VOLUMES.forEach((volume, dayIdx) => {
+    const daysAgo = DAY_VOLUMES.length - 1 - dayIdx;
+    for (let k = 0; k < volume; k++) {
+      const d = new Date(Date.now() - daysAgo * 864e5);
+      d.setUTCHours(HOUR_WEIGHTS[(dayIdx + k) % HOUR_WEIGHTS.length], (k * 7) % 60, 0, 0);
+      rows.push(
+        engagementRow(
+          seq,
+          weightedPost(dayIdx + k),
+          k % 3 === 0,
+          { seen_at: d.toISOString() },
+        ),
+      );
+      seq++;
+    }
+  });
+  return rows;
+})();
+
+const REACTION_EMOJI = ["👍", "❤️", "👏", "🔥", "🐎", "💪", "🙏"];
+const REACTION_ROWS = Array.from({ length: 420 }, (_, i) =>
+  engagementRow(
+    i,
+    weightedPost(i),
+    i % 3 === 0,
+    { created_at: new Date(Date.now() - (i % 14) * 864e5).toISOString() },
+    { emoji: REACTION_EMOJI[(i * 3) % REACTION_EMOJI.length] },
+  ),
+);
+
+const BOOKMARK_ROWS = Array.from({ length: 160 }, (_, i) =>
+  engagementRow(i, weightedPost(i), i % 4 === 0, {
+    created_at: new Date(Date.now() - (i % 14) * 864e5).toISOString(),
+  }),
+);
+
+// Website clicks are per-trainer, not per-post. Weighted rather than evenly
+// round-robined so the clicks table doesn't render four identical numbers.
+const CLICK_WEIGHTS = [
+  { trainer_id: "t1", clicks: 96 },
+  { trainer_id: "t2", clicks: 64 },
+  { trainer_id: "t3", clicks: 41 },
+  { trainer_id: "t4", clicks: 18 },
+];
+const TRAINER_CLICK_ROWS = CLICK_WEIGHTS.flatMap((t) =>
+  Array.from({ length: t.clicks }, (_, i) => ({
+    user_id: i % 3 === 0 ? ADMIN_USER_ID : MEMBER_IDS[i % MEMBER_IDS.length],
+    trainer_id: t.trainer_id,
+    clicked_at: new Date(Date.now() - (i % 14) * 864e5).toISOString(),
+  })),
+);
+
+// "Reach" for the per-post screen = follows of that post's horse.
+const FOLLOW_ROWS = Array.from({ length: 210 }, (_, i) => ({
+  user_id: i % 7 === 0 ? ADMIN_USER_ID : `m-follow-${i}`,
+  horse_id: ENGAGEMENT_POSTS[i % ENGAGEMENT_POSTS.length].horse_id,
+}));
+
+// Serves the engagement tables the analytics BFF now reads directly. Returns
+// null when the path is not one of them, so the caller falls through to the
+// pre-existing handlers untouched.
+function engagementRowsFor(pathname, search) {
+  const rows = (all) => {
+    if (ANALYTICS_EMPTY) return [];
+    // The mock does not implement PostgREST filtering; the only filter that
+    // changes WHICH rows come back (rather than just how many) is the per-post
+    // screen's post_id, and getting that wrong would attribute every open in
+    // the fixture set to one post.
+    const m = /[?&]post_id=eq\.([^&]+)/.exec(search);
+    return m ? all.filter((r) => r.post_id === decodeURIComponent(m[1])) : all;
+  };
+  if (pathname.startsWith("/rest/v1/impression")) return rows(IMPRESSION_ROWS);
+  if (pathname.startsWith("/rest/v1/reaction")) return rows(REACTION_ROWS);
+  if (pathname.startsWith("/rest/v1/bookmark")) return rows(BOOKMARK_ROWS);
+  if (pathname.startsWith("/rest/v1/trainer_website_click")) return rows(TRAINER_CLICK_ROWS);
+  if (pathname.startsWith("/rest/v1/follow")) {
+    if (ANALYTICS_EMPTY) return [];
+    const m = /[?&]horse_id=eq\.([^&]+)/.exec(search);
+    return m ? FOLLOW_ROWS.filter((r) => r.horse_id === decodeURIComponent(m[1])) : FOLLOW_ROWS;
+  }
+  return null;
+}
 
 // Subscription rows for the trials list. `user` is the embedded select alias.
 // Fake members only — never real subscriber data.
@@ -341,6 +498,45 @@ function sendJson(res, status, body) {
 // Emulates a PostgREST list/count response: sets Content-Range so supabase-js
 // can read `count` from `count: 'exact'` queries (dashboard tiles rely on this),
 // and returns no body for the HEAD requests that `head: true` issues.
+// Subscribers (ENG-982) — the cohort behind the Subscribers screen. Deliberately
+// spans all four of TODAY's statuses (`trial`,`active`,`lapsed`,`canceled`) and a
+// spread of tenures, so every tenure band has a member and the two cancelled rows
+// are visible on arrival — which is the whole point of the screen (Mel, 2 Sep).
+//
+// `sub-admin` is the operator's own subscription and MUST NOT appear on the
+// screen: it is the ENG-315 staff-exclusion guardrail, made provable in the
+// browser rather than only in a unit test.
+//
+// Dates are computed RELATIVE TO NOW so tenure bands stay stable as the calendar
+// moves — an absolute fixture would silently slide between bands and rot the
+// screenshots. Day 15 avoids month-boundary flapping.
+//
+// NOTE: `subscription` has NO `canceled_at` column (docs/specs/database.sql), so
+// the cancellation date is `updated_at` on a canceled row. The fixtures set
+// `updated_at` accordingly — recent, because "who churned this week" is the
+// question this screen answers.
+function monthsAgo(n) {
+  const d = new Date();
+  d.setUTCMonth(d.getUTCMonth() - n, 15);
+  d.setUTCHours(9, 0, 0, 0);
+  return d.toISOString();
+}
+function daysAgo(n) {
+  return new Date(Date.now() - n * 864e5).toISOString();
+}
+const SUBSCRIPTION_FIXTURES = [
+  { id: "sub-8", status: "active",   created_at: monthsAgo(19), updated_at: monthsAgo(19), current_period_end: daysAgo(-12), user: { name: "Mei Lin",        email: "mei.lin@example.com",   is_admin: false } },
+  { id: "sub-1", status: "active",   created_at: monthsAgo(14), updated_at: monthsAgo(14), current_period_end: daysAgo(-21), user: { name: "Harriet Vale",   email: "harriet@example.com",   is_admin: false } },
+  { id: "sub-7", status: "lapsed",   created_at: monthsAgo(11), updated_at: monthsAgo(1),  current_period_end: daysAgo(34),  user: { name: "Rafael Costa",   email: "rafael@example.com",    is_admin: false } },
+  { id: "sub-2", status: "active",   created_at: monthsAgo(8),  updated_at: monthsAgo(8),  current_period_end: daysAgo(-6),  user: { name: "Tom Ashcroft",   email: "tom@example.com",       is_admin: false } },
+  { id: "sub-5", status: "canceled", created_at: monthsAgo(7),  updated_at: daysAgo(3),    current_period_end: daysAgo(-9),  user: { name: "Douglas Byrne",  email: "douglas@example.com",   is_admin: false } },
+  { id: "sub-3", status: "active",   created_at: monthsAgo(4),  updated_at: monthsAgo(4),  current_period_end: daysAgo(-17), user: { name: "Priya Raman",    email: "priya@example.com",     is_admin: false } },
+  { id: "sub-6", status: "canceled", created_at: monthsAgo(2),  updated_at: daysAgo(9),    current_period_end: daysAgo(-2),  user: { name: "Simone Clark",   email: "simone@example.com",    is_admin: false } },
+  { id: "sub-4", status: "trial",    created_at: daysAgo(11),   updated_at: daysAgo(11),   current_period_end: null,         user: { name: "Nina Okafor",    email: "nina@example.com",      is_admin: false } },
+  // The operator. Excluded by the staff guardrail — never rendered, never exported.
+  { id: "sub-admin", status: "active", created_at: monthsAgo(22), updated_at: monthsAgo(22), current_period_end: daysAgo(-30), user: { name: "StablePass Ops", email: "ops@stablepass.co", is_admin: true } },
+];
+
 // Waitlist (ENG-976) — 28 pre-launch signups, deliberately more than one
 // 25-row page so the pager and the "export covers rows beyond page 1" claim are
 // both visible in the screenshots. Fake addresses only: the real table holds
@@ -449,6 +645,33 @@ const HORSE_EMBED = { id: "h1", display_name: "Mahogany", racing_name: "Mahogany
 //
 // Text posts on purpose: `text` short-circuits the media branch in page.tsx, so
 // neither Storage signing nor Mux playback resolution has to be mocked.
+// ENG-979 — be's `post_label` rows. The 14 builtins are pinned immutable in the
+// real database; two admin-added rows are seeded so the picker's ordering rule
+// (builtins first in sort_order, then added ones alphabetically) is visible in
+// the screenshot rather than merely asserted in a unit test. MUTABLE: Add-new
+// pushes onto it, so a spec can prove a created label survives into the next
+// compose without a deploy.
+const POST_LABEL_FIXTURES = [
+  { id: "pl-1", name: "Stable Update", is_builtin: true, sort_order: 1 },
+  { id: "pl-2", name: "Pre Race Report", is_builtin: true, sort_order: 2 },
+  { id: "pl-3", name: "Post Race Report", is_builtin: true, sort_order: 3 },
+  { id: "pl-4", name: "Trackwork", is_builtin: true, sort_order: 4 },
+  { id: "pl-5", name: "Trial", is_builtin: true, sort_order: 5 },
+  { id: "pl-6", name: "Race Replay", is_builtin: true, sort_order: 6 },
+  { id: "pl-7", name: "Race Result", is_builtin: true, sort_order: 7 },
+  { id: "pl-8", name: "Race Day \u00b7 Today", is_builtin: true, sort_order: 8 },
+  { id: "pl-9", name: "Pre Training Update", is_builtin: true, sort_order: 9 },
+  { id: "pl-10", name: "Spelling Update", is_builtin: true, sort_order: 10 },
+  { id: "pl-11", name: "Breaking In Update", is_builtin: true, sort_order: 11 },
+  { id: "pl-12", name: "Race Preview", is_builtin: true, sort_order: 12 },
+  { id: "pl-13", name: "Jockey Comments", is_builtin: true, sort_order: 13 },
+  { id: "pl-14", name: "Trainer Comments", is_builtin: true, sort_order: 14 },
+  // Admin-added (is_builtin false, sort_order 0) — these must collate AFTER
+  // every builtin and alphabetically among themselves.
+  { id: "pl-15", name: "Owner Update", is_builtin: false, sort_order: 0 },
+  { id: "pl-16", name: "Float Trip", is_builtin: false, sort_order: 0 },
+];
+
 const COMPOSE_EDIT_POSTS = [
   { id: "ce1", type: "text", status: "draft", title: "Barrier trial complete", body: "Pleased with the way he finished off.", label: "Trial", source_trainer_id: "t1", scheduled_for: null, media_url: null, mux_playback_id: null, horse: HORSE_EMBED },
   { id: "ce2", type: "text", status: "draft", title: "Quiet day in the box", body: "Nothing much to report today.", label: null, source_trainer_id: "t1", scheduled_for: null, media_url: null, mux_playback_id: null, horse: HORSE_EMBED },
@@ -610,14 +833,21 @@ export function startMockSupabase() {
     // Also clears the audit log so each spec starts from a clean slate.
     if (req.method === "POST" && url.pathname === "/__control") {
       let empty = false;
+      let excludeAdmin = true;
       try {
-        empty = JSON.parse(rawBody || "{}").empty === true;
+        const body = JSON.parse(rawBody || "{}");
+        empty = body.empty === true;
+        // Absent means "leave the shipped behaviour on" — only an explicit
+        // false turns the exclusion off (ENG-984 before/after capture).
+        excludeAdmin = body.excludeAdmin !== false;
       } catch {
         empty = false;
+        excludeAdmin = true;
       }
       setEmpty(empty);
+      EXCLUDE_ADMIN = excludeAdmin;
       AUDIT_LOG.length = 0;
-      sendJson(res, 200, { ok: true, empty });
+      sendJson(res, 200, { ok: true, empty, excludeAdmin });
       return;
     }
 
@@ -718,19 +948,71 @@ export function startMockSupabase() {
       return;
     }
 
-    // Saves + reach counts for the per-post screen (head:true count queries —
-    // the total rides Content-Range, so an absent header renders 0).
-    if ((req.method === "GET" || req.method === "HEAD") && url.search.includes("post_id=eq.")) {
-      if (url.pathname.startsWith("/rest/v1/bookmark")) {
-        sendTable(res, req.method, [], ANALYTICS_EMPTY ? 0 : 28);
+    // ENG-984 — the engagement tables are now read as ROWS, not as head:true
+    // counts, because the BFF has to see each row's user_id to drop operator
+    // activity before it tallies. This block MUST stay above the per-post and
+    // dashboard handlers below: those answer /rest/v1/{reaction,bookmark,follow}
+    // with an empty body and a Content-Range count, which was right when the
+    // caller wanted a count and is now exactly wrong — an empty row array would
+    // tally to zero and every engagement number on the screen would read 0.
+    if (req.method === "GET" || req.method === "HEAD") {
+      const engRows = engagementRowsFor(url.pathname, url.search);
+      if (engRows !== null) {
+        sendTable(res, req.method, engRows, engRows.length);
         return;
       }
     }
+
+    // /rest/v1/subscription — the Subscribers screen (ENG-982). MUST sit ahead of
+    // the dashboard block below, which answers EVERY /rest/v1/subscription read
+    // with an empty list and a 412 count (that is the Members tile's count, and
+    // it is deliberately row-less). Routed through that, this screen would render
+    // "No subscribers yet" no matter what the fixtures say.
+    //
+    // Discriminated on `current_period_end`, which is selected by this screen's
+    // read and by no other subscription read in the app: the dashboard tile
+    // selects only `status,user:user_id(is_admin)`, and the analytics trials list
+    // selects `trial_ends_at` (handled by its own branch above).
+    //
+    // Read the `select` param via searchParams, which is ALREADY percent-decoded.
+    // Do NOT `decodeURIComponent(url.search)` here: a search string carrying a
+    // bare `%` wildcard (`email=ilike.%term%`, which the waitlist and trainers
+    // searches send) makes it throw URIError and kills the whole mock server,
+    // taking the rest of the suite down as ERR_CONNECTION_REFUSED. That exact
+    // trap is recorded in .rx/gotchas.md and was re-hit while writing this
+    // branch.
     if (
       (req.method === "GET" || req.method === "HEAD") &&
-      url.pathname.startsWith("/rest/v1/follow")
+      url.pathname.startsWith("/rest/v1/subscription") &&
+      (url.searchParams.get("select") ?? "").includes("current_period_end")
     ) {
-      sendTable(res, req.method, [], ANALYTICS_EMPTY ? 0 : 204);
+      const rows = SUBSCRIPTION_FIXTURES;
+      // supabase-js 2.110 serialises `.range(from,to)` as offset/limit query
+      // params (see the waitlist branch for the same note). The data layer pages
+      // until it gets an EMPTY batch, so slicing past the end must return [] —
+      // never the last page again, or the export loop would never terminate.
+      const offsetParam = Number(url.searchParams.get("offset"));
+      const limitParam = Number(url.searchParams.get("limit"));
+      let from = 0;
+      let page = rows;
+      if (url.searchParams.has("offset") && Number.isFinite(offsetParam)) {
+        from = Math.max(0, offsetParam);
+        const size =
+          url.searchParams.has("limit") && Number.isFinite(limitParam) ? limitParam : rows.length;
+        page = rows.slice(from, from + size);
+      }
+      const headers = {
+        "Content-Type": "application/json",
+        "Content-Range": `${from}-${Math.max(from, from + page.length - 1)}/${rows.length}`,
+        ...corsHeaders(),
+      };
+      if (req.method === "HEAD") {
+        res.writeHead(200, headers);
+        res.end();
+        return;
+      }
+      res.writeHead(200, headers);
+      res.end(JSON.stringify(page));
       return;
     }
 
@@ -744,11 +1026,27 @@ export function startMockSupabase() {
     if (req.method === "GET" || req.method === "HEAD") {
       const p = url.pathname;
       const qs = url.search;
-      if (p.startsWith("/rest/v1/reaction")) { sendTable(res, req.method, [], 3420); return; }
-      if (p.startsWith("/rest/v1/bookmark")) { sendTable(res, req.method, [], 612); return; }
+      // ENG-984: the reaction/bookmark head-count stubs that used to live here
+      // (3420 / 612) are gone. The dashboard's reactions + saves tiles now go
+      // through countMemberRows(), which reads rows and tallies the non-staff
+      // ones, so those tables are served with real rows by the engagement
+      // handler higher up. Leaving the stubs here would have been harmless only
+      // because they are now unreachable — which is precisely why they are
+      // removed rather than left to rot behind a shadowing branch.
       if (p.startsWith("/rest/v1/subscription")) { sendTable(res, req.method, [], 412); return; }
       if (p.startsWith("/rest/v1/race")) { sendTable(res, req.method, DASH_RACES, DASH_RACES.length); return; }
-      if (p.startsWith("/rest/v1/post") && qs.includes("status=eq.published")) {
+      // `poster_time_s` is selected ONLY by the posts library (T7). Without
+      // this exclusion the dashboard branch also swallowed the library's read
+      // whenever the operator picked the "Published" status chip — and the
+      // dashboard's post rows carry no `status`, so `statusMeta(undefined)`
+      // threw and /posts?status=published rendered Next's error page. Nothing
+      // caught it because no spec had ever visited a status-filtered posts URL
+      // (ENG-963).
+      if (
+        p.startsWith("/rest/v1/post") &&
+        qs.includes("status=eq.published") &&
+        !qs.includes("poster_time_s")
+      ) {
         sendTable(res, req.method, DASH_POSTS, 68); // 68 = posts-this-week tile
         return;
       }
@@ -1008,14 +1306,73 @@ export function startMockSupabase() {
         res.end("[]");
         return;
       }
-      const total = POST_FIXTURES.length;
+      // Honour the `status=eq.<s>` chip filter (ENG-963) so a filtered library
+      // screenshot shows the rows that filter actually selects. Absent → all.
+      const wanted = url.search.match(/[?&]status=eq\.([^&]+)/)?.[1];
+      const rows = wanted
+        ? POST_FIXTURES.filter((r) => r.status === decodeURIComponent(wanted))
+        : POST_FIXTURES;
+      const total = rows.length;
       res.writeHead(200, {
         "Content-Type": "application/json",
         "Content-Range": `0-${Math.max(0, total - 1)}/${total}`,
         ...corsHeaders(),
       });
-      res.end(JSON.stringify(POST_FIXTURES));
+      res.end(JSON.stringify(rows));
       return;
+    }
+
+    // /rest/v1/post_label (ENG-979) — be's lookup table, which since ENG-978 is
+    // what `post.label` foreign-keys to and therefore what Compose's picker
+    // reads. Its own branch, ahead of the generic reader, because Add-new has
+    // to WRITE here and the generic reader is read-only.
+    //
+    // The insert deliberately enforces the case/whitespace-insensitive
+    // uniqueness rule as well as the byte-exact `unique(name)` Postgres has.
+    // Only the byte-exact one is real; folding here is what lets the e2e prove
+    // the ROUTE's fold, rather than the mock quietly accepting a second
+    // "trackwork" and the assertion passing for the wrong reason.
+    if (url.pathname === "/rest/v1/post_label") {
+      const fold = (n) => n.trim().replace(/\s+/g, " ").toLowerCase();
+      if (req.method === "GET") {
+        sendJson(res, 200, POST_LABEL_FIXTURES);
+        return;
+      }
+      if (req.method === "POST") {
+        // Use the ALREADY-DRAINED `rawBody`, never a second drainBody(req):
+        // the stream has ended by now, so a fresh listener never sees "end"
+        // and the handler hangs forever with no response and no error — the
+        // request just sits there. Every other write branch in this file reads
+        // `rawBody` for the same reason.
+        let parsed = {};
+        try {
+          parsed = JSON.parse(rawBody || "{}");
+        } catch {
+          parsed = {};
+        }
+        const rows = Array.isArray(parsed) ? parsed : [parsed];
+        const name = String(rows[0]?.name ?? "");
+        const clash = POST_LABEL_FIXTURES.find((l) => fold(l.name) === fold(name));
+        if (clash) {
+          // What Postgres raises for `unique(name)`. The route catches 23505
+          // and re-reads, so this exercises its race path too.
+          sendJson(res, 409, {
+            code: "23505",
+            message: 'duplicate key value violates unique constraint "post_label_name_key"',
+          });
+          return;
+        }
+        const created = {
+          id: `pl-${POST_LABEL_FIXTURES.length + 1}`,
+          name,
+          is_builtin: false,
+          sort_order: 0,
+        };
+        POST_LABEL_FIXTURES.push(created);
+        const accept = req.headers["accept"] ?? "";
+        sendJson(res, 201, accept.includes("pgrst.object") ? created : [created]);
+        return;
+      }
     }
 
     // /rest/v1/waitlist (ENG-976) — its OWN branch, ahead of the generic reader,
@@ -1162,6 +1519,29 @@ export function startMockSupabase() {
 
     if (req.method === "GET" && url.pathname.startsWith("/rest/v1/app_user")) {
       const accept = req.headers["accept"] ?? "";
+
+      // ENG-984: TWO different reads hit app_user and they must not be
+      // conflated.
+      //
+      //  (a) the admin GATE           -> ?select=is_admin&id=eq.<uid>, .single()
+      //  (b) the analytics EXCLUSION  -> ?select=id&is_admin=eq.true, list
+      //
+      // (b) is `getAdminUserIds()` in lib/analytics/admin-exclusion.ts asking
+      // "whose rows are staff rows". It needs the ID, and this handler used to
+      // answer every app_user read with `is_admin` and no `id` at all — so the
+      // exclusion set would have been a set of `undefined` and NOTHING would
+      // ever have been excluded. Keyed on the `is_admin=eq.true` filter, which
+      // only the exclusion read carries.
+      if (url.search.includes("is_admin=eq.true")) {
+        // EXCLUDE_ADMIN=false is the "before" half of the before/after
+        // screenshots: the operator account exists and is generating activity,
+        // but is not reported as staff, so every operator row gets counted —
+        // exactly the screen the client was looking at when he asked
+        // "can we have it that it doesn't include us?".
+        sendJson(res, 200, EXCLUDE_ADMIN ? [{ id: ADMIN_USER_ID }] : []);
+        return;
+      }
+
       if (accept.includes("pgrst.object")) {
         sendJson(res, 200, { is_admin: true });
       } else {

@@ -3,6 +3,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import TrainerForm, { type TrainerData } from "./TrainerForm";
 import { WEBSITE_URL_MESSAGE } from "@/lib/trainers/website-url";
+import { setSaveToastHoldMs } from "../Toast";
+
+// ENG-964 deferred the post-save `router.push` behind a real ~900ms timer so
+// the success toast is seen. These suites assert navigation through RTL's
+// default 1000ms `waitFor`, which would leave ~40ms of headroom — green when
+// idle, flaky under load, and ~13s of dead wall-clock. Drop the hold here.
+setSaveToastHoldMs(0);
 
 // ENG-766 — the "Show on marketing site" toggle and the public photo copy.
 //
@@ -669,6 +676,32 @@ describe("TrainerForm — profile photo crop (ENG-749)", () => {
 
   const privateUpload = () => h.storage.find((c) => c.op === "upload" && c.bucket === "trainer-photos");
 
+  // ENG-1024 — the readiness signal for this whole block.
+  //
+  // PhotoCropField renders its dialog ROOT and its action buttons immediately,
+  // but the viewport, the zoom slider and the meta line sit behind
+  // `{image ? … : "Preparing photo…"}` — i.e. behind the ASYNC `loadImage`
+  // decode. So `findByTestId("photo-crop-dialog")` (or `"photo-crop-apply"`)
+  // resolving proves only that the dialog MOUNTED, never that it is usable.
+  //
+  // Acting inside that window is what made this block flaky, in two ways:
+  //   * clicking Apply pre-decode hits `apply()`'s `if (!loaded) applyAsIs()`
+  //     guard, which uploads the ORIGINAL file and closes the dialog — the crop
+  //     never runs, `cropToBlob` is never called, so `h.script.releaseCrop`
+  //     stays null and a `waitFor` on it burns its full 1000ms budget;
+  //   * reading `photo-crop-zoom` pre-decode finds nothing, because the slider
+  //     genuinely is not in the tree yet.
+  // Both were observed: "refuses to dismiss mid-encode" timed out at 1028ms
+  // under CPU load, and the ticket recorded "Apply then Reposition" failing on
+  // the missing slider.
+  //
+  // Waiting on the decode-gated slider is an explicit await on the real
+  // precondition — not a longer timeout, and not a sleep.
+  const cropReady = async () => {
+    await screen.findByTestId("photo-crop-dialog");
+    await screen.findByTestId("photo-crop-zoom");
+  };
+
     // NOTE: the SDK's `contentType` upload OPTION is deliberately not asserted
     // here, and the forms no longer pass it. For a Blob/File body supabase-js
     // builds a FormData and appends the blob (storage-js
@@ -696,7 +729,8 @@ describe("TrainerForm — profile photo crop (ENG-749)", () => {
       const file = jpeg();
       const { container } = render(<TrainerForm mode="create" />);
       pick(container, file);
-      fireEvent.click(await screen.findByTestId("photo-crop-apply"));
+      await cropReady();
+      fireEvent.click(screen.getByTestId("photo-crop-apply"));
       await screen.findByText("Photo added");
 
       const up = privateUpload()!;
@@ -713,7 +747,8 @@ describe("TrainerForm — profile photo crop (ENG-749)", () => {
       // file's TYPE, so a misnamed pick must still land on the right key.
       const { container } = render(<TrainerForm mode="create" />);
       pick(container, new File(["x"], "misnamed.png", { type: "image/jpeg" }));
-      fireEvent.click(await screen.findByTestId("photo-crop-apply"));
+      await cropReady();
+      fireEvent.click(screen.getByTestId("photo-crop-apply"));
       await screen.findByText("Photo added");
 
       expect(privateUpload()!.path).toMatch(/\.jpg$/);
@@ -724,7 +759,8 @@ describe("TrainerForm — profile photo crop (ENG-749)", () => {
       h.script.cropBlob = new Blob(["cropped-png"], { type: "image/png" });
       const { container } = render(<TrainerForm mode="create" />);
       pick(container, png());
-      fireEvent.click(await screen.findByTestId("photo-crop-apply"));
+      await cropReady();
+      fireEvent.click(screen.getByTestId("photo-crop-apply"));
       await screen.findByText("Photo added");
 
       expect(privateUpload()!.path).toMatch(/\.png$/);
@@ -740,7 +776,8 @@ describe("TrainerForm — profile photo crop (ENG-749)", () => {
       h.script.cropBlob = new Blob(["actually-png"], { type: "image/png" });
       const { container } = render(<TrainerForm mode="create" />);
       pick(container, jpeg());
-      fireEvent.click(await screen.findByTestId("photo-crop-apply"));
+      await cropReady();
+      fireEvent.click(screen.getByTestId("photo-crop-apply"));
       await screen.findByText("Photo added");
 
       expect(privateUpload()!.path).toMatch(/\.png$/);
@@ -751,7 +788,8 @@ describe("TrainerForm — profile photo crop (ENG-749)", () => {
       const file = jpeg();
       const { container } = render(<TrainerForm mode="create" />);
       pick(container, file);
-      fireEvent.click(await screen.findByTestId("photo-crop-use-as-is"));
+      await cropReady();
+      fireEvent.click(screen.getByTestId("photo-crop-use-as-is"));
       await screen.findByText("Photo added");
 
       const up = privateUpload()!;
@@ -765,7 +803,8 @@ describe("TrainerForm — profile photo crop (ENG-749)", () => {
     it("keeps the picked file's own extension on Use as-is", async () => {
       const { container } = render(<TrainerForm mode="create" />);
       pick(container, new File(["x"], "waller.JPEG", { type: "image/jpeg" }));
-      fireEvent.click(await screen.findByTestId("photo-crop-use-as-is"));
+      await cropReady();
+      fireEvent.click(screen.getByTestId("photo-crop-use-as-is"));
       await screen.findByText("Photo added");
 
       expect(privateUpload()!.path).toMatch(/\.JPEG$/);
@@ -774,7 +813,8 @@ describe("TrainerForm — profile photo crop (ENG-749)", () => {
     it("uploads nothing at all when the crop is cancelled", async () => {
       const { container } = render(<TrainerForm mode="create" />);
       pick(container, jpeg());
-      fireEvent.click(await screen.findByTestId("photo-crop-cancel"));
+      await cropReady();
+      fireEvent.click(screen.getByTestId("photo-crop-cancel"));
 
       await waitFor(() => expect(screen.queryByTestId("photo-crop-dialog")).toBeNull());
       expect(h.storage.filter((c) => c.op === "upload")).toHaveLength(0);
@@ -786,7 +826,8 @@ describe("TrainerForm — profile photo crop (ENG-749)", () => {
       const file = jpeg();
       const { container } = render(<TrainerForm mode="create" />);
       pick(container, file);
-      fireEvent.click(await screen.findByTestId("photo-crop-apply"));
+      await cropReady();
+      fireEvent.click(screen.getByTestId("photo-crop-apply"));
       await screen.findByText("Photo added");
 
       expect(privateUpload()!.body).toBe(file);
@@ -795,7 +836,7 @@ describe("TrainerForm — profile photo crop (ENG-749)", () => {
     it("tells the admin the whole square is saved and shown", async () => {
       const { container } = render(<TrainerForm mode="create" />);
       pick(container, jpeg());
-      await screen.findByTestId("photo-crop-dialog");
+      await cropReady();
 
       // Justin, 26 Aug: the surfaces are squares, so the copy is about the
       // square, not a circle.
@@ -816,7 +857,7 @@ describe("TrainerForm — profile photo crop (ENG-749)", () => {
       const reposition = await screen.findByTestId("trainer-photo-reposition");
       fireEvent.click(reposition);
 
-      await screen.findByTestId("photo-crop-dialog");
+      await cropReady();
     });
 
     // ENG-980: Apply is no longer a one-way door. Reposition re-opens the
@@ -826,16 +867,16 @@ describe("TrainerForm — profile photo crop (ENG-749)", () => {
     it("Apply then Reposition resumes the saved zoom, with a floor below 1", async () => {
       const { container } = render(<TrainerForm mode="create" />);
       pick(container, jpeg());
-      await screen.findByTestId("photo-crop-dialog");
+      await cropReady();
 
       // Move off the centred default before applying, so "resumed" is
       // distinguishable from "just re-centred by chance".
       fireEvent.change(screen.getByTestId("photo-crop-zoom"), { target: { value: "2" } });
-      fireEvent.click(await screen.findByTestId("photo-crop-apply"));
+      fireEvent.click(screen.getByTestId("photo-crop-apply"));
       await screen.findByText("Photo added");
 
       fireEvent.click(await screen.findByTestId("trainer-photo-reposition"));
-      await screen.findByTestId("photo-crop-dialog");
+      await cropReady();
 
       const slider = screen.getByTestId("photo-crop-zoom") as HTMLInputElement;
       // 4000x2000: the shorter edge / longer edge floor, not the old ZOOM_FILL=1.
@@ -854,20 +895,20 @@ describe("TrainerForm — profile photo crop (ENG-749)", () => {
       const { container } = render(<TrainerForm mode="create" />);
 
       pick(container, jpeg("first.jpg"));
-      await screen.findByTestId("photo-crop-dialog");
-      fireEvent.click(await screen.findByTestId("photo-crop-apply"));
+      await cropReady();
+      fireEvent.click(screen.getByTestId("photo-crop-apply"));
       await screen.findByText("Photo added");
 
       // A second pick that is abandoned rather than applied.
       pick(container, jpeg("second.jpg"));
-      await screen.findByTestId("photo-crop-dialog");
+      await cropReady();
       fireEvent.click(screen.getByTestId("photo-crop-cancel"));
       await waitFor(() => expect(screen.queryByTestId("photo-crop-dialog")).toBeNull());
 
       // Reposition must re-open the photo that is actually stored: the FIRST
       // file. The dialog is fed a File, so its name is the observable identity.
       fireEvent.click(await screen.findByTestId("trainer-photo-reposition"));
-      await screen.findByTestId("photo-crop-dialog");
+      await cropReady();
       expect(h.script.lastLoaded?.name).toBe("first.jpg");
     });
 
@@ -878,7 +919,7 @@ describe("TrainerForm — profile photo crop (ENG-749)", () => {
       // walks the subject towards the top-left.
       const { container } = render(<TrainerForm mode="create" />);
       pick(container, jpeg());
-      await screen.findByTestId("photo-crop-dialog");
+      await cropReady();
       // 4000x2000 at zoom 1 crops the full 2000px shorter edge, capped to 1200.
       expect(screen.getByTestId("photo-crop-meta").textContent).toBe(
         "Saving 1200×1200 from a 4000×2000 photo",
@@ -911,7 +952,8 @@ describe("TrainerForm — profile photo crop (ENG-749)", () => {
       h.script.holdCrop = true;
       const { container } = render(<TrainerForm mode="create" />);
       pick(container, jpeg());
-      fireEvent.click(await screen.findByTestId("photo-crop-apply"));
+      await cropReady();
+      fireEvent.click(screen.getByTestId("photo-crop-apply"));
       await waitFor(() => expect(h.script.releaseCrop).toBeTruthy());
 
       // Both dismissal routes that were NOT covered by the disabled buttons.
@@ -937,7 +979,7 @@ describe("TrainerForm — profile photo crop (ENG-749)", () => {
       // the observable proof that the effect did not re-run.
       const { container } = render(<TrainerForm mode="create" />);
       pick(container, jpeg());
-      await screen.findByTestId("photo-crop-dialog");
+      await cropReady();
       expect(h.script.loads).toBe(1);
 
       // Re-render the PARENT while the dialog is open.
@@ -954,7 +996,8 @@ describe("TrainerForm — profile photo crop (ENG-749)", () => {
       const { container } = render(<TrainerForm mode="create" />);
       const file = jpeg();
       pick(container, file);
-      fireEvent.click(await screen.findByTestId("photo-crop-cancel"));
+      await cropReady();
+      fireEvent.click(screen.getByTestId("photo-crop-cancel"));
       await waitFor(() => expect(screen.queryByTestId("photo-crop-dialog")).toBeNull());
 
       pick(container, file);
@@ -986,7 +1029,8 @@ describe("TrainerForm — profile photo crop (ENG-749)", () => {
     const { container } = render(<TrainerForm mode="create" />);
     fireEvent.change(screen.getByTestId("trainer-name"), { target: { value: "New Trainer" } });
     pick(container, jpeg());
-    fireEvent.click(await screen.findByTestId("photo-crop-apply"));
+    await cropReady();
+    fireEvent.click(screen.getByTestId("photo-crop-apply"));
     await screen.findByText("Photo added");
 
     const storedPath = privateUpload()!.path!;

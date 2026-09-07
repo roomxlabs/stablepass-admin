@@ -1,5 +1,4 @@
 import { test, expect, type Page } from "@playwright/test";
-import { POST_LABEL_PRESETS } from "../lib/posts/labels";
 
 // ENG-745 screenshot proofs: the label picker, the removed caption cap, and the
 // horse picker that no longer truncates at 8.
@@ -28,39 +27,131 @@ async function openCompose(page: Page) {
   await expect(page.getByTestId("label-select")).toBeVisible({ timeout: 30000 });
 }
 
-test("label picker: the 13 presets plus No label", async ({ page }) => {
+// ENG-979 — the picker is now ONE field ("Title"), reads its options LIVE from
+// `post_label`, and grows through Add-new. The option set is therefore the
+// mock's seeded rows in the route's ordering, not the compile-time preset copy:
+// asserting against `POST_LABEL_PRESETS` here would only prove the two arrays
+// match, not that the screen read the table.
+const SEEDED_LABELS = [
+  "Stable Update",
+  "Pre Race Report",
+  "Post Race Report",
+  "Trackwork",
+  "Trial",
+  "Race Replay",
+  "Race Result",
+  "Race Day \u00b7 Today",
+  "Pre Training Update",
+  "Spelling Update",
+  "Breaking In Update",
+  "Race Preview",
+  "Jockey Comments",
+  "Trainer Comments",
+  // Admin-added rows collate after every builtin, alphabetically.
+  "Float Trip",
+  "Owner Update",
+];
+const ADD_NEW = "__stablepass_add_new_label__";
+
+test("ENG-979: ONE field, live options from post_label, Add new last", async ({ page }) => {
+  test.setTimeout(90000);
+  await signIn(page);
+  await openCompose(page);
+
+  // The acceptance criterion: one field, not two. The free-text title input is
+  // gone, and the single control is labelled "Title".
+  await expect(page.getByTestId("title")).toHaveCount(0);
+  const select = page.getByTestId("label-select");
+  await expect(page.locator('label[for="post-label"]')).toHaveText("Title");
+
+  const values = await select.locator("option").evaluateAll((opts) =>
+    opts.map((o) => (o as HTMLOptionElement).value),
+  );
+  // Read from the TABLE, in the route's order, with Add-new pinned last.
+  expect(values).toEqual(["", ...SEEDED_LABELS, ADD_NEW]);
+
+  await select.selectOption("Trackwork");
+  await expect(select).toHaveValue("Trackwork");
+  await select.scrollIntoViewIfNeeded();
+  await expect(select).toBeInViewport();
+  await page.screenshot({ path: "e2e/__screenshots__/18-compose-label-picker.png" });
+
+  await select.evaluate((el) => {
+    (el as HTMLSelectElement).size = 18;
+  });
+  await select.scrollIntoViewIfNeeded();
+  await page.screenshot({ path: "e2e/__screenshots__/19-compose-label-options.png" });
+});
+
+test("ENG-979: Add new creates a label, selects it, and it survives a reload", async ({ page }) => {
   test.setTimeout(90000);
   await signIn(page);
   await openCompose(page);
 
   const select = page.getByTestId("label-select");
+  await select.selectOption(ADD_NEW);
 
-  // The option set is asserted, not just screenshotted — a shot of a closed
-  // <select> would prove nothing about what is inside it.
-  const values = await select.locator("option").evaluateAll((opts) =>
-    opts.map((o) => (o as HTMLOptionElement).value),
-  );
-  expect(values).toEqual(["", ...POST_LABEL_PRESETS]);
+  // The inline field opens; the sentinel never becomes the value.
+  const field = page.getByTestId("add-label-row");
+  await expect(field).toBeVisible();
+  await expect(select).toHaveValue("");
+  await field.scrollIntoViewIfNeeded();
+  await page.screenshot({ path: "e2e/__screenshots__/24-compose-add-new-open.png" });
 
-  await select.selectOption("Trackwork");
-  await expect(select).toHaveValue("Trackwork");
-  // Scroll it into frame first: the metadata section sits below the fold at
-  // 1280x900, so an unscrolled viewport shot of "the label picker" captured
-  // steps 1-3 and not the control it is named for.
+  await page.getByTestId("new-label-input").fill("Float Trip Notes");
+  await page.getByTestId("add-label-save").click();
+
+  // Created AND selected in the one interaction.
+  await expect(select).toHaveValue("Float Trip Notes", { timeout: 15000 });
+  await expect(field).toBeHidden();
   await select.scrollIntoViewIfNeeded();
-  await expect(select).toBeInViewport();
-  await page.screenshot({ path: "e2e/__screenshots__/18-compose-label-picker.png" });
+  await page.screenshot({ path: "e2e/__screenshots__/25-compose-add-new-selected.png" });
 
-  // A native <select> renders its list in an OS popup that no screenshot can
-  // capture, so expand it into an inline list box (`size`) purely for the
-  // evidence shot. Same DOM, same options, same styling — nothing is faked;
-  // it is only made visible.
-  await select.evaluate((el) => {
-    (el as HTMLSelectElement).size = 14;
-  });
-  await select.scrollIntoViewIfNeeded();
-  await page.screenshot({ path: "e2e/__screenshots__/19-compose-label-options.png" });
+  // "present in the dropdown on the next compose without a deploy" — the row
+  // was really written, so a fresh page load reads it back from the table.
+  await page.reload();
+  await expect(page.getByTestId("label-select")).toBeVisible({ timeout: 30000 });
+  const after = await page
+    .getByTestId("label-select")
+    .locator("option")
+    .evaluateAll((opts) => opts.map((o) => (o as HTMLOptionElement).value));
+  expect(after).toContain("Float Trip Notes");
 });
+
+test("ENG-979: a duplicate differing only by case selects the existing row", async ({ page }) => {
+  test.setTimeout(90000);
+  await signIn(page);
+  await openCompose(page);
+
+  const select = page.getByTestId("label-select");
+  const before = await select
+    .locator("option")
+    .evaluateAll((opts) => opts.map((o) => (o as HTMLOptionElement).value));
+
+  await select.selectOption(ADD_NEW);
+  // Different case AND a trailing space — both must fold to the existing row.
+  await page.getByTestId("new-label-input").fill("  trackwork ");
+  await page.getByTestId("add-label-save").click();
+
+  // The CANONICAL spelling is selected, not what was typed.
+  await expect(select).toHaveValue("Trackwork", { timeout: 15000 });
+
+  // And no second row was created: the option set is unchanged.
+  const after = await select
+    .locator("option")
+    .evaluateAll((opts) => opts.map((o) => (o as HTMLOptionElement).value));
+  expect(after).toEqual(before);
+  expect(after.filter((v) => v.toLowerCase() === "trackwork")).toHaveLength(1);
+});
+
+// NOTE: the old "label picker: the 13 presets plus No label" test lived here.
+// ENG-979 supersedes it — the first test in this file asserts the same option
+// set and captures the same two screenshots, but against the LIVE `post_label`
+// rows rather than the compile-time preset array, which is the behaviour that
+// now matters. Keeping both also made the suite order-dependent: the specs run
+// serially against ONE mock server, so the Add-new test's insert is visible to
+// every test after it, and a second hardcoded full-list assertion goes red the
+// moment anything upstream adds a label.
 
 test("caption: no cap, and the counter is a plain character count", async ({ page }) => {
   test.setTimeout(90000);
@@ -138,7 +229,8 @@ test("edit mode seeds the picker from the post's stored label", async ({ page })
 
   // Hydrated from the row, not defaulted.
   await expect(page.getByTestId("label-select")).toHaveValue("Trial");
-  await expect(page.getByTestId("title")).toHaveValue("Barrier trial complete");
+  // ENG-979 — the free-text title input is gone; the picker IS the title field.
+  await expect(page.getByTestId("title")).toHaveCount(0);
   await page.screenshot({ path: "e2e/__screenshots__/23-compose-edit-label-seeded.png" });
 });
 

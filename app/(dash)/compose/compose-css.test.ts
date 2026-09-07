@@ -252,3 +252,49 @@ describe("reel chrome fidelity (ENG-769)", () => {
     expect(note).not.toMatch(/var\(--danger\)|#c0392b|red/i);
   });
 });
+
+// ENG-1047. The upload progress indicator was too faint to read in a client
+// demo: a 4px cream-dark track on the footer's WHITE ground (invisible until
+// the fill had grown), a 12px percentage inside a muted sentence, and 10.5px
+// muted "uploading…" on the photo tiles. Every one of these is a CSS fact
+// Vitest cannot see (CSS modules are stubbed — see the header), so without
+// these the whole fix could be reverted with the suite green.
+describe("upload progress is legible on the white footer (ENG-1047)", () => {
+  it("draws the track in a token that shows on white, thick enough to read", () => {
+    const track = rule(".progressTrack");
+    // --line-dark (#C9C5BD) is visible on --white; --cream-dark (#F1ECE3) was not.
+    expect(track).toMatch(/background:\s*var\(--line-dark\)/);
+    expect(track).not.toContain("--cream-dark");
+    // 6-8px, not the 4px hairline.
+    expect(track).toMatch(/height:\s*[678]px/);
+    expect(track).toMatch(/border-radius:\s*var\(--radius-pill\)/);
+    // Tokens, never eyeballed hex.
+    expect(track).not.toMatch(/#[0-9a-f]{3,6}/i);
+  });
+
+  it("keeps the fill brand green and rounds it to match the track", () => {
+    const fill = rule(".progressFill");
+    expect(fill).toMatch(/background:\s*var\(--brand-green\)/);
+    expect(fill).toMatch(/border-radius:\s*var\(--radius-pill\)/);
+  });
+
+  it("makes the percentage readable at arm's length", () => {
+    const status = rule(".uploadStatus");
+    // Dark ink-ish tone, not the mid green that sank into the muted sentence.
+    expect(status).toMatch(/color:\s*var\(--(ink|brand-green-dark)\)/);
+    expect(status).toMatch(/font-weight:\s*600/);
+    const size = Number(/font-size:\s*([\d.]+)px/.exec(status)?.[1]);
+    expect(size).toBeGreaterThanOrEqual(13);
+  });
+
+  it("lifts the photo tiles' uploading label out of 10.5px muted", () => {
+    const state = rule(".photoState");
+    expect(state).toMatch(/font-size:\s*12px/);
+    expect(state).toMatch(/color:\s*var\(--ink\)/);
+    expect(state).not.toContain("--muted");
+    // ...while a failed tile still reads red: .photoStateBad must follow
+    // .photoState so it wins the cascade at equal specificity.
+    expect(CSS.indexOf(".photoStateBad {")).toBeGreaterThan(CSS.indexOf("\n.photoState {"));
+    expect(rule(".photoStateBad")).toMatch(/color:\s*var\(--red\)/);
+  });
+});

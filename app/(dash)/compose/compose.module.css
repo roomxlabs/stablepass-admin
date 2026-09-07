@@ -441,20 +441,26 @@
 .uploadBtn:hover {
   background: var(--cream);
 }
+/* ENG-1047 — the track sits on the footer's white ground, so cream-dark
+   (#F1ECE3) was invisible until the fill had grown; at 4px with no radius the
+   bar read as a hairline. --line-dark on white is visible from 0%. */
 .progressTrack {
-  height: 4px;
-  background: var(--cream-dark);
+  height: 8px;
+  background: var(--line-dark);
+  border-radius: var(--radius-pill);
   overflow: hidden;
 }
 .progressFill {
   height: 100%;
   background: var(--brand-green);
+  border-radius: var(--radius-pill);
   transition: width 0.2s ease;
 }
 .uploadStatus {
-  font-size: 12px;
-  font-weight: 500;
-  color: var(--brand-green);
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--brand-green-dark);
+  font-variant-numeric: tabular-nums;
 }
 .uploadError {
   color: var(--red);
@@ -1024,8 +1030,10 @@
 }
 .photoState {
   font-family: var(--font-sans);
-  font-size: 10.5px;
-  color: var(--muted);
+  /* ENG-1047 — 10.5px muted was unreadable while the tile was uploading. */
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--ink);
   padding: 0 5px 4px;
   overflow: hidden;
   text-overflow: ellipsis;

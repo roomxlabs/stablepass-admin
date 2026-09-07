@@ -1679,3 +1679,22 @@ tells you when to stop:
 ENG-993 fixed the *mechanism* behind the second shape in `supabase-fake` (8 query methods that
 silently no-opped). Nothing prevents any of these from being **claimed** without being run — which
 is what this entry exists to prevent.
+
+## PR screenshots live in `e2e/__screenshots__` — put it in the SURFACE of every UI ticket (ENG-1047)
+`gh` cannot upload an image to a PR, and there is no other image host wired up, so every prior UI PR
+here (ENG-252, ENG-980, …) commits its evidence PNGs as `e2e/__screenshots__/<next-number>-<ticket>-*.png`
+and links them `…/blob/<branch>/e2e/__screenshots__/<file>?raw=true`. ENG-1047's surface listed only
+the CSS + its test, so the PNGs were an undeclared (collision-free) widening. grill-me: declare
+`e2e/__screenshots__/<N>-<ticket>-*.png (new)` on any ticket that requires a screenshot on the PR.
+Number from `ls e2e/__screenshots__ | grep -oE '^[0-9]+' | sort -n | tail -1`, and still never
+regenerate the existing baselines (see the `page.screenshot({path})` entry above).
+
+## Screenshotting an upload MID-flight (ENG-1047)
+The committed specs only ever await `upload-done`, so there is no "uploading" state to shoot. Two
+freezes that work under the mock-Supabase harness, from a throwaway spec (not committed — e2e specs are
+usually outside the ticket surface): **video** — `page.addInitScript` patching
+`XMLHttpRequest.prototype.send` to dispatch one `ProgressEvent("progress", {lengthComputable:true,
+loaded:42,total:100})` on `xhr.upload` for URLs containing `mock-upload` and never call the real send;
+**photo** — `page.route("**/storage/v1/**", () => new Promise(() => {}))` so the Storage PUT never
+settles (pct stays 0, tiles stay `uploading…`). Screenshot `page.locator('[class*="progressTrack"]').locator("..")`
+for the zone + footer.

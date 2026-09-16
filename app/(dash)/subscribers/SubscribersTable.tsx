@@ -1,9 +1,9 @@
 import Link from "next/link";
 import SubscribedDate from "./SubscribedDate";
-import { SUBSCRIBER_STATUSES, type SubscriberRow } from "./data";
+import { SUBSCRIBER_STATUSES, type SubscriberProvider, type SubscriberRow } from "./data";
 
 // Presentational shell for the Subscribers screen: the status filter bar, the
-// tenure band row, the table itself, and the paging footer.
+// tenure band row, the billed-via row, the table itself, and the paging footer.
 //
 // Split out of page.tsx so it can be rendered in a jsdom test without standing
 // up a Supabase client — the same split waitlist/trainers/posts use. It takes
@@ -46,6 +46,37 @@ export function bandById(id?: string): TenureBand | undefined {
   return TENURE_BANDS.find((b) => b.id === id);
 }
 
+export type ProviderOption = {
+  /** Query value, e.g. "app_store". `undefined` id means "Any". */
+  id?: SubscriberProvider;
+  label: string;
+};
+
+// Where the member pays (ENG-1193). Once members can subscribe on three
+// channels, "who is cancelling" needs "where they pay" beside it — a refund or
+// a cancellation is handled in a different console per channel. Same shape as
+// TENURE_BANDS: the chips, the table cell and the ?provider= parsing in page.tsx
+// all read this one list. `stripe` reads "Web" because that is where the member
+// bought it, which is what an operator actually needs to know.
+export const PROVIDERS: ProviderOption[] = [
+  { label: "Any" },
+  { id: "stripe", label: "Web" },
+  { id: "app_store", label: "App Store" },
+  { id: "play_store", label: "Google Play" },
+  { id: "promotional", label: "Complimentary" },
+];
+
+/** Resolve a ?provider= value; unknown ids are ignored, same as `bandById`. */
+export function providerById(id?: string): ProviderOption | undefined {
+  if (!id) return undefined;
+  return PROVIDERS.find((p) => p.id === id);
+}
+
+/** The "Billed via" cell text. An unrecognised id renders verbatim, never as "Web". */
+export function providerLabel(provider: string): string {
+  return providerById(provider)?.label ?? provider;
+}
+
 /** Human label + pill colour for a subscription status. */
 export function statusPill(status: string): { label: string; className: string } {
   switch (status) {
@@ -72,18 +103,20 @@ export type SubscribersTableProps = {
   /** How many rows the active filters match (equals `total` when unfiltered). */
   matching: number;
   status?: string;
+  provider?: string;
   band?: string;
   q?: string;
   offset: number;
   limit: number;
 };
 
-type HrefParams = { status?: string; band?: string; q?: string; offset?: number };
+type HrefParams = { status?: string; provider?: string; band?: string; q?: string; offset?: number };
 
 /** Href for another slice/page of the same list. */
-export function buildSubscribersHref({ status, band, q, offset = 0 }: HrefParams): string {
+export function buildSubscribersHref({ status, provider, band, q, offset = 0 }: HrefParams): string {
   const params = new URLSearchParams();
   if (status && status !== "all") params.set("status", status);
+  if (provider && provider !== "all") params.set("provider", provider);
   if (band) params.set("band", band);
   if (q) params.set("q", q);
   if (offset > 0) params.set("offset", String(offset));
@@ -96,9 +129,10 @@ export function buildSubscribersHref({ status, band, q, offset = 0 }: HrefParams
  * window — the export covers the whole filtered set, every page, which is the
  * acceptance criterion.
  */
-export function buildExportHref({ status, band, q }: Omit<HrefParams, "offset">): string {
+export function buildExportHref({ status, provider, band, q }: Omit<HrefParams, "offset">): string {
   const params = new URLSearchParams();
   if (status && status !== "all") params.set("status", status);
+  if (provider && provider !== "all") params.set("provider", provider);
   const b = bandById(band);
   if (b?.minMonths !== undefined) params.set("minMonths", String(b.minMonths));
   if (b?.maxMonths !== undefined) params.set("maxMonths", String(b.maxMonths));
@@ -112,13 +146,15 @@ export default function SubscribersTable({
   total,
   matching,
   status,
+  provider,
   band,
   q,
   offset,
   limit,
 }: SubscribersTableProps) {
   const activeStatus = status && status !== "all" ? status : undefined;
-  const filtered = Boolean(activeStatus || band || q);
+  const activeProvider = providerById(provider)?.id;
+  const filtered = Boolean(activeStatus || activeProvider || band || q);
   const prevOffset = Math.max(0, offset - limit);
   // Compare against the PAGE WINDOW, not the rows rendered — `rows.length` is
   // post-filtering, so on a last page that dropped a row `offset + rows.length
@@ -152,7 +188,7 @@ export default function SubscribersTable({
         </span>
         <Link
           className={`chip${!activeStatus ? " active" : ""}`}
-          href={buildSubscribersHref({ band, q })}
+          href={buildSubscribersHref({ provider: activeProvider, band, q })}
         >
           All
         </Link>
@@ -160,7 +196,7 @@ export default function SubscribersTable({
           <Link
             key={s}
             className={`chip${activeStatus === s ? " active" : ""}`}
-            href={buildSubscribersHref({ status: s, band, q })}
+            href={buildSubscribersHref({ status: s, provider: activeProvider, band, q })}
             data-testid={`status-filter-${s}`}
           >
             {statusPill(s).label}
@@ -169,7 +205,7 @@ export default function SubscribersTable({
         <div className="spacer" />
         <a
           className="btn btn-primary"
-          href={buildExportHref({ status, band, q })}
+          href={buildExportHref({ status, provider: activeProvider, band, q })}
           download
           data-testid="subscribers-export"
         >
@@ -183,10 +219,26 @@ export default function SubscribersTable({
           <Link
             key={b.id ?? "any"}
             className={`chip${(band ?? undefined) === b.id ? " active" : ""}`}
-            href={buildSubscribersHref({ status, band: b.id, q })}
+            href={buildSubscribersHref({ status, provider: activeProvider, band: b.id, q })}
             data-testid={`tenure-filter-${b.id ?? "any"}`}
           >
             {b.label}
+          </Link>
+        ))}
+      </div>
+
+      {/* Billed via — a third, independent question, so its own row in the
+          same `.subs-filter-row` treatment as the tenure bands. */}
+      <div className="subs-filter-row">
+        <span className="filter-label">Billed via</span>
+        {PROVIDERS.map((p) => (
+          <Link
+            key={p.id ?? "any"}
+            className={`chip${activeProvider === p.id ? " active" : ""}`}
+            href={buildSubscribersHref({ status, provider: p.id, band, q })}
+            data-testid={`provider-filter-${p.id ?? "any"}`}
+          >
+            {p.label}
           </Link>
         ))}
       </div>
@@ -205,6 +257,7 @@ export default function SubscribersTable({
             <tr>
               <th scope="col">Subscriber</th>
               <th scope="col">Status</th>
+              <th scope="col">Billed via</th>
               <th scope="col">Subscribed</th>
               <th scope="col">Tenure</th>
               <th scope="col">Period ends</th>
@@ -240,6 +293,9 @@ export default function SubscribersTable({
                   </td>
                   <td>
                     <span className={pill.className}>{pill.label}</span>
+                  </td>
+                  <td className="subs-provider" data-testid="subscriber-provider">
+                    {providerLabel(row.provider)}
                   </td>
                   {/* Year-bearing: this column spans years, and the shared
                       `when` format renders none — see SubscribedDate.tsx. */}
@@ -292,14 +348,14 @@ export default function SubscribersTable({
           </div>
           <div className="pager">
             {offset > 0 ? (
-              <Link href={buildSubscribersHref({ status, band, q, offset: prevOffset })}>
+              <Link href={buildSubscribersHref({ status, provider: activeProvider, band, q, offset: prevOffset })}>
                 ‹ Prev
               </Link>
             ) : (
               <span className="disabled">‹ Prev</span>
             )}
             {hasMore ? (
-              <Link href={buildSubscribersHref({ status, band, q, offset: offset + limit })}>
+              <Link href={buildSubscribersHref({ status, provider: activeProvider, band, q, offset: offset + limit })}>
                 Next ›
               </Link>
             ) : (

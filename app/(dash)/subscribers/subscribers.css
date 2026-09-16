@@ -289,3 +289,12 @@
   color: var(--muted);
   max-width: 72ch;
 }
+
+/* Billed via (ENG-1193) ---------------------------------------------- */
+/* Plain ink text, no pill and no new colour: status already owns the pill
+   column, and a second coloured tag beside it would compete with the red
+   Cancelled pill this screen exists to surface. nowrap keeps "Google Play" and
+   "Complimentary" on one line at the narrow table widths. */
+.subs-provider {
+  white-space: nowrap;
+}

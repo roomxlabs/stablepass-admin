@@ -26,6 +26,7 @@ function asNonAdmin() {
 type SubRow = {
   id: string;
   status: string;
+  provider?: string | null;
   created_at: string;
   updated_at: string | null;
   current_period_end: string | null;
@@ -104,7 +105,7 @@ describe("GET /api/admin/subscribers/export", () => {
     expect(r.headers.get("content-type")).toMatch(/^text\/csv/);
     expect(r.headers.get("content-disposition")).toContain("attachment; filename=\"subscribers-");
     const body = await r.text();
-    expect(body.startsWith("name,email,status,started_at,tenure_months,current_period_end,canceled_at")).toBe(true);
+    expect(body.startsWith("name,email,status,provider,started_at,tenure_months,current_period_end,canceled_at")).toBe(true);
     expect(body).toContain("ann@example.com");
   });
 
@@ -127,6 +128,33 @@ describe("GET /api/admin/subscribers/export", () => {
     const r = await GET(req("?status=canceled"));
     const body = await r.text();
     expect(body).toContain("cara@example.com");
+    expect(body).not.toContain("ann@example.com");
+  });
+
+  it("passes ?provider= through, carrying the provider column (ENG-1193)", async () => {
+    useRows([
+      subRow({ id: "1", provider: "app_store", user: { name: "Ann", email: "ann@example.com" } }),
+      subRow({ id: "2", provider: "stripe", user: { name: "Bob", email: "bob@example.com" } }),
+      subRow({ id: "3", provider: null, user: { name: "Cara", email: "cara@example.com" } }),
+    ]);
+    const r = await GET(req("?provider=app_store"));
+    expect(r.status).toBe(200);
+    const lines = (await r.text()).trim().split("\r\n");
+    expect(lines[0]).toBe("name,email,status,provider,started_at,tenure_months,current_period_end,canceled_at");
+    expect(lines).toHaveLength(2);
+    // Tenure is wall-clock relative here (the route takes no `now`), so match it loosely.
+    expect(lines[1]).toMatch(/^Ann,ann@example\.com,active,app_store,2026-01-01T00:00:00Z,\d+,,$/);
+  });
+
+  it("maps a NULL provider to stripe, and ?provider=stripe includes it", async () => {
+    useRows([
+      subRow({ id: "1", provider: "app_store", user: { name: "Ann", email: "ann@example.com" } }),
+      subRow({ id: "3", provider: null, user: { name: "Cara", email: "cara@example.com" } }),
+    ]);
+    const r = await GET(req("?provider=stripe"));
+    expect(r.status).toBe(200);
+    const body = await r.text();
+    expect(body).toContain("Cara,cara@example.com,active,stripe,");
     expect(body).not.toContain("ann@example.com");
   });
 });

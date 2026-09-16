@@ -22,11 +22,39 @@ export type SubscriberStatus = "trial" | "active" | "lapsed" | "canceled";
 
 export const SUBSCRIBER_STATUSES: SubscriberStatus[] = ["trial", "active", "lapsed", "canceled"];
 
+// Where the member pays (ENG-1193, epic ENG-1183). `subscription.provider` is a
+// CHECK-constrained column added by stablepass-be ENG-1185; a NULL (a row the
+// backfill has not stamped) is a web/Stripe subscription, which is what every
+// subscription was before in-app purchase existed.
+export type SubscriberProvider = "stripe" | "app_store" | "play_store" | "promotional";
+
+export const SUBSCRIBER_PROVIDERS: SubscriberProvider[] = [
+  "stripe",
+  "app_store",
+  "play_store",
+  "promotional",
+];
+
+// Only NULL defaults. A non-null value is passed through as-is: were the CHECK
+// ever widened, a new channel must not be silently relabelled "Web" — the
+// table renders an unrecognised id verbatim instead (see providerLabel).
+function providerFrom(raw: string | null | undefined): SubscriberProvider {
+  return (raw ?? "stripe") as SubscriberProvider;
+}
+
+// The ONE projection every subscriber read uses — list and CSV alike. Pinned by
+// literal in data.test.ts: naming `provider` here 42703s against a database
+// without ENG-1185's migration, and fetchAllSubscribers throws on that rather
+// than rendering an empty list.
+export const SUBSCRIPTION_SELECT =
+  "id,status,provider,created_at,updated_at,current_period_end,user:user_id(name,email,is_admin)";
+
 export type SubscriberRow = {
   id: string;
   name: string | null;
   email: string;
   status: string;
+  provider: SubscriberProvider;
   startedAt: string | null;
   currentPeriodEnd: string | null;
   // Derived, NOT a real column — see the comment on canceledAtFrom below.
@@ -46,6 +74,8 @@ export type SubscribersList = {
 
 export type SubscriberFilters = {
   status?: string;
+  /** A SubscriberProvider id; `"all"` / undefined = no filter. */
+  provider?: string;
   minMonths?: number;
   maxMonths?: number;
   q?: string;
@@ -59,6 +89,7 @@ type SubscriptionUserEmbed = { name?: string | null; email?: string | null; is_a
 type SubscriptionDbRow = {
   id: string;
   status: string | null;
+  provider: string | null;
   created_at: string | null;
   updated_at: string | null;
   current_period_end: string | null;
@@ -135,6 +166,7 @@ function mapRows(rows: SubscriptionDbRow[], now: Date): SubscriberRow[] {
         name: user?.name?.trim() || null,
         email: (user?.email ?? "").trim(),
         status: r.status ?? "",
+        provider: providerFrom(r.provider),
         startedAt: r.created_at ?? null,
         currentPeriodEnd: r.current_period_end ?? null,
         canceledAt: canceledAtFrom(r.status, r.updated_at),
@@ -175,7 +207,7 @@ export async function fetchAllSubscribers(
   for (let batch = 0; batch < EXPORT_MAX_BATCHES; batch++) {
     const { data, error } = await sb
       .from("subscription")
-      .select("id,status,created_at,updated_at,current_period_end,user:user_id(name,email,is_admin)")
+      .select(SUBSCRIPTION_SELECT)
       .order("created_at", { ascending: false })
       .order("id", { ascending: false })
       .range(from, from + EXPORT_BATCH_SIZE - 1);
@@ -225,13 +257,17 @@ export async function fetchAllSubscribers(
   return mapRows(all, now);
 }
 
-/** Apply status / tenure / q filters in JS. Pure — unit-tested directly. */
+/** Apply status / provider / tenure / q filters in JS. Pure — unit-tested directly. */
 export function applyFilters(rows: SubscriberRow[], f: SubscriberFilters): SubscriberRow[] {
   let out = rows;
 
   if (f.status && f.status !== "all") {
     const status = f.status;
     out = out.filter((r) => r.status === status);
+  }
+  if (f.provider && f.provider !== "all") {
+    const provider = f.provider;
+    out = out.filter((r) => r.provider === provider);
   }
   if (typeof f.minMonths === "number" && !Number.isNaN(f.minMonths)) {
     const min = f.minMonths;
@@ -289,19 +325,22 @@ function csvField(value: string): string {
 
 /**
  * RFC4180-ish CSV for the subscribers export:
- * `name,email,status,started_at,tenure_months,current_period_end,canceled_at`
+ * `name,email,status,provider,started_at,tenure_months,current_period_end,canceled_at`
  * header, `\r\n` line endings, a trailing newline. Escapes quotes/commas/
  * newlines and neutralises a leading `=`/`+`/`-`/`@` so opening the file in
  * Excel can't execute a formula from an attacker-supplied name.
  */
 export function toCsv(rows: SubscriberRow[]): string {
-  const lines = ["name,email,status,started_at,tenure_months,current_period_end,canceled_at"];
+  const lines = ["name,email,status,provider,started_at,tenure_months,current_period_end,canceled_at"];
   for (const r of rows) {
     lines.push(
       [
         csvField(r.name ?? ""),
         csvField(r.email),
         csvField(r.status),
+        // CHECK-constrained values today, but through the same escaper as
+        // every other field — the guard should not depend on the schema.
+        csvField(r.provider),
         csvField(r.startedAt ?? ""),
         csvField(String(r.tenureMonths)),
         csvField(r.currentPeriodEnd ?? ""),

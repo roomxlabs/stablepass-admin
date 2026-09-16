@@ -109,7 +109,7 @@ test("subscribers — CSV export covers the filtered set, not the visible page",
   const csv = Buffer.concat(chunks).toString("utf8");
 
   const lines = csv.trim().split(/\r\n/);
-  expect(lines[0]).toBe("name,email,status,started_at,tenure_months,current_period_end,canceled_at");
+  expect(lines[0]).toBe("name,email,status,provider,started_at,tenure_months,current_period_end,canceled_at");
   // Header + exactly the two cancelled subscribers — the export honours the
   // filter rather than dumping the whole base.
   expect(lines).toHaveLength(3);
@@ -142,6 +142,78 @@ test("subscribers — the UNFILTERED export still excludes the operator", async 
   expect(csv).not.toContain("ops@stablepass.co");
   expect(csv).not.toContain("StablePass Ops");
   expect(csv).toContain("harriet@example.com");
+});
+
+test("subscribers — Billed via: column, chips, and the provider filter narrows (ENG-1193)", async ({ page }) => {
+  test.setTimeout(60000);
+  await signIn(page);
+  await page.goto("/subscribers");
+  await expect(page.locator(".adm-table")).toBeVisible({ timeout: 30000 });
+
+  // The column sits right after Status, and every channel label appears —
+  // including the NULL-provider fixture (Tom), which must read "Web".
+  const headers = await page.locator(".adm-table thead th").allTextContents();
+  expect(headers.indexOf("Billed via")).toBe(headers.indexOf("Status") + 1);
+  await expect(
+    page.getByTestId("subscriber-row").filter({ hasText: "tom@example.com" }).getByTestId("subscriber-provider"),
+  ).toHaveText("Web");
+  for (const label of ["Web", "App Store", "Google Play", "Complimentary"]) {
+    await expect(page.getByTestId("subscriber-provider").filter({ hasText: label }).first()).toBeVisible();
+  }
+
+  await page.getByTestId("provider-filter-app_store").click();
+  await page.waitForURL("**/subscribers?provider=app_store", { timeout: 30000 });
+
+  // Harriet (active) and Douglas (cancelled) are the two App Store fixtures.
+  await expect(page.locator(".adm-table tbody tr")).toHaveCount(2);
+  await expect(page.getByTestId("subscriber-provider")).toHaveText(["App Store", "App Store"]);
+  await expect(page.locator(".adm-table tbody")).toContainText("harriet@example.com");
+  await expect(page.locator(".adm-table tbody")).toContainText("douglas@example.com");
+  await expect(page.getByTestId("provider-filter-app_store")).toHaveClass(/active/);
+  // The headline stays the unfiltered total.
+  await expect(page.getByTestId("subscribers-total")).toContainText("8");
+
+  await page.screenshot({
+    path: "e2e/__screenshots__/46-subscribers-provider.png",
+    fullPage: true,
+  });
+
+  // Combines with status: cancelled AND App Store is Douglas alone.
+  await page.getByTestId("status-filter-canceled").click();
+  await page.waitForURL("**/subscribers?status=canceled&provider=app_store", { timeout: 30000 });
+  await expect(page.locator(".adm-table tbody tr")).toHaveCount(1);
+  await expect(page.locator(".adm-table tbody")).toContainText("douglas@example.com");
+});
+
+test("subscribers — an unknown ?provider= is ignored, not an unclearable filter", async ({ page }) => {
+  test.setTimeout(60000);
+  await signIn(page);
+  await page.goto("/subscribers?provider=xyz");
+  await expect(page.locator(".adm-table tbody tr")).toHaveCount(8, { timeout: 30000 });
+  await expect(page.getByTestId("provider-filter-any")).toHaveClass(/active/);
+});
+
+test("subscribers — CSV export carries the provider column and honours the provider filter", async ({ page }) => {
+  test.setTimeout(60000);
+  await signIn(page);
+  await page.goto("/subscribers?provider=play_store");
+
+  const [download] = await Promise.all([
+    page.waitForEvent("download", { timeout: 30000 }),
+    page.getByTestId("subscribers-export").click(),
+  ]);
+
+  const stream = await download.createReadStream();
+  const chunks: Buffer[] = [];
+  for await (const chunk of stream!) chunks.push(chunk as Buffer);
+  const lines = Buffer.concat(chunks).toString("utf8").trim().split(/\r\n/);
+
+  expect(lines[0]).toBe("name,email,status,provider,started_at,tenure_months,current_period_end,canceled_at");
+  // Header + Rafael (lapsed) and Simone (cancelled), the two Google Play rows.
+  expect(lines).toHaveLength(3);
+  const byEmail = new Map(lines.slice(1).map((l) => [l.split(",")[1], l.split(",")]));
+  expect(byEmail.get("rafael@example.com")?.[3]).toBe("play_store");
+  expect(byEmail.get("simone@example.com")?.[3]).toBe("play_store");
 });
 
 test("subscribers — empty state", async ({ page }) => {

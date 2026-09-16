@@ -1,7 +1,7 @@
 import { requireAdminPage } from "@/lib/auth/admin";
 import SearchField from "../SearchField";
 import { listSubscribers, SUBSCRIBERS_PAGE_SIZE } from "./data";
-import SubscribersTable, { bandById } from "./SubscribersTable";
+import SubscribersTable, { bandById, providerById } from "./SubscribersTable";
 import "./subscribers.css";
 
 // Subscribers — who is subscribed, for how long, and who has cancelled.
@@ -30,7 +30,7 @@ import "./subscribers.css";
 // is cache()-wrapped, so the re-assertion costs nothing on this request.
 export const dynamic = "force-dynamic";
 
-type Search = { status?: string; band?: string; q?: string; offset?: string };
+type Search = { status?: string; provider?: string; band?: string; q?: string; offset?: string };
 
 export default async function SubscribersPage({
   searchParams,
@@ -44,12 +44,16 @@ export default async function SubscribersPage({
   // no chip can clear.
   const bandId = bandById(sp.band?.trim())?.id;
   const band = bandById(bandId);
+  // Same treatment for ?provider=: resolved through the chip table, so an
+  // unknown value is dropped instead of filtering the list to nothing.
+  const provider = providerById(sp.provider?.trim())?.id;
   const q = sp.q?.trim() || undefined;
   const offset = Math.max(0, parseInt(sp.offset ?? "0", 10) || 0);
 
   const { sb } = await requireAdminPage();
   const { rows, total, matching } = await listSubscribers(sb, {
     status,
+    provider,
     minMonths: band?.minMonths,
     maxMonths: band?.maxMonths,
     q,
@@ -70,6 +74,7 @@ export default async function SubscribersPage({
             defaultValue={q ?? ""}
             hidden={{
               ...(status ? { status } : {}),
+              ...(provider ? { provider } : {}),
               ...(bandId ? { band: bandId } : {}),
             }}
           />
@@ -82,6 +87,7 @@ export default async function SubscribersPage({
           total={total}
           matching={matching}
           status={status}
+          provider={provider}
           band={bandId}
           q={q}
           offset={offset}

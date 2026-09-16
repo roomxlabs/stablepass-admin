@@ -7,6 +7,8 @@ import {
   listSubscribers,
   toCsv,
   SUBSCRIBERS_PAGE_SIZE,
+  SUBSCRIPTION_SELECT,
+  SUBSCRIBER_PROVIDERS,
   type SubscriberRow,
 } from "./data";
 
@@ -78,6 +80,7 @@ describe("tenureMonths", () => {
 type SubscriptionDbLike = {
   id: string;
   status: string;
+  provider?: string | null;
   created_at: string;
   updated_at: string | null;
   current_period_end: string | null;
@@ -87,10 +90,14 @@ type SubscriptionDbLike = {
 function makeRangeClient(all: SubscriptionDbLike[], opts: { serverCap?: number } = {}) {
   const cap = opts.serverCap ?? 1000;
   const calls: { from: number; to: number }[] = [];
+  const selects: string[] = [];
   const client = {
     from: () => {
       const b = {
-        select: () => b,
+        select: (cols: string) => {
+          selects.push(cols);
+          return b;
+        },
         order: () => b,
         range: async (from: number, to: number) => {
           calls.push({ from, to });
@@ -101,7 +108,7 @@ function makeRangeClient(all: SubscriptionDbLike[], opts: { serverCap?: number }
       return b;
     },
   } as unknown as SupabaseClient;
-  return { client, calls };
+  return { client, calls, selects };
 }
 
 function row(overrides: Partial<SubscriptionDbLike> = {}): SubscriptionDbLike {
@@ -219,6 +226,7 @@ const ROWS: SubscriberRow[] = [
     name: "Ann",
     email: "ann@example.com",
     status: "active",
+    provider: "stripe",
     startedAt: "2026-01-05T00:00:00Z",
     currentPeriodEnd: "2026-10-05T00:00:00Z",
     canceledAt: null,
@@ -229,6 +237,7 @@ const ROWS: SubscriberRow[] = [
     name: "Bob",
     email: "bob@example.com",
     status: "trial",
+    provider: "app_store",
     startedAt: "2026-09-01T00:00:00Z",
     currentPeriodEnd: null,
     canceledAt: null,
@@ -239,6 +248,7 @@ const ROWS: SubscriberRow[] = [
     name: "Cara",
     email: "cara@example.com",
     status: "canceled",
+    provider: "play_store",
     startedAt: "2024-01-01T00:00:00Z",
     currentPeriodEnd: null,
     canceledAt: "2026-06-01T00:00:00Z",
@@ -316,15 +326,15 @@ describe("toCsv", () => {
   it("writes the exact header row", () => {
     const csv = toCsv([]);
     expect(csv.split("\r\n")[0]).toBe(
-      "name,email,status,started_at,tenure_months,current_period_end,canceled_at",
+      "name,email,status,provider,started_at,tenure_months,current_period_end,canceled_at",
     );
   });
 
   it("writes one CRLF-terminated line per row with a trailing newline", () => {
     const csv = toCsv([ROWS[0]]);
     expect(csv).toBe(
-      "name,email,status,started_at,tenure_months,current_period_end,canceled_at\r\n" +
-        "Ann,ann@example.com,active,2026-01-05T00:00:00Z,8,2026-10-05T00:00:00Z,\r\n",
+      "name,email,status,provider,started_at,tenure_months,current_period_end,canceled_at\r\n" +
+        "Ann,ann@example.com,active,stripe,2026-01-05T00:00:00Z,8,2026-10-05T00:00:00Z,\r\n",
     );
   });
 
@@ -418,6 +428,7 @@ describe("toCsv — formula injection, beyond the obvious `=`", () => {
       name,
       email: "m@example.com",
       status: "active",
+      provider: "stripe",
       startedAt: null,
       currentPeriodEnd: null,
       canceledAt: null,
@@ -443,10 +454,85 @@ describe("toCsv — formula injection, beyond the obvious `=`", () => {
   });
 
   it("leaves an ordinary name untouched", () => {
-    expect(dataLine("Harriet Vale")).toBe("Harriet Vale,m@example.com,active,,0,,");
+    expect(dataLine("Harriet Vale")).toBe("Harriet Vale,m@example.com,active,stripe,,0,,");
   });
 
   it("still quotes AND prefixes a payload containing a comma", () => {
-    expect(dataLine("=1+1,x")).toBe('"\'=1+1,x",m@example.com,active,,0,,');
+    expect(dataLine("=1+1,x")).toBe('"\'=1+1,x",m@example.com,active,stripe,,0,,');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Billed via (ENG-1193): `subscription.provider`, added by stablepass-be
+// ENG-1185. List + CSV + filter all read it.
+// ---------------------------------------------------------------------------
+
+describe("provider — select, mapping, filter, CSV", () => {
+  // Pinned by LITERAL, not by re-importing the string (gotcha: "Pin with
+  // literals"). Dropping `provider` from the projection turns every row into
+  // "Web" with a green suite otherwise.
+  it("pins the subscription projection, provider included", () => {
+    expect(SUBSCRIPTION_SELECT).toBe(
+      "id,status,provider,created_at,updated_at,current_period_end,user:user_id(name,email,is_admin)",
+    );
+  });
+
+  it("fetchAllSubscribers actually sends that projection", async () => {
+    const { client, selects } = makeRangeClient([row({ id: "1" })]);
+    await fetchAllSubscribers(client, NOW);
+    expect(selects[0]).toBe(
+      "id,status,provider,created_at,updated_at,current_period_end,user:user_id(name,email,is_admin)",
+    );
+  });
+
+  it("maps each provider through, and a NULL provider to stripe (web)", async () => {
+    const { client } = makeRangeClient([
+      row({ id: "1", provider: "app_store", user: { name: "A", email: "a@example.com", is_admin: false } }),
+      row({ id: "2", provider: "play_store", user: { name: "B", email: "b@example.com", is_admin: false } }),
+      row({ id: "3", provider: "promotional", user: { name: "C", email: "c@example.com", is_admin: false } }),
+      row({ id: "4", provider: "stripe", user: { name: "D", email: "d@example.com", is_admin: false } }),
+      row({ id: "5", provider: null, user: { name: "E", email: "e@example.com", is_admin: false } }),
+    ]);
+    const rows = await fetchAllSubscribers(client, NOW);
+    expect(rows.map((r) => [r.id, r.provider])).toEqual([
+      ["1", "app_store"],
+      ["2", "play_store"],
+      ["3", "promotional"],
+      ["4", "stripe"],
+      ["5", "stripe"],
+    ]);
+  });
+
+  it("exports exactly the four channels", () => {
+    expect(SUBSCRIBER_PROVIDERS).toEqual(["stripe", "app_store", "play_store", "promotional"]);
+  });
+
+  it("filters by exact provider", () => {
+    expect(applyFilters(ROWS, { provider: "app_store" }).map((r) => r.id)).toEqual(["2"]);
+    expect(applyFilters(ROWS, { provider: "stripe" }).map((r) => r.id)).toEqual(["1"]);
+    expect(applyFilters(ROWS, { provider: "promotional" }).map((r) => r.id)).toEqual([]);
+  });
+
+  it("does not narrow when provider is undefined or 'all'", () => {
+    expect(applyFilters(ROWS, { provider: undefined }).map((r) => r.id)).toEqual(["1", "2", "3"]);
+    expect(applyFilters(ROWS, { provider: "all" }).map((r) => r.id)).toEqual(["1", "2", "3"]);
+  });
+
+  it("combines provider with status", () => {
+    expect(applyFilters(ROWS, { provider: "play_store", status: "canceled" }).map((r) => r.id)).toEqual(["3"]);
+    expect(applyFilters(ROWS, { provider: "play_store", status: "active" }).map((r) => r.id)).toEqual([]);
+  });
+
+  it("writes the provider value after status in each CSV line", () => {
+    const lines = toCsv([ROWS[1], ROWS[2]]).split("\r\n");
+    expect(lines[1]).toBe("Bob,bob@example.com,trial,app_store,2026-09-01T00:00:00Z,0,,");
+    expect(lines[2]).toBe(
+      "Cara,cara@example.com,canceled,play_store,2024-01-01T00:00:00Z,32,,2026-06-01T00:00:00Z",
+    );
+  });
+
+  it("runs the provider field through the formula-injection escaper too", () => {
+    const line = toCsv([{ ...ROWS[0], provider: "=evil" as SubscriberRow["provider"] }]).split("\r\n")[1];
+    expect(line.split(",")[3]).toBe("'=evil");
   });
 });

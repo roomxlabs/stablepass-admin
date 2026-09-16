@@ -524,17 +524,20 @@ function monthsAgo(n) {
 function daysAgo(n) {
   return new Date(Date.now() - n * 864e5).toISOString();
 }
+// `provider` (ENG-1193): at least one of each channel, plus a NULL one (sub-2)
+// that must render as "Web". App Store is on one active and one cancelled row so
+// the provider filter can be seen narrowing across statuses.
 const SUBSCRIPTION_FIXTURES = [
-  { id: "sub-8", status: "active",   created_at: monthsAgo(19), updated_at: monthsAgo(19), current_period_end: daysAgo(-12), user: { name: "Mei Lin",        email: "mei.lin@example.com",   is_admin: false } },
-  { id: "sub-1", status: "active",   created_at: monthsAgo(14), updated_at: monthsAgo(14), current_period_end: daysAgo(-21), user: { name: "Harriet Vale",   email: "harriet@example.com",   is_admin: false } },
-  { id: "sub-7", status: "lapsed",   created_at: monthsAgo(11), updated_at: monthsAgo(1),  current_period_end: daysAgo(34),  user: { name: "Rafael Costa",   email: "rafael@example.com",    is_admin: false } },
-  { id: "sub-2", status: "active",   created_at: monthsAgo(8),  updated_at: monthsAgo(8),  current_period_end: daysAgo(-6),  user: { name: "Tom Ashcroft",   email: "tom@example.com",       is_admin: false } },
-  { id: "sub-5", status: "canceled", created_at: monthsAgo(7),  updated_at: daysAgo(3),    current_period_end: daysAgo(-9),  user: { name: "Douglas Byrne",  email: "douglas@example.com",   is_admin: false } },
-  { id: "sub-3", status: "active",   created_at: monthsAgo(4),  updated_at: monthsAgo(4),  current_period_end: daysAgo(-17), user: { name: "Priya Raman",    email: "priya@example.com",     is_admin: false } },
-  { id: "sub-6", status: "canceled", created_at: monthsAgo(2),  updated_at: daysAgo(9),    current_period_end: daysAgo(-2),  user: { name: "Simone Clark",   email: "simone@example.com",    is_admin: false } },
-  { id: "sub-4", status: "trial",    created_at: daysAgo(11),   updated_at: daysAgo(11),   current_period_end: null,         user: { name: "Nina Okafor",    email: "nina@example.com",      is_admin: false } },
+  { id: "sub-8", status: "active",   provider: "stripe", created_at: monthsAgo(19), updated_at: monthsAgo(19), current_period_end: daysAgo(-12), user: { name: "Mei Lin",        email: "mei.lin@example.com",   is_admin: false } },
+  { id: "sub-1", status: "active",   provider: "app_store", created_at: monthsAgo(14), updated_at: monthsAgo(14), current_period_end: daysAgo(-21), user: { name: "Harriet Vale",   email: "harriet@example.com",   is_admin: false } },
+  { id: "sub-7", status: "lapsed",   provider: "play_store", created_at: monthsAgo(11), updated_at: monthsAgo(1),  current_period_end: daysAgo(34),  user: { name: "Rafael Costa",   email: "rafael@example.com",    is_admin: false } },
+  { id: "sub-2", status: "active",   provider: null, created_at: monthsAgo(8),  updated_at: monthsAgo(8),  current_period_end: daysAgo(-6),  user: { name: "Tom Ashcroft",   email: "tom@example.com",       is_admin: false } },
+  { id: "sub-5", status: "canceled", provider: "app_store", created_at: monthsAgo(7),  updated_at: daysAgo(3),    current_period_end: daysAgo(-9),  user: { name: "Douglas Byrne",  email: "douglas@example.com",   is_admin: false } },
+  { id: "sub-3", status: "active",   provider: "promotional", created_at: monthsAgo(4),  updated_at: monthsAgo(4),  current_period_end: daysAgo(-17), user: { name: "Priya Raman",    email: "priya@example.com",     is_admin: false } },
+  { id: "sub-6", status: "canceled", provider: "play_store", created_at: monthsAgo(2),  updated_at: daysAgo(9),    current_period_end: daysAgo(-2),  user: { name: "Simone Clark",   email: "simone@example.com",    is_admin: false } },
+  { id: "sub-4", status: "trial",    provider: "stripe", created_at: daysAgo(11),   updated_at: daysAgo(11),   current_period_end: null,         user: { name: "Nina Okafor",    email: "nina@example.com",      is_admin: false } },
   // The operator. Excluded by the staff guardrail — never rendered, never exported.
-  { id: "sub-admin", status: "active", created_at: monthsAgo(22), updated_at: monthsAgo(22), current_period_end: daysAgo(-30), user: { name: "StablePass Ops", email: "ops@stablepass.co", is_admin: true } },
+  { id: "sub-admin", status: "active", provider: "stripe", created_at: monthsAgo(22), updated_at: monthsAgo(22), current_period_end: daysAgo(-30), user: { name: "StablePass Ops", email: "ops@stablepass.co", is_admin: true } },
 ];
 
 // Waitlist (ENG-976) — 28 pre-launch signups, deliberately more than one

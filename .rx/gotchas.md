@@ -1698,3 +1698,12 @@ loaded:42,total:100})` on `xhr.upload` for URLs containing `mock-upload` and nev
 **photo** — `page.route("**/storage/v1/**", () => new Promise(() => {}))` so the Storage PUT never
 settles (pct stays 0, tiles stay `uploading…`). Screenshot `page.locator('[class*="progressTrack"]').locator("..")`
 for the zone + footer.
+
+## Subscribers export route tests: tenure is WALL-CLOCK — never assert an exact CSV line there (ENG-1193)
+`fetchAllSubscribers(sb, now)` takes a clock, but `GET /api/admin/subscribers/export` calls it with
+none, so `tenure_months` in a route-test CSV line is relative to the real date. A literal like
+`Ann,…,2026-01-01T00:00:00Z,8,,` passes the week it is written and goes red a month later. Pin exact
+lines in `data.test.ts` (fixed `NOW`); in `export/route.test.ts` match the tenure field with `\d+`.
+Also: `subscription.provider` (be ENG-1185) is NOT NULL default `'stripe'`, so admin's NULL → stripe
+mapping is defensive only. The projection naming `provider` returns 42703 on any DB without that
+migration, and the page throws, so the admin PR must not deploy ahead of the be migration.

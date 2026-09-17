@@ -42,15 +42,19 @@ function providerFrom(raw: string | null | undefined): SubscriberProvider {
   return (raw ?? "stripe") as SubscriberProvider;
 }
 
-// The ONE projection every subscriber read uses — list and CSV alike. Pinned by
+// The ONE projection every subscriber read uses — list and CSV alike. `user_id`
+// (ENG-1194) is the member's auth uid = RevenueCat App User ID, which the Comp
+// action needs; it is never rendered and never exported. Pinned by
 // literal in data.test.ts: naming `provider` here 42703s against a database
 // without ENG-1185's migration, and fetchAllSubscribers throws on that rather
 // than rendering an empty list.
 export const SUBSCRIPTION_SELECT =
-  "id,status,provider,created_at,updated_at,current_period_end,user:user_id(name,email,is_admin)";
+  "id,user_id,status,provider,created_at,updated_at,current_period_end,user:user_id(name,email,is_admin)";
 
 export type SubscriberRow = {
   id: string;
+  /** `subscription.user_id` — auth uid / RevenueCat App User ID (ENG-1194). Never rendered. */
+  userId: string;
   name: string | null;
   email: string;
   status: string;
@@ -88,6 +92,7 @@ type SubscriptionUserEmbed = { name?: string | null; email?: string | null; is_a
 
 type SubscriptionDbRow = {
   id: string;
+  user_id: string;
   status: string | null;
   provider: string | null;
   created_at: string | null;
@@ -163,6 +168,7 @@ function mapRows(rows: SubscriptionDbRow[], now: Date): SubscriberRow[] {
       const user = one(r.user);
       return {
         id: r.id,
+        userId: r.user_id,
         name: user?.name?.trim() || null,
         email: (user?.email ?? "").trim(),
         status: r.status ?? "",

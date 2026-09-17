@@ -4,6 +4,7 @@ import type { ReactNode } from "react";
 import { cleanup, render, screen, within } from "@testing-library/react";
 import SubscribersTable, {
   bandById,
+  canRevokeComp,
   buildExportHref,
   buildSubscribersHref,
   providerById,
@@ -29,11 +30,15 @@ vi.mock("next/link", () => ({
   ),
 }));
 
+// The per-row CompAccess island (ENG-1194) calls useRouter().
+vi.mock("next/navigation", () => ({ useRouter: () => ({ refresh: vi.fn() }) }));
+
 afterEach(cleanup);
 
 function row(n: number, over: Partial<SubscriberRow> = {}): SubscriberRow {
   return {
     id: `s${n}`,
+    userId: `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`,
     name: `Member ${n}`,
     email: `member${n}@example.com`,
     status: "active",
@@ -409,5 +414,65 @@ describe("<SubscribersTable>", () => {
         expect(providerById(p.id)).toBe(p);
       }
     });
+  });
+});
+
+describe("Comp column (ENG-1194)", () => {
+  const NOW = new Date("2026-09-17T00:00:00.000Z");
+
+  it("is the LAST column, after Billed via and every read-only column", () => {
+    render(<SubscribersTable rows={[row(1)]} total={1} matching={1} offset={0} limit={25} />);
+    const headers = screen.getAllByRole("columnheader").map((h) => h.textContent?.trim());
+    expect(headers[headers.length - 1]).toBe("Comp");
+    expect(headers.indexOf("Comp")).toBeGreaterThan(headers.indexOf("Billed via"));
+  });
+
+  it("renders one Comp action per row, addressed by the member's userId — not the row id", () => {
+    render(
+      <SubscribersTable
+        rows={[row(1), row(2, { name: null, email: "anon@example.com" })]}
+        total={2}
+        matching={2}
+        offset={0}
+        limit={25}
+      />,
+    );
+    expect(screen.getAllByTestId("comp-open")).toHaveLength(2);
+    expect(screen.getByRole("button", { name: "Comp access for Member 1" })).toBeTruthy();
+    // A nameless member is labelled by email.
+    expect(screen.getByRole("button", { name: "Comp access for anon@example.com" })).toBeTruthy();
+  });
+
+  it("offers Revoke only on a live promotional row", () => {
+    render(
+      <SubscribersTable
+        rows={[
+          row(1, { provider: "promotional", status: "active" }),
+          row(2, { provider: "stripe", status: "active" }),
+          row(3, { provider: "promotional", status: "lapsed" }),
+        ]}
+        total={3}
+        matching={3}
+        offset={0}
+        limit={25}
+      />,
+    );
+    const revokes = screen.getAllByTestId("comp-revoke");
+    expect(revokes).toHaveLength(1);
+    expect(revokes[0].getAttribute("aria-label")).toBe("Revoke complimentary access for Member 1");
+  });
+
+  it("canRevokeComp: promotional + (active, or canceled with a future period end)", () => {
+    const p = (over: Partial<SubscriberRow>) => row(1, { provider: "promotional", ...over });
+    expect(canRevokeComp(p({ status: "active" }), NOW)).toBe(true);
+    expect(canRevokeComp(p({ status: "canceled", currentPeriodEnd: "2026-10-01T00:00:00Z" }), NOW)).toBe(true);
+    expect(canRevokeComp(p({ status: "canceled", currentPeriodEnd: "2026-09-01T00:00:00Z" }), NOW)).toBe(false);
+    expect(canRevokeComp(p({ status: "canceled", currentPeriodEnd: null }), NOW)).toBe(false);
+    expect(canRevokeComp(p({ status: "canceled", currentPeriodEnd: "garbage" }), NOW)).toBe(false);
+    expect(canRevokeComp(p({ status: "lapsed" }), NOW)).toBe(false);
+    expect(canRevokeComp(p({ status: "trial" }), NOW)).toBe(false);
+    for (const provider of ["stripe", "app_store", "play_store"] as const) {
+      expect(canRevokeComp(row(1, { provider, status: "active" }), NOW)).toBe(false);
+    }
   });
 });

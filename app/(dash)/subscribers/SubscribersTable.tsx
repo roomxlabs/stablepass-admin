@@ -1,5 +1,6 @@
 import Link from "next/link";
 import SubscribedDate from "./SubscribedDate";
+import CompAccess from "./CompAccess";
 import { SUBSCRIBER_STATUSES, type SubscriberProvider, type SubscriberRow } from "./data";
 
 // Presentational shell for the Subscribers screen: the status filter bar, the
@@ -75,6 +76,21 @@ export function providerById(id?: string): ProviderOption | undefined {
 /** The "Billed via" cell text. An unrecognised id renders verbatim, never as "Web". */
 export function providerLabel(provider: string): string {
   return providerById(provider)?.label ?? provider;
+}
+
+/**
+ * Whether a row offers Revoke (ENG-1194): only complimentary access that is still
+ * live. Decided here, on the server render, and handed to the client island as a
+ * boolean — computing "now" inside the island would differ between the server
+ * and the browser render and break hydration. A `canceled` row keeps access until
+ * its period ends, so it still counts while that date is in the future.
+ */
+export function canRevokeComp(row: SubscriberRow, now: Date = new Date()): boolean {
+  if (row.provider !== "promotional") return false;
+  if (row.status === "active") return true;
+  if (row.status !== "canceled" || !row.currentPeriodEnd) return false;
+  const end = new Date(row.currentPeriodEnd).getTime();
+  return Number.isFinite(end) && end > now.getTime();
 }
 
 /** Human label + pill colour for a subscription status. */
@@ -252,7 +268,7 @@ export default function SubscribersTable({
               : "No subscribers yet. Members appear here as soon as they sign up."}
         </p>
       ) : (
-        <table className="adm-table">
+        <table className="adm-table subs-table">
           <thead>
             <tr>
               <th scope="col">Subscriber</th>
@@ -272,6 +288,12 @@ export default function SubscribersTable({
                 title="Approximate: taken from when the subscription row was last updated while cancelled. There is no dedicated cancellation-date column yet."
               >
                 Cancelled *
+              </th>
+              {/* Comp access (ENG-1194). Last, after every read-only
+                  column: it is the table's only action, so it sits where the
+                  other list screens put their row actions. */}
+              <th scope="col" className="subs-comp">
+                Comp
               </th>
             </tr>
           </thead>
@@ -299,14 +321,14 @@ export default function SubscribersTable({
                   </td>
                   {/* Year-bearing: this column spans years, and the shared
                       `when` format renders none — see SubscribedDate.tsx. */}
-                  <td className="muted">
+                  <td className="muted subs-date">
                     <SubscribedDate iso={row.startedAt} />
                   </td>
                   <td className="subs-tenure">
                     {row.tenureMonths}
                     <span className="unit">{row.tenureMonths === 1 ? "mo" : "mos"}</span>
                   </td>
-                  <td className="muted">
+                  <td className="muted subs-date">
                     <SubscribedDate iso={row.currentPeriodEnd} />
                   </td>
                   {/* Year-bearing for the same reason as the two columns
@@ -315,8 +337,15 @@ export default function SubscribersTable({
                       a relative label under seven days and a year-less
                       "Aug 27" beyond it — two formats in one column, and a
                       2025 cancellation indistinguishable from a 2026 one. */}
-                  <td className={cancelled ? "subs-cancelled-on" : "muted"}>
+                  <td className={`subs-date ${cancelled ? "subs-cancelled-on" : "muted"}`}>
                     {row.canceledAt ? <SubscribedDate iso={row.canceledAt} /> : "—"}
+                  </td>
+                  <td className="subs-comp">
+                    <CompAccess
+                      userId={row.userId}
+                      memberLabel={row.name ?? row.email}
+                      canRevoke={canRevokeComp(row)}
+                    />
                   </td>
                 </tr>
               );

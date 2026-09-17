@@ -79,6 +79,7 @@ describe("tenureMonths", () => {
 // helper in app/(dash)/waitlist/data.test.ts.
 type SubscriptionDbLike = {
   id: string;
+  user_id?: string;
   status: string;
   provider?: string | null;
   created_at: string;
@@ -114,6 +115,7 @@ function makeRangeClient(all: SubscriptionDbLike[], opts: { serverCap?: number }
 function row(overrides: Partial<SubscriptionDbLike> = {}): SubscriptionDbLike {
   return {
     id: "sub1",
+    user_id: "0b5c2f8e-1d7a-4c3b-9e2f-6a1d8c4b7e90",
     status: "active",
     created_at: "2026-01-01T00:00:00Z",
     updated_at: "2026-01-01T00:00:00Z",
@@ -223,6 +225,7 @@ describe("fetchAllSubscribers", () => {
 const ROWS: SubscriberRow[] = [
   {
     id: "1",
+    userId: "u1",
     name: "Ann",
     email: "ann@example.com",
     status: "active",
@@ -234,6 +237,7 @@ const ROWS: SubscriberRow[] = [
   },
   {
     id: "2",
+    userId: "u2",
     name: "Bob",
     email: "bob@example.com",
     status: "trial",
@@ -245,6 +249,7 @@ const ROWS: SubscriberRow[] = [
   },
   {
     id: "3",
+    userId: "u3",
     name: "Cara",
     email: "cara@example.com",
     status: "canceled",
@@ -425,6 +430,7 @@ describe("toCsv — formula injection, beyond the obvious `=`", () => {
   function row(name: string): SubscriberRow {
     return {
       id: "s1",
+      userId: "u1",
       name,
       email: "m@example.com",
       status: "active",
@@ -473,7 +479,7 @@ describe("provider — select, mapping, filter, CSV", () => {
   // "Web" with a green suite otherwise.
   it("pins the subscription projection, provider included", () => {
     expect(SUBSCRIPTION_SELECT).toBe(
-      "id,status,provider,created_at,updated_at,current_period_end,user:user_id(name,email,is_admin)",
+      "id,user_id,status,provider,created_at,updated_at,current_period_end,user:user_id(name,email,is_admin)",
     );
   });
 
@@ -481,7 +487,7 @@ describe("provider — select, mapping, filter, CSV", () => {
     const { client, selects } = makeRangeClient([row({ id: "1" })]);
     await fetchAllSubscribers(client, NOW);
     expect(selects[0]).toBe(
-      "id,status,provider,created_at,updated_at,current_period_end,user:user_id(name,email,is_admin)",
+      "id,user_id,status,provider,created_at,updated_at,current_period_end,user:user_id(name,email,is_admin)",
     );
   });
 
@@ -500,6 +506,25 @@ describe("provider — select, mapping, filter, CSV", () => {
       ["3", "promotional"],
       ["4", "stripe"],
       ["5", "stripe"],
+    ]);
+  });
+
+  // ENG-1194: the Comp action addresses RevenueCat by the member's auth uid,
+  // which is `subscription.user_id` — NOT the subscription row id. Distinct
+  // values per row, so a mapping that copied `id` into `userId` goes red.
+  it("maps user_id to userId, distinct from the row id", async () => {
+    const { client } = makeRangeClient([
+      row({ id: "row-a", user_id: "11111111-1111-4111-8111-111111111111" }),
+      row({
+        id: "row-b",
+        user_id: "22222222-2222-4222-8222-222222222222",
+        user: { name: "B", email: "b@example.com", is_admin: false },
+      }),
+    ]);
+    const rows = await fetchAllSubscribers(client, NOW);
+    expect(rows.map((r) => [r.id, r.userId])).toEqual([
+      ["row-a", "11111111-1111-4111-8111-111111111111"],
+      ["row-b", "22222222-2222-4222-8222-222222222222"],
     ]);
   });
 

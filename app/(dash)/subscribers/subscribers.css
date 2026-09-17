@@ -298,3 +298,142 @@
 .subs-provider {
   white-space: nowrap;
 }
+
+/* Comp access (ENG-1194) ---------------------------------------------- */
+/* No mockup. Chip weight so an action column does not out-shout the filter
+   chips above it: the same 12.5px / line border / pill radius as
+   `.adm-filter-bar .btn:not(.btn-primary)`, and Revoke borrows the posts
+   table's `.destructive` treatment (red border, fills red on hover) so the
+   one thing that removes access cannot be misread as the neutral button.
+
+   WIDTH. At the 1280px harness viewport the seven read-only columns already
+   filled the card; an eighth squeezed the dates onto three lines and pushed
+   the Comp header past the card's clip. So, scoped to THIS table only
+   (`.subs-table`, never the shared `.adm-table` rules other screens load):
+   the inner cells lose 4px of side padding, dates never break, and the duration
+   confirm OVERLAYS the row instead of widening the column. */
+.adm-table.subs-table th,
+.adm-table.subs-table td {
+  padding-left: 10px;
+  padding-right: 10px;
+}
+
+.adm-table.subs-table th:first-child,
+.adm-table.subs-table td:first-child {
+  padding-left: 22px;
+}
+
+.adm-table.subs-table th:last-child,
+.adm-table.subs-table td:last-child {
+  padding-right: 22px;
+}
+
+.subs-date {
+  white-space: nowrap;
+}
+
+.adm-table th.subs-comp,
+.adm-table td.subs-comp {
+  white-space: nowrap;
+  text-align: right;
+}
+
+/* The overlay's anchor. On the <td> ONLY: the <th> is `position: sticky` from
+   globals.css, and overriding that to `relative` tears the header out of the
+   sticky row. */
+.adm-table td.subs-comp {
+  position: relative;
+}
+
+.subs-comp-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* Anchored to the cell's right edge and vertically centred on the row, so it
+   covers only this row's trailing columns while open and can never be clipped
+   by the card's `overflow` at the bottom of the table. */
+.subs-comp-confirm {
+  position: absolute;
+  right: 14px;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px 8px 14px;
+  background: var(--white);
+  border: 1px solid var(--line-dark);
+  border-radius: var(--radius-pill);
+  box-shadow: var(--shadow-md);
+}
+
+.subs-comp-confirm .label {
+  font-size: 12.5px;
+  color: var(--muted);
+}
+
+.subs-comp-btn {
+  font-family: var(--font-sans);
+  font-size: 12.5px;
+  font-weight: 500;
+  padding: 5px 12px;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--line);
+  background: var(--white);
+  color: var(--ink);
+  cursor: pointer;
+}
+
+.subs-comp-btn:hover:not(:disabled) {
+  border-color: var(--line-dark);
+}
+
+.subs-comp-btn.primary {
+  background: var(--brand-green);
+  border-color: var(--brand-green);
+  color: var(--cream);
+}
+
+.subs-comp-btn.primary:hover:not(:disabled) {
+  background: var(--brand-green-dark);
+  border-color: var(--brand-green-dark);
+}
+
+.subs-comp-btn.destructive {
+  color: var(--red);
+  border-color: var(--red);
+  font-weight: 600;
+}
+
+.subs-comp-btn.destructive:hover:not(:disabled) {
+  background: var(--red);
+  color: var(--white);
+}
+
+.subs-comp-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.subs-comp-select {
+  font-family: var(--font-sans);
+  font-size: 12.5px;
+  padding: 5px 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--white);
+  color: var(--ink);
+}
+
+.subs-comp-select:focus {
+  border-color: var(--brand-green);
+}
+
+.subs-comp-select:focus-visible,
+.subs-comp-btn:focus-visible {
+  outline: 2px solid var(--brand-green);
+  outline-offset: 2px;
+}

@@ -1707,3 +1707,27 @@ lines in `data.test.ts` (fixed `NOW`); in `export/route.test.ts` match the tenur
 Also: `subscription.provider` (be ENG-1185) is NOT NULL default `'stripe'`, so admin's NULL → stripe
 mapping is defensive only. The projection naming `provider` returns 42703 on any DB without that
 migration, and the page throws, so the admin PR must not deploy ahead of the be migration.
+
+## RevenueCat v1 promotional grant: `duration` is DEPRECATED upstream — send `end_time_ms` (ENG-1194)
+RevenueCat's own OpenAPI (`/docs/redocusaurus/openapi-v1-entitlements.yaml`; the HTML docs page is a
+JS shell that WebFetch cannot read, the YAML is plain) marks the grant body's `duration` and
+`start_time_ms` `deprecated: true`; `end_time_ms` is the supported field. The grill wrote `{ duration }`
+from memory. `lib/revenuecat.ts` keeps the ticket's duration ids as the admin contract and computes
+`end_time_ms` (UTC calendar months, day-clamped). Grant answers **201**, revoke **200**. Upstream note:
+an `end_time_ms` within 2 h of an active promotional's expiry is treated as a duplicate and does not
+extend it. Verify against the YAML, not the rendered page.
+
+## A route module may export ONLY HTTP handlers — no `__setFooForTest` seam (ENG-1194)
+`next build` type-checks `app/api/**/route.ts` exports and rejects anything that is not a method
+handler / route config. To fake an outbound call from a route test, `vi.stubGlobal("fetch", …)` and
+have the lib default its fetch to `(i, init) => fetch(i, init)` — a default of bare `fetch` is bound
+at call time too, but the arrow makes the late binding explicit.
+
+## A new `/subscribers` column overflows the card at 1280px — and never set `position` on a `<th>` (ENG-1194)
+Seven columns already filled `.adm-card` in the harness viewport; an eighth wrapped dates onto three
+lines and pushed its header past the card's clip. Fix lives on `.adm-table.subs-table` only (10px inner
+cell padding, `white-space: nowrap` dates, row-action confirm as an absolute overlay in the `<td>`).
+`thead th` is `position: sticky` from globals.css: giving a `<th>` `position: relative` for an overlay
+anchor tears it out of the sticky header row (the "COMP" header rendered a row lower). Anchor on the
+`<td>` only. Running `e2e/subscribers.spec.ts` rewrites the committed `13-*` / `46-*` baselines —
+`git checkout --` them after every run.

@@ -255,3 +255,107 @@ test("subscribers — a signed-out visitor is redirected, never shown member ema
 
   await context.close();
 });
+
+// ---------------------------------------------------------------------------
+// Comp access (ENG-1194). The BFF calls RevenueCat SERVER-side, so the browser
+// cannot stub RevenueCat itself: the grant/revoke tests stub the admin comp
+// endpoint with page.route and assert what the UI SENT. The last test leaves the
+// endpoint unstubbed on purpose — the e2e server has no RevenueCat key, so the
+// REAL route (behind the real admin gate) must answer 503 and the UI must say so.
+// ---------------------------------------------------------------------------
+
+const PRIYA_UID = "00000000-0000-4000-8000-000000000003"; // sub-3, promotional + active
+const HARRIET_UID = "00000000-0000-4000-8000-000000000001"; // sub-1, app_store
+
+test("subscribers — Comp: inline duration confirm, POST carries the chosen duration, toast (ENG-1194)", async ({
+  page,
+}) => {
+  test.setTimeout(60000);
+  await signIn(page);
+  await page.goto("/subscribers");
+  await expect(page.locator(".adm-table")).toBeVisible({ timeout: 30000 });
+
+  const headers = await page.locator(".adm-table thead th").allTextContents();
+  expect(headers[headers.length - 1].trim()).toBe("Comp");
+  // Revoke only on the one live complimentary row (Priya).
+  await expect(page.getByTestId("comp-revoke")).toHaveCount(1);
+  await expect(page.getByRole("button", { name: "Revoke complimentary access for Priya Raman" })).toBeVisible();
+
+  const sent: { url: string; method: string; body: unknown }[] = [];
+  await page.route("**/api/admin/subscribers/*/comp", async (route) => {
+    const req = route.request();
+    sent.push({ url: req.url(), method: req.method(), body: req.postDataJSON() });
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ data: { granted: true, duration: "three_month" } }),
+    });
+  });
+
+  await page.getByRole("button", { name: "Comp access for Harriet Vale" }).click();
+  const confirm = page.getByTestId("comp-confirm");
+  await expect(confirm).toBeVisible();
+  // Nothing is sent by opening the confirm.
+  expect(sent).toEqual([]);
+  await confirm.getByTestId("comp-duration").selectOption("three_month");
+
+  await page.screenshot({ path: "e2e/__screenshots__/47-eng1194-subscribers-comp-confirm.png", fullPage: true });
+
+  await confirm.getByTestId("comp-grant").click();
+  await expect(page.getByTestId("adm-toast").filter({ hasText: "Complimentary access granted" })).toBeVisible();
+  expect(sent).toEqual([
+    {
+      url: `http://127.0.0.1:3002/api/admin/subscribers/${HARRIET_UID}/comp`,
+      method: "POST",
+      body: { duration: "three_month" },
+    },
+  ]);
+  await expect(page.getByTestId("comp-confirm")).toHaveCount(0);
+
+  await page.screenshot({ path: "e2e/__screenshots__/47-eng1194-subscribers-comp-granted.png", fullPage: true });
+});
+
+test("subscribers — Revoke on a complimentary row: confirm, DELETE, toast (ENG-1194)", async ({ page }) => {
+  test.setTimeout(60000);
+  await signIn(page);
+  await page.goto("/subscribers");
+  await expect(page.locator(".adm-table")).toBeVisible({ timeout: 30000 });
+
+  const methods: string[] = [];
+  await page.route(`**/api/admin/subscribers/${PRIYA_UID}/comp`, async (route) => {
+    methods.push(route.request().method());
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ data: { revoked: true } }) });
+  });
+
+  let dialogText = "";
+  page.once("dialog", async (d) => {
+    dialogText = d.message();
+    await d.accept();
+  });
+  await page.getByTestId("comp-revoke").click();
+  await expect(page.getByTestId("adm-toast").filter({ hasText: "Complimentary access revoked" })).toBeVisible();
+  expect(dialogText).toContain("Revoke complimentary access for Priya Raman?");
+  expect(methods).toEqual(["DELETE"]);
+});
+
+test("subscribers — Comp against the REAL route with no RevenueCat key → 503 copy (ENG-1194)", async ({ page }) => {
+  test.setTimeout(60000);
+  await signIn(page);
+  await page.goto("/subscribers");
+  await expect(page.locator(".adm-table")).toBeVisible({ timeout: 30000 });
+
+  const [res] = await Promise.all([
+    page.waitForResponse((r) => r.url().endsWith(`/api/admin/subscribers/${HARRIET_UID}/comp`)),
+    (async () => {
+      await page.getByRole("button", { name: "Comp access for Harriet Vale" }).click();
+      await page.getByTestId("comp-grant").click();
+    })(),
+  ]);
+  expect(res.status()).toBe(503);
+  expect((await res.json()).error.code).toBe("revenuecat_not_configured");
+  await expect(page.getByTestId("adm-toast").filter({ hasText: "isn't configured on this server" })).toBeVisible();
+  // The confirm stays open so the operator can retry once it is configured.
+  await expect(page.getByTestId("comp-confirm")).toBeVisible();
+
+  await page.screenshot({ path: "e2e/__screenshots__/47-eng1194-subscribers-comp-error.png", fullPage: true });
+});

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import CompAccess, { GRANTED_TOAST, REVOKED_TOAST } from "./CompAccess";
 import ToastRegion, { resetToastsForTest } from "../Toast";
 
@@ -79,7 +79,7 @@ describe("<CompAccess> grant", () => {
     fireEvent.click(screen.getByTestId("comp-open"));
     fireEvent.click(screen.getByTestId("comp-grant"));
 
-    await within(assertive()).findByText(/RevenueCat didn't confirm the change, so nothing was changed/);
+    await within(assertive()).findByText(/RevenueCat didn't confirm the change. It may not have been applied/);
     expect(within(polite()).queryByText(GRANTED_TOAST)).toBeNull();
     expect(screen.getByTestId("comp-confirm")).toBeTruthy();
     await waitFor(() => expect((screen.getByTestId("comp-grant") as HTMLButtonElement).disabled).toBe(false));
@@ -94,6 +94,33 @@ describe("<CompAccess> grant", () => {
     fireEvent.click(screen.getByTestId("comp-open"));
     fireEvent.click(screen.getByTestId("comp-grant"));
     await within(assertive()).findByText(/isn't configured on this server/);
+  });
+});
+
+describe("<CompAccess> keyboard", () => {
+  it("focuses the duration select on open; Escape closes and returns focus to Comp", () => {
+    mount();
+    fireEvent.click(screen.getByTestId("comp-open"));
+    expect(document.activeElement).toBe(screen.getByTestId("comp-duration"));
+    fireEvent.keyDown(screen.getByTestId("comp-duration"), { key: "Escape" });
+    expect(screen.queryByTestId("comp-confirm")).toBeNull();
+    expect(document.activeElement).toBe(screen.getByTestId("comp-open"));
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("two Grant clicks in one tick send ONE request", async () => {
+    mount();
+    fireEvent.click(screen.getByTestId("comp-open"));
+    const grant = screen.getByTestId("comp-grant") as HTMLButtonElement;
+    // Both clicks inside ONE act(): React does not re-render between them, so
+    // the button is still enabled for the second — the case `busy` state
+    // cannot catch (two separate fireEvent calls would each flush a render).
+    act(() => {
+      grant.click();
+      grant.click();
+    });
+    await within(polite()).findByText(GRANTED_TOAST);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });
 

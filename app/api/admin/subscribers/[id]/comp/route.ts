@@ -26,7 +26,17 @@ import {
 
 type Ctx = { params: Promise<{ id: string }> };
 
-function revenueCatFailure(e: unknown): Response {
+function revenueCatFailure(e: unknown, context: Record<string, unknown>): Response {
+  // Failures leave a trace too (status + kind only, never a response body), so
+  // ops can tell a rejected key (401) from an outage.
+  console.warn(
+    JSON.stringify({
+      event: "admin_comp_failed",
+      ...context,
+      kind: e instanceof RevenueCatError ? e.kind : "unknown",
+      status: e instanceof RevenueCatError ? (e.status ?? null) : null,
+    }),
+  );
   if (e instanceof RevenueCatError) {
     if (e.kind === "not_configured") {
       return fail("revenuecat_not_configured", "Comp access is not configured on this server.", 503);
@@ -35,7 +45,7 @@ function revenueCatFailure(e: unknown): Response {
       return fail("invalid_duration", "Choose a duration of 1, 2, 3, 6 or 12 months.", 400);
     }
   }
-  return fail("revenuecat_unavailable", "RevenueCat did not confirm the change. Nothing was changed — try again.", 502);
+  return fail("revenuecat_unavailable", "RevenueCat did not confirm the change. It may not have been applied — try again.", 502);
 }
 
 async function adminId(sb: SupabaseClient): Promise<string | null> {
@@ -60,7 +70,7 @@ export async function POST(req: Request, { params }: Ctx) {
   try {
     await grantPromotional(id, duration);
   } catch (e) {
-    return revenueCatFailure(e);
+    return revenueCatFailure(e, { adminUid: await adminId(gate.sb), targetUid: id, duration });
   }
 
   // Audit is a structured log line (no table — `admin_auth_event` is auth-only).
@@ -81,7 +91,7 @@ export async function DELETE(_req: Request, { params }: Ctx) {
   try {
     await revokePromotional(id);
   } catch (e) {
-    return revenueCatFailure(e);
+    return revenueCatFailure(e, { adminUid: await adminId(gate.sb), targetUid: id, action: "revoke" });
   }
 
   console.info(JSON.stringify({ event: "admin_comp_revoked", adminUid: await adminId(gate.sb), targetUid: id }));

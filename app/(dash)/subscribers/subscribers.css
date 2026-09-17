@@ -429,6 +429,11 @@
 }
 
 .subs-comp-select:focus {
-  outline: none;
   border-color: var(--brand-green);
+}
+
+.subs-comp-select:focus-visible,
+.subs-comp-btn:focus-visible {
+  outline: 2px solid var(--brand-green);
+  outline-offset: 2px;
 }

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useEffect, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 // TYPE-ONLY. `lib/revenuecat` is server-only (it reads the RevenueCat secret
 // key); a value import here would drag it into the browser bundle. The grep
@@ -33,12 +33,12 @@ const DURATION_LABELS: Record<CompDuration, string> = {
 const DURATIONS = Object.keys(DURATION_LABELS) as CompDuration[];
 
 export const GRANTED_TOAST =
-  "Complimentary access granted — it appears once RevenueCat confirms (a few seconds).";
+  "Complimentary access granted — it appears once RevenueCat confirms (a few seconds)";
 export const REVOKED_TOAST =
-  "Complimentary access revoked — the row updates once RevenueCat confirms (a few seconds).";
+  "Complimentary access revoked — the row updates once RevenueCat confirms (a few seconds)";
 
 const ERROR_COPY: Record<string, string> = {
-  revenuecat_unavailable: "RevenueCat didn't confirm the change, so nothing was changed. Try again.",
+  revenuecat_unavailable: "RevenueCat didn't confirm the change. It may not have been applied — try again.",
   revenuecat_not_configured: "Comp access isn't configured on this server yet (no RevenueCat key).",
 };
 
@@ -67,9 +67,24 @@ export default function CompAccess({
   const [open, setOpen] = useState(false);
   const [duration, setDuration] = useState<CompDuration>("monthly");
   const [busy, setBusy] = useState(false);
+  // State alone cannot stop two clicks in the same tick; a ref can.
+  const inFlight = useRef(false);
+  // Keyboard focus follows the confirm: into the select when it opens, back to
+  // the Comp button when it closes. Both elements unmount on toggle, so without
+  // this focus falls to <body>.
+  const selectRef = useRef<HTMLSelectElement>(null);
+  const openRef = useRef<HTMLButtonElement>(null);
+  const wasOpen = useRef(false);
+  useEffect(() => {
+    if (open) selectRef.current?.focus();
+    else if (wasOpen.current) openRef.current?.focus();
+    wasOpen.current = open;
+  }, [open]);
   const endpoint = `/api/admin/subscribers/${encodeURIComponent(userId)}/comp`;
 
   async function run(init: RequestInit, success: string) {
+    if (inFlight.current) return;
+    inFlight.current = true;
     setBusy(true);
     try {
       await send(endpoint, init);
@@ -79,6 +94,7 @@ export default function CompAccess({
     } catch (e) {
       showToast(e instanceof Error ? e.message : "Comp access failed.", "error");
     } finally {
+      inFlight.current = false;
       setBusy(false);
     }
   }
@@ -105,11 +121,15 @@ export default function CompAccess({
         role="group"
         aria-label={`Grant complimentary access to ${memberLabel}`}
         data-testid="comp-confirm"
+        onKeyDown={(e) => {
+          if (e.key === "Escape" && !busy) setOpen(false);
+        }}
       >
         <span className="label" aria-hidden="true">
           Comp for
         </span>
         <select
+          ref={selectRef}
           className="subs-comp-select"
           aria-label={`Complimentary access duration for ${memberLabel}`}
           value={duration}
@@ -136,6 +156,7 @@ export default function CompAccess({
   return (
     <div className="subs-comp-actions">
       <button
+        ref={openRef}
         type="button"
         className="subs-comp-btn"
         disabled={busy}

@@ -23,6 +23,7 @@ const delReq = () => new Request(`http://t/api/admin/subscribers/${MEMBER}/comp`
 
 let fetchMock: ReturnType<typeof vi.fn>;
 let info: ReturnType<typeof vi.spyOn>;
+let warn: ReturnType<typeof vi.spyOn>;
 
 function asAdmin() {
   state.user = { id: "admin-1", email: "ops@stablepass.co" };
@@ -52,12 +53,14 @@ beforeEach(() => {
   fetchMock = vi.fn(async () => new Response("{}", { status: 201 }));
   vi.stubGlobal("fetch", fetchMock);
   info = vi.spyOn(console, "info").mockImplementation(() => {});
+  warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 });
 afterEach(() => {
   assertNoSubscriptionWrite();
   vi.unstubAllEnvs();
   vi.unstubAllGlobals();
   info.mockRestore();
+  warn.mockRestore();
 });
 
 describe("POST /api/admin/subscribers/:id/comp — grant", () => {
@@ -107,6 +110,7 @@ describe("POST /api/admin/subscribers/:id/comp — grant", () => {
     const r = await POST(postReq("{nope"), ctx());
     expect(r.status).toBe(400);
     expect((await r.json()).error.code).toBe("invalid_duration");
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("200 grant: calls RevenueCat for THIS member and logs ids only", async () => {
@@ -139,6 +143,15 @@ describe("POST /api/admin/subscribers/:id/comp — grant", () => {
     expect(r.status).toBe(502);
     expect((await r.json()).error.code).toBe("revenuecat_unavailable");
     expect(info).not.toHaveBeenCalled();
+    // The failure is logged with ids, kind and upstream status — no body, no PII.
+    expect(JSON.parse(String(warn.mock.calls[0][0]))).toEqual({
+      event: "admin_comp_failed",
+      adminUid: "admin-1",
+      targetUid: MEMBER,
+      duration: "monthly",
+      kind: "unavailable",
+      status: 500,
+    });
   });
 
   it("502 revenuecat_unavailable when fetch itself fails", async () => {

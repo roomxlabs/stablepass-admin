@@ -1769,3 +1769,23 @@ decision 5), so a long-lived post's prefix can exceed 100 between its real set a
 past which the listing truncates and any slot floor derived from it can REGRESS onto live bytes.
 Pass an explicit `{ limit: 1000 }`; sizing it to `MAX_PHOTOS` would be wrong, because the listing
 counts every orphan ever left behind, not just the persisted set.
+## A `.select()` fields constant must be a STRING LITERAL, not a concatenation
+`const LABEL_LOOKUP_FIELDS = LABEL_FIELDS + ",retired_at";` widens to plain `string`, which
+collapses supabase-js's `.select()` overload to `GenericStringError[]` — `tsc --noEmit` then fails
+on every field access of the returned rows, with an error that names neither the concatenation nor
+the column. Write the second projection out in full as its own literal (ENG-1267).
+
+## `supabase-fake`'s `.single()` reads the table script TWICE per call
+`single()`/`maybeSingle()` call `pick()` once for `.single` and once for `.error`. A test that
+scripts a MULTI-STEP sequence with `Object.defineProperty(state.tables, t, { get() {…} })` — the
+idiom for an insert-fails-then-re-read-then-update race — must therefore budget **2 getter fires per
+`.single()` step**, not 1. Get it wrong and the mis-aligned step returns `{data:null,error:null}`,
+which reads as a FALSE SUCCESS (a 201 where you expected a 200, or a crash on `null.id`) rather than
+an obvious failure. Cost real debugging time on ENG-1267's un-retire-race tests.
+
+## A lookup route's filter does NOT cover the SSR page that reads the table directly
+`app/(dash)/compose/page.tsx` reads `post_label` straight off Supabase rather than through
+`GET /api/admin/post-labels`, so the `.is("retired_at", null)` exclusion added to the ROUTE
+(ENG-1267) does not apply to the picker's first server-rendered paint. Any filter added to one of
+these lookup routes has to be mirrored in the compose loader (A3's surface) or the feature only
+half-ships. Check both readers whenever you change a lookup's visibility rule.

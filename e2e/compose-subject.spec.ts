@@ -1,0 +1,120 @@
+import { test, expect, type Page } from "@playwright/test";
+
+// ENG-1268 screenshot proofs: Compose's Step 1 "Posting as", and the preview
+// head each of the three subjects produces.
+//
+// Its own spec file, following the precedent ENG-745 set here: compose.spec.ts
+// is ENG-558's aspect-ratio evidence and compose-label.spec.ts is ENG-979's
+// picker evidence; both are large and both are declared in other tickets'
+// surfaces. A third file keeps this ticket's evidence from colliding with
+// either.
+//
+// These are SCREENSHOT proofs, not a second copy of the unit suite. The
+// per-subject behaviour is pinned in ComposeScreen.test.tsx and
+// PostPreview.test.tsx; what only a browser can show is that the real screen,
+// built and served by `next start`, actually renders each head.
+test.describe.configure({ mode: "serial" });
+
+async function signIn(page: Page) {
+  await page.goto("/signin");
+  await page.locator("#email").fill("ops@stablepass.co");
+  await page.locator("#password").fill("correcthorse");
+  await page.getByRole("button", { name: "Continue" }).click();
+  await page.waitForURL("**/signin/mfa", { timeout: 30000 });
+  await page.locator("#code").fill("123456");
+  await page.getByRole("button", { name: "Verify" }).click();
+  await page.waitForURL("http://127.0.0.1:3002/", { timeout: 30000 });
+}
+
+async function openCompose(page: Page) {
+  await page.goto("/compose");
+  // The screen is a client component; wait for something only the HYDRATED
+  // tree renders before touching it (the .rx/gotchas.md hydration trap). The
+  // subject picker is the right sentinel here — it is this ticket's control
+  // and it is client-rendered.
+  await expect(page.getByTestId("subject-picker")).toBeVisible({ timeout: 30000 });
+}
+
+test("ENG-1268: Horse subject — the legacy flow, unchanged", async ({ page }) => {
+  test.setTimeout(90000);
+  await signIn(page);
+  await openCompose(page);
+
+  // Horse is the default: the screen opens on it, which is what keeps the
+  // legacy flow the one an operator lands in.
+  await expect(page.getByTestId("subject-option-horse")).toHaveAttribute("data-selected", "true");
+  await expect(page.getByTestId("horse-search")).toBeVisible();
+
+  // All four type tiles.
+  for (const t of ["video", "photo", "voice", "text"]) {
+    await expect(page.getByTestId(`type-option-${t}`)).toBeVisible();
+  }
+
+  await page.getByTestId("horse-search").click();
+  const firstHorse = page.getByTestId("horse-results").getByRole("button").first();
+  await firstHorse.click();
+  await expect(page.getByTestId("horse-pick")).toBeVisible();
+
+  await expect(page.getByTestId("post-preview")).toBeVisible();
+  await page.screenshot({ path: "e2e/__screenshots__/eng1268-subject-horse.png", fullPage: true });
+});
+
+test("ENG-1268: Trainer subject — trainer search, no horse, all four tiles", async ({ page }) => {
+  test.setTimeout(90000);
+  await signIn(page);
+  await openCompose(page);
+
+  await page.getByTestId("subject-option-trainer").click();
+
+  // No horse search at all — the block this ticket exists to remove.
+  await expect(page.getByTestId("horse-search")).toHaveCount(0);
+  await expect(page.getByTestId("trainer-search")).toBeVisible();
+  // A trainer post is still all four types.
+  for (const t of ["video", "photo", "voice", "text"]) {
+    await expect(page.getByTestId(`type-option-${t}`)).toBeVisible();
+  }
+
+  await page.getByTestId("trainer-search").click();
+  await page.getByTestId("trainer-results").getByRole("button").first().click();
+  await expect(page.getByTestId("trainer-pick")).toBeVisible();
+
+  // The per-subject preview HEAD lands in the follow-up PR on this ticket,
+  // so this spec only proves the SUBJECT half here: a trainer post composes
+  // with no horse at all. The head assertions arrive with the head.
+  await expect(page.getByTestId("post-preview")).toBeVisible();
+  await page.screenshot({
+    path: "e2e/__screenshots__/eng1268-subject-trainer.png",
+    fullPage: true,
+  });
+});
+
+test("ENG-1268: StablePass subject — byline picker, two tiles only", async ({ page }) => {
+  test.setTimeout(90000);
+  await signIn(page);
+  await openCompose(page);
+
+  await page.getByTestId("subject-option-stablepass").click();
+
+  // Neither identity control: a StablePass post has no horse and no trainer.
+  await expect(page.getByTestId("horse-search")).toHaveCount(0);
+  await expect(page.getByTestId("trainer-search")).toHaveCount(0);
+
+  // Epic decision 2 — Voice and Text are HIDDEN, not disabled.
+  await expect(page.getByTestId("type-option-photo")).toBeVisible();
+  await expect(page.getByTestId("type-option-video")).toBeVisible();
+  await expect(page.getByTestId("type-option-voice")).toHaveCount(0);
+  await expect(page.getByTestId("type-option-text")).toHaveCount(0);
+
+  // Pick a byline from the live post_byline rows the mock serves.
+  const select = page.getByTestId("byline-name-select");
+  await expect(select).toBeVisible();
+  await select.selectOption({ label: "Racing TV" });
+
+  // As above: the S-mark head is the follow-up PR's to prove.
+  await expect(page.getByTestId("post-preview")).toBeVisible();
+
+  await page.screenshot({
+    path: "e2e/__screenshots__/eng1268-subject-stablepass.png",
+    fullPage: true,
+  });
+});

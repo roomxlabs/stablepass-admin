@@ -6,7 +6,7 @@
 // the browser then PUTs the bytes straight to Mux (video) or Supabase Storage
 // (photo). Every BFF call is admin-gated server-side by `requireAdmin()`.
 import { supabaseBrowser } from "@/lib/supabase/client";
-import type { CreateDraftResponse, MediaType, PhotoUploadTarget } from "./types";
+import type { CreateDraftResponse, MediaType, PhotoUploadTarget, Subject } from "./types";
 
 async function readData<T>(res: Response): Promise<T> {
   const json = (await res.json().catch(() => null)) as
@@ -28,9 +28,25 @@ async function readData<T>(res: Response): Promise<T> {
  * optional.
  */
 export async function createDraft(input: {
-  horseId: string;
+  /**
+   * ENG-1268 — who the post is posted AS.
+   *
+   * OPTIONAL, and omitted means `horse`: a horse post sends no `subject` key
+   * at all, so the request this endpoint receives for the legacy flow is
+   * byte-identical to the one it received before this ticket. Nothing
+   * downstream can tell the subject picker shipped.
+   */
+  subject?: Subject;
+  /** Required for `horse`; must be ABSENT for trainer/stablepass. */
+  horseId?: string;
   type: MediaType;
-  sourceTrainerId: string;
+  /** Required for `horse` and `trainer`; must be ABSENT for stablepass. */
+  sourceTrainerId?: string;
+  /**
+   * ENG-1268 — the StablePass byline NAME (not a `post_byline` id). Required
+   * for `stablepass`, rejected for the other two.
+   */
+  byline?: string;
   title?: string;
   body?: string;
   /** ENG-745 — one of the presets in `lib/posts/labels.ts`, or null for no category. */
@@ -62,6 +78,16 @@ export async function patchPost(
   patch: {
     body?: string;
     sourceTrainerId?: string;
+    /**
+     * ENG-1268 — the StablePass byline NAME. Editable for a `stablepass` post
+     * only; the route 400s it for any other subject, and 400s a retired name.
+     *
+     * ABSENT unless the operator actually moved the picker — the same rule
+     * `label` follows, and for the same reason: a post can carry a RETIRED
+     * byline legitimately, and re-sending the displayed value unconditionally
+     * is how a mis-rendered control overwrites a value nobody touched.
+     */
+    byline?: string;
     title?: string | null;
     /**
      * ENG-745. `null` CLEARS the category; omitting the key leaves the row's
@@ -243,4 +269,51 @@ export async function createPostLabel(name: string): Promise<{ name: string }> {
     body: JSON.stringify({ name }),
   });
   return readData<{ name: string }>(res);
+}
+
+/**
+ * ENG-1268 — Add-new for the StablePass byline picker (A2's route).
+ *
+ * Returns `{id, name}` rather than just the name, because unlike a label a
+ * byline's RETIRE action needs its id — the picker keeps both.
+ *
+ * NOT idempotent the way `createPostLabel` is: A2 locked a live duplicate to
+ * 409 ("that name is taken") deliberately, while a duplicate whose only row is
+ * RETIRED is un-retired and returned with the SAME id. So re-adding a byline
+ * an admin previously retired restores it rather than minting a twin — which
+ * is why the caller must take the returned id and not assume a new one.
+ */
+export async function createByline(name: string): Promise<{ id: string; name: string }> {
+  const res = await fetch("/api/admin/post-bylines", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name }),
+  });
+  return readData<{ id: string; name: string }>(res);
+}
+
+/**
+ * ENG-1268 — retire a byline (A2's `DELETE /api/admin/post-bylines/:id`).
+ *
+ * RETIRE, NEVER DELETE (guardrail 2). `post.byline` stores the NAME and is
+ * FK'd `on delete restrict`, so every post already carrying this byline keeps
+ * its text unchanged; retiring only hides the name from this picker for NEW
+ * posts. That is also why the edit path has to union a retired value back into
+ * its options — see ComposeScreen's `bylineOptions`.
+ */
+export async function retireByline(id: string): Promise<void> {
+  const res = await fetch(`/api/admin/post-bylines/${id}`, { method: "DELETE" });
+  await readData(res);
+}
+
+/**
+ * ENG-1268 — retire an editorial label (A2's `DELETE /api/admin/post-labels/:id`).
+ *
+ * The route refuses a BUILTIN with 409, and be's `post_label_pin_builtin`
+ * trigger refuses it again — but the picker never offers the action on one in
+ * the first place, so a 409 here means the row's `is_builtin` changed under us.
+ */
+export async function retireLabel(id: string): Promise<void> {
+  const res = await fetch(`/api/admin/post-labels/${id}`, { method: "DELETE" });
+  await readData(res);
 }

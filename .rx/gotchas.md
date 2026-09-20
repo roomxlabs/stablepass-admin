@@ -1789,6 +1789,10 @@ an obvious failure. Cost real debugging time on ENG-1267's un-retire-race tests.
 (ENG-1267) does not apply to the picker's first server-rendered paint. Any filter added to one of
 these lookup routes has to be mirrored in the compose loader (A3's surface) or the feature only
 half-ships. Check both readers whenever you change a lookup's visibility rule.
+**CLOSED for the two lookups that exist today (ENG-1268 / A3).** `page.tsx` now carries
+`.is("retired_at", null)` on BOTH reads — `post_label` and the new `post_byline` — so the loader and
+the routes agree. The rule above still stands for the NEXT lookup table somebody adds: the mirror is
+not automatic, and nothing fails if you forget it.
 
 ## Filtering retired rows out of a picker BREAKS the edit path — unless the picker unions the post's own value back in
 The other half of the mirroring hazard above. Once `retired_at` rows are excluded from a lookup
@@ -1804,6 +1808,50 @@ something: `app/(dash)/compose/ComposeScreen.tsx:263-273` unions `initialLabel` 
 absent unless `label !== initialLabel`, so a save that touches only the caption provably writes
 nothing to the column. Two belts, both needed: the union keeps the control honest, the absent-unless-
 changed patch keeps a mis-rendered control from writing.
-The live hazard is the BYLINE picker A3 (ENG-1268) is adding, which has neither belt yet. A byline
-picker built off `GET /api/admin/post-bylines` alone will omit a retired byline the post carries and
-silently blank or rewrite it on save, with no error anywhere.
+**The byline picker now has both belts too (ENG-1268 / A3) — this entry is a pattern to COPY, not an
+open hazard.** `ComposeScreen.tsx`'s `bylineOptions` unions `initialByline` back in AFTER the
+retired filter (with `id: null`, which also keeps it out of the retire list — you cannot retire a
+row whose id you never read), and `bylinePatch` is absent unless the value actually changed. Both
+are pinned: "a post's own RETIRED byline is unioned back into the picker and selected" and "a
+caption-only save on a post carrying a RETIRED byline sends no byline key".
+A3 also found a THIRD instance of the same shape and closed it: a title retired *during the current
+session* is filtered out of the picker optimistically, so the filter must run BEFORE `initialLabel`
+is appended, or retiring a title would blank it on the very post being edited. Pinned by "retiring
+the title the edited post carries leaves it selected in the picker".
+**The rule, for the next picker:** filter retired rows, then union the edited row's own value back
+in, then make the patch absent-unless-changed — in that order. Any picker that reads a lookup with a
+`retired_at` needs all three.
+
+## A generic `23514 → 400` mapping must be scoped by CONSTRAINT NAME, and must sit AFTER the named ones
+ENG-1268 asked for "a DB 23514 also mapped to 400, generic message" on `POST /api/admin/posts`. The
+obvious reading — `error.code === "23514"` — is wrong twice over: `post` CHECKs `type`, `status`,
+`aspect_ratio` AND `post_label_preset`, so a bare match captures all of them, and putting that
+branch above `isLabelCheckViolation` makes it capture the label one first. The first draft did
+exactly this; two PRE-EXISTING label tests caught it (`route.test.ts` "insert violating the label
+CHECK … not insert_failed" and "a 23514 from a DIFFERENT constraint keeps its own message"). Match on
+the constraint name the way `isLabelCheckViolation` does, and put the generic branch LAST. Both
+directions are now pinned for the subject constraint too.
+Corollary worth keeping: when you add a coarse error mapping, go looking for the existing FINE ones
+it could swallow — and if there are none, that is the moment to ask why the fine ones were never
+written.
+
+## `export type { X } from "…"` does NOT bring X into scope
+`app/(dash)/compose/types.ts` re-exports `Subject` from `lib/posts/subject.ts` and also annotates
+`EditInitial.subject` with it. The re-export forwards the name to importers but does not bind it
+locally, so `tsc` fails with a bare `TS2304: Cannot find name 'Subject'` pointing at the annotation
+rather than at the export line. Import it as well as re-exporting it.
+
+## A shared `Subject`/lookup module belongs in `lib/posts/`, not in the screen's `types.ts`
+The BFF routes and the compose screen both need the three subject values and the per-subject type
+rules, and a route cannot import from `app/(dash)/compose/`. `lib/posts/subject.ts` is the split
+(the same one `lib/posts/labels.ts` made under ENG-745); `compose/types.ts` re-exports it rather than
+restating it, so the picker cannot offer a combination the route rejects. Expect any future
+"screen and route must agree on a vocabulary" ticket to need the same new file — it is an ALLOWED
+surface widening, not scope creep, but say so on the ticket.
+
+## The S-mark asset ships at 8000×8000; downscale it before committing
+`dev-handover/StablePass-mockups/mockups/assets/S-2.png` is 325 KB at 8000×8000 for what renders in a
+44 px avatar. Downscaled to 256×256 it is 6.6 KB. It is also already the mark ON `--brand-green`
+(#285D50 exactly, verified at the corner pixel), so the avatar fills the circle with it rather than
+tinting a background behind it — padding or a green background would double the green. Also `chmod
+644`: the mockups tree is mode 700 and `cp` carries that across.

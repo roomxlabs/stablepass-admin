@@ -21,7 +21,24 @@ export type HorseRow = {
     | null;
 };
 
-export type TrainerRow = { id: string; name: string | null; display_name: string | null };
+/**
+ * GUARDRAIL 3 IS A PROPERTY OF THIS TYPE, not just of the query beside it.
+ *
+ * `trainer_contact` — a trainer's phone/email — is NOT part of composing a
+ * post and must never reach this screen. The loader selects exactly
+ * `id,name,display_name,stable_name,location,photo_url`; this row type is the
+ * second belt, so a widened `select("*")` would fail `tsc` on the way in
+ * rather than quietly shipping contact details to the browser as props.
+ */
+export type TrainerRow = {
+  id: string;
+  name: string | null;
+  display_name: string | null;
+  /** ENG-1268 — the trainer-profile subline, `stable · location`. */
+  stable_name: string | null;
+  location: string | null;
+  photo_url: string | null;
+};
 
 /** Today's races, embedded down to their runners' horse ids. */
 export type RaceTodayRow = { race_horse: Array<{ horse_id: string }> | null };
@@ -101,10 +118,22 @@ export function toHorseOptions(rows: HorseRow[] | null, racingToday: Set<string>
   });
 }
 
+/**
+ * ENG-1268 — the trainer options behind BOTH the byline dropdown (which only
+ * ever needed `{id, name}`) and the new Trainer-subject search, whose result
+ * row and preview head render the photo and the `stable · location` subline.
+ *
+ * `photoUrl` is the BARE storage path here — `page.tsx` signs the whole set in
+ * one round-trip afterwards, exactly as it does for horses. Nothing in this
+ * pure function touches Storage, which is what keeps it unit-testable.
+ */
 export function toTrainerOptions(rows: TrainerRow[] | null): TrainerOption[] {
   return (rows ?? []).map((t) => ({
     id: t.id,
     name: t.name ?? t.display_name ?? "Unnamed trainer",
+    photoUrl: t.photo_url ?? null,
+    stableName: t.stable_name ?? null,
+    location: t.location ?? null,
   }));
 }
 

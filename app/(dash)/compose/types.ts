@@ -77,11 +77,62 @@ export type HorseOption = {
   racesToday: boolean;
 };
 
-/** A trainer for the editable byline dropdown (the full list is loaded). */
+/**
+ * `post.subject` and its rules live in `lib/posts/subject.ts`, NOT here.
+ *
+ * The BFF routes need the same three values and the same per-subject type
+ * rules that this screen does, and a route cannot import from
+ * `app/(dash)/compose/`. One definition, re-exported — the same split
+ * `lib/posts/labels.ts` took under ENG-745, and for the same reason: two
+ * copies of "which types may a StablePass post be" is how the picker starts
+ * offering a tile the route rejects.
+ */
+// Imported as well as re-exported: `export type { … } from` forwards the name
+// but does NOT bring it into this module's scope, and `EditInitial` below
+// annotates a field with it.
+import type { Subject } from "@/lib/posts/subject";
+export type { Subject };
+export {
+  isSubject,
+  STABLEPASS_HANDLE,
+  SUBJECT_LABEL,
+  SUBJECTS,
+  subjectAllowsType,
+  TYPES_BY_SUBJECT,
+} from "@/lib/posts/subject";
+
+/**
+ * A trainer the operator can attribute a post to.
+ *
+ * ENG-1268 widened this past `{id, name}`: the Trainer subject renders a
+ * search result row (photo + `stable · location`) and a preview head from the
+ * same option, so the picker needs what the trainer-profile header shows.
+ *
+ * GUARDRAIL 3 — `trainer_contact` is NOT here and must never be. The loader
+ * selects `id,name,display_name,stable_name,location,photo_url` and nothing
+ * else; a trainer's contact details are not part of composing a post.
+ */
 export type TrainerOption = {
   id: string;
   name: string;
+  /** Signed `trainer-photos` URL, or null → the initials fallback. */
+  photoUrl: string | null;
+  stableName: string | null;
+  location: string | null;
 };
+
+/**
+ * The trainer-profile subline: `stable · location`, skipping whichever is
+ * missing, and empty when both are.
+ *
+ * One function because three places print it — the search result row, the
+ * picked-trainer card and the preview head — and a card that disagrees with
+ * the preview beside it is the ENG-558 class of lie this screen keeps
+ * re-learning.
+ */
+export function trainerSubline(t: { stableName: string | null; location: string | null }): string {
+  return [t.stableName, t.location].filter((v): v is string => !!v && v.trim() !== "").join(" · ");
+}
 
 /**
  * The 202 payload from `POST /api/admin/posts`. Video drafts carry a Mux
@@ -152,6 +203,33 @@ export type PhotoUploadTarget = {
 export type EditInitial = {
   id: string;
   status: string; // draft | scheduled | published | unpublished
+  /**
+   * ENG-1268 — who the post was posted AS. IMMUTABLE: `PATCH /posts/:id`
+   * rejects a `subject` key outright, so edit mode shows it read-only (the
+   * same `type-fixed` treatment the post type has had since ENG-611).
+   *
+   * A row written before this epic has `post.subject` defaulted to `horse` by
+   * B1's migration, so there is no null case to handle here.
+   */
+  subject: Subject;
+  /**
+   * ENG-1268 — `post.byline`, the StablePass subject's attribution. Null for
+   * a horse/trainer post, which take their byline from the trainer instead.
+   *
+   * It stores the NAME, not a `post_byline` id — which is why a RETIRED byline
+   * still renders here perfectly: retiring stamps `post_byline.retired_at` and
+   * never touches `post`. The picker has to union this value back into its
+   * options or the control silently blanks it (see ComposeScreen).
+   */
+  byline: string | null;
+  /**
+   * ENG-1268 — the post's own trainer, for a `trainer`-subject post: the
+   * preview head and the read-only picked-trainer card both render it.
+   *
+   * Null for a horse post (whose byline trainer comes from `trainers`) and for
+   * a StablePass post (which has none).
+   */
+  trainer: TrainerOption | null;
   mediaType: MediaType;
   mediaUrl: string | null;
   title: string;
@@ -165,7 +243,13 @@ export type EditInitial = {
    * old post the first time someone edits it.
    */
   label: string | null;
-  horse: HorseOption;
+  /**
+   * NULLABLE since ENG-1268: `post.horse_id` is nullable as of B1, so a
+   * trainer/StablePass post genuinely has no horse. Every reader must narrow
+   * rather than assume — the old non-null type is exactly what made "a horse
+   * heads every post" an untypeable-away assumption.
+   */
+  horse: HorseOption | null;
   /**
    * ENG-1266 — the post's CURRENT ordered photo set, for a photo post only.
    *

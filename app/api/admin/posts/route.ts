@@ -2,7 +2,13 @@ import { NextResponse } from "next/server";
 import { requireAdmin } from "@/lib/auth/admin";
 import { ok, fail } from "@/lib/api/envelope";
 import { createMuxDirectUpload, MuxError } from "@/lib/mux";
-import { isLabelCheckViolation, LABEL_ERROR_MESSAGE, normalisePostLabel } from "@/lib/posts/labels";
+import {
+  CHECK_VIOLATION,
+  isLabelCheckViolation,
+  LABEL_ERROR_MESSAGE,
+  normalisePostLabel,
+} from "@/lib/posts/labels";
+import { isSubject, SUBJECTS } from "@/lib/posts/subject";
 import { MAX_PHOTOS, uploadSlotPath } from "@/lib/posts/media";
 import { isUuid } from "@/lib/uuid";
 import {
@@ -19,6 +25,37 @@ const POST_MEDIA_BUCKET = "post-media"; // T15 private bucket (photo/voice)
 // `news` is deliberately EXCLUDED: it exists in the schema but nothing authors
 // it, so this endpoint must keep rejecting it with a 400.
 const CREATABLE_TYPES: string[] = ["video", "photo", "voice", "text"];
+
+/** ENG-1268, epic decision 2 — the only two types a StablePass post may be. */
+const STABLEPASS_TYPES: string[] = ["photo", "video"];
+
+/** B1's CHECK re-stating the per-subject required/forbidden columns. */
+const SUBJECT_CONSTRAINT = "post_subject";
+
+/**
+ * B1's subject-shape CHECK — the database's own backstop for the validation
+ * block at the top of POST.
+ *
+ * MATCHED BY CONSTRAINT NAME, never on the bare 23514, for exactly the reason
+ * `isLabelCheckViolation` spells out: `post` also CHECKs `type`, `status`,
+ * `aspect_ratio` and the label preset, and a bare code turns every one of them
+ * into "that combination of subject fields is not allowed" — a worse error
+ * than the raw constraint message it replaced, and one that would hide a real
+ * bug behind a plausible-looking 400.
+ *
+ * (An earlier draft of this ticket did match the bare code, and placed the
+ * branch ABOVE the label one, which silently captured `post_label_preset` and
+ * `post_aspect_ratio_positive` both. Two pre-existing tests caught it. The
+ * prefix match is deliberately loose — `post_subject` rather than the full
+ * `post_subject_shape` — so a be migration that renames the constraint to
+ * `post_subject_shape_v2` still lands here rather than as a 500.)
+ */
+function isSubjectCheckViolation(
+  error: { code?: string; message?: string; details?: string } | null,
+): boolean {
+  if (error?.code !== CHECK_VIOLATION) return false;
+  return `${error?.message ?? ""} ${error?.details ?? ""}`.includes(SUBJECT_CONSTRAINT);
+}
 
 // 202 Accepted — the draft row exists, but the media upload is still pending:
 // the client uploads the file bytes directly to Mux (video) / Storage (photo).
@@ -132,19 +169,86 @@ export async function POST(req: Request) {
   const { sb } = g;
 
   const payload = await req.json().catch(() => ({}));
-  const { horseId, type, title, body, sourceTrainerId, expiresAt, label, photoCount, poster_time_s } =
-    payload ?? {};
+  const {
+    horseId,
+    type,
+    title,
+    body,
+    sourceTrainerId,
+    expiresAt,
+    label,
+    photoCount,
+    poster_time_s,
+    byline,
+  } = payload ?? {};
 
-  // A horse is required for EVERY type, text included: post.horse_id is NOT
-  // NULL and it is what the member app renders in the byline.
-  if (!horseId || !type || !sourceTrainerId)
-    return fail("validation_failed", "horseId, type and sourceTrainerId are required.", 400);
+  // -------------------------------------------------------------------------
+  // SUBJECT VALIDATION (ENG-1268) — and it runs HERE, before the horse lookup
+  // and long before any Storage or Mux call.
+  //
+  // THAT ORDER IS THE REQUIREMENT, not an optimisation. Every path below this
+  // block that fails after minting an upload target has to roll the draft back
+  // by hand, and a Mux direct upload or a signed Storage URL handed out for a
+  // request we were always going to reject is an ORPHAN UPLOAD TARGET: the
+  // client can still PUT bytes to it, and those bytes land against a post that
+  // does not exist. So a malformed subject must be a 400 that has touched
+  // nothing. `route.test.ts` asserts `state.calls.storage` AND the Mux mock are
+  // EMPTY for every 400 in this matrix, which is what keeps it that way.
+  // -------------------------------------------------------------------------
+
+  // Absent → `horse`. BACK-COMPAT: every caller that predates this ticket
+  // sends no `subject` key at all, and must keep behaving exactly as it did.
+  const subject = payload?.subject ?? "horse";
+  if (!isSubject(subject))
+    return fail("validation_failed", `subject must be one of ${SUBJECTS.join(", ")}.`, 400);
+
+  if (!type) return fail("validation_failed", "type is required.", 400);
   if (!CREATABLE_TYPES.includes(type))
     return fail(
       "validation_failed",
       "Only 'video', 'photo', 'voice' or 'text' posts can be created here.",
       400,
     );
+
+  // Each subject's required fields AND its forbidden ones. Both halves matter:
+  // a trainer post carrying a `horseId` is not a harmless extra — it would
+  // write a horse onto a post whose whole point is that it has none, and the
+  // member feed would head it with that horse.
+  if (subject === "horse") {
+    if (!horseId || !sourceTrainerId)
+      return fail(
+        "validation_failed",
+        "horseId and sourceTrainerId are required for a horse post.",
+        400,
+      );
+    if (byline !== undefined && byline !== null)
+      return fail("validation_failed", "byline is only accepted for a stablepass post.", 400);
+  } else if (subject === "trainer") {
+    if (!sourceTrainerId)
+      return fail("validation_failed", "sourceTrainerId is required for a trainer post.", 400);
+    if (horseId)
+      return fail("validation_failed", "A trainer post cannot carry a horseId.", 400);
+    if (byline !== undefined && byline !== null)
+      return fail("validation_failed", "byline is only accepted for a stablepass post.", 400);
+  } else {
+    // stablepass
+    if (horseId || sourceTrainerId)
+      return fail(
+        "validation_failed",
+        "A stablepass post cannot carry a horseId or a sourceTrainerId.",
+        400,
+      );
+    if (typeof byline !== "string" || byline.trim() === "")
+      return fail("validation_failed", "byline is required for a stablepass post.", 400);
+    // Epic decision 2. Enforced server-side as well as hidden in the picker,
+    // because the BFF is not the only caller of this endpoint.
+    if (!STABLEPASS_TYPES.includes(type))
+      return fail(
+        "validation_failed",
+        "A stablepass post must be a photo or a video.",
+        400,
+      );
+  }
 
   // A text post's body IS the post — a title alone is not one. Enforced here
   // as well as in Compose, because the BFF is not the only caller.
@@ -183,9 +287,44 @@ export async function POST(req: Request) {
       400,
     );
 
-  // Horse must exist — a clean 404 rather than a raw FK violation.
-  const { data: horse } = await sb.from("horse").select("id").eq("id", horseId).maybeSingle();
-  if (!horse) return fail("horse_not_found", "Horse not found.", 404);
+  // Horse must exist — a clean 404 rather than a raw FK violation. Horse
+  // subject only: the other two have no `horseId` to look up (the block above
+  // already rejected one that was sent anyway).
+  if (subject === "horse") {
+    const { data: horse } = await sb.from("horse").select("id").eq("id", horseId).maybeSingle();
+    if (!horse) return fail("horse_not_found", "Horse not found.", 404);
+  }
+
+  /**
+   * The byline must name a LIVE `post_byline` row (ENG-1268).
+   *
+   * `post.byline` is FK'd to `post_byline(name)`, so an unknown name would be
+   * a 23503 at insert — but a RETIRED one would NOT: the row still exists, it
+   * is only hidden from the picker. Both must be refused here, and they are
+   * refused with the SAME code, because to the operator they are one fact:
+   * that byline is not available for a new post.
+   *
+   * Checked BEFORE the insert and therefore before any upload target, like
+   * everything else in this handler — the whole point of the ordering above.
+   * The race the ticket names (another admin retires it between the picker's
+   * read and this submit) lands here and 400s, which is exactly right.
+   */
+  let bylineName: string | null = null;
+  if (subject === "stablepass") {
+    bylineName = String(byline).trim();
+    const { data: row, error: bylineErr } = await sb
+      .from("post_byline")
+      .select("name,retired_at")
+      .eq("name", bylineName)
+      .maybeSingle();
+    // Never echo a Postgres message — log the code only (repo convention).
+    if (bylineErr) {
+      console.error("post_byline query_failed", bylineErr.code);
+      return fail("query_failed", "Could not check the byline.", 400);
+    }
+    if (!row || row.retired_at != null)
+      return fail("unknown_byline", "That byline is not available. Pick another.", 400);
+  }
 
   // ENG-824 — optional poster frame time (seconds). Video only; ignore for
   // other types so a mis-sent key cannot land on a photo/text/voice row.
@@ -201,19 +340,31 @@ export async function POST(req: Request) {
   const { data: draft, error } = await sb
     .from("post")
     .insert({
-      horse_id: horseId,
+      // EXPLICIT NULLS, never an omitted key (ENG-1268). `horse_id` and
+      // `source_trainer_id` are nullable as of B1, and writing them out means
+      // the inserted row is fully determined by the subject above rather than
+      // by whatever the column defaults happen to be — which is what
+      // `route.test.ts` pins with `toEqual`.
+      horse_id: subject === "horse" ? horseId : null,
+      source_trainer_id: subject === "stablepass" ? null : sourceTrainerId,
+      subject,
+      byline: bylineName,
       type,
       title: title ?? null,
       body: hasBody ? body : null,
-      source_trainer_id: sourceTrainerId,
       status: "draft",
       watermarked: false,
       expires_at: expiresAt ?? null,
       label: labelValue,
       ...(posterTime !== null ? { poster_time_s: posterTime } : {}),
     })
-    .select("id,status,type,horse_id,created_at,label")
+    .select("id,status,type,horse_id,created_at,label,subject,byline")
     .single();
+  // B1 ships `post_subject_shape`, a CHECK that re-states the per-subject
+  // required/forbidden columns in the database. The block at the top of this
+  // handler is what an operator actually hits; this maps the backstop to the
+  // same 400 with a generic message, so a skew between this build's rules and
+  // the database's is an editorial error rather than a 500.
   // A `post_label_preset` violation is the operator sending a category this
   // build does not know about (a preset dropped by a later migration, say), not
   // a server fault — surface it as the same 400 the up-front check produces.
@@ -221,6 +372,13 @@ export async function POST(req: Request) {
   // status / aspect-ratio CHECKs and mislabel them as a category problem.
   if (isLabelCheckViolation(error))
     return fail("validation_failed", LABEL_ERROR_MESSAGE, 400);
+  // AFTER the label branch, and scoped to its own constraint name. Both facts
+  // matter: this is the backstop for the per-subject block at the top of the
+  // handler, so a skew between this build's rules and the database's is an
+  // editorial 400 rather than a 500 — but it must not swallow the label,
+  // type, status or aspect-ratio CHECKs on the way past.
+  if (isSubjectCheckViolation(error))
+    return fail("validation_failed", "That combination of subject fields is not allowed.", 400);
   if (error || !draft) return fail("insert_failed", error?.message ?? "Could not create draft.", 400);
 
   // text → done. No upload target, so no Storage/Mux call to make and nothing

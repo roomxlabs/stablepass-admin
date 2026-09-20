@@ -2333,4 +2333,249 @@ describe("ENG-748 · multi-photo compose", () => {
       });
     });
   });
+
+  // --- ENG-1266 review: `editPhotoUnsettled` blocks a save mid-upload ------
+  //
+  // Before this fix, edit mode had NO equivalent of create mode's
+  // `photosSettled` gate: `Save changes` stayed live while an appended photo
+  // was still uploading, and a save then sent `mediaSetPayload(photos)` — the
+  // DONE tiles only — which `PATCH /posts/:id` implements by deleting every
+  // `post_media` row above the set it is given. So saving mid-upload silently
+  // dropped the in-flight photo AND trimmed the rows behind it.
+  describe("editPhotoUnsettled — an edit save is blocked while a photo is uploading (ENG-1266 review)", () => {
+    // The literal PHOTO_UPLOADING sentence from ComposeScreen.tsx, duplicated
+    // here rather than imported — the constant is not exported, same as
+    // PHOTO_REQUIRED, and the two sentences living side by side in the source
+    // is what a reviewer actually compares against.
+    const PHOTO_UPLOADING = "A photo is still uploading. Wait for it to finish, or remove it.";
+
+    function oneSavedPhotoInitial(id: string, status: "draft" | "published" = "draft"): EditInitial {
+      return {
+        id,
+        status,
+        mediaType: "photo",
+        mediaUrl: "https://signed.example/a.jpg",
+        title: "",
+        caption: "One saved photo",
+        bylineId: "t1",
+        label: null,
+        scheduledFor: null,
+        horse: HORSES[0],
+        photos: [{ path: `${id}/original`, url: "https://signed.example/a.jpg" }],
+      };
+    }
+
+    /** The header's own "Save changes" button — distinct from the bottom
+     *  `primary-action` button, which shows the SAME label in edit mode.
+     *  It carries no testid, so it is found by scoping to `.admin-topbar`
+     *  (a plain, non-module class name used only for that bar). */
+    function headerSaveButton(): HTMLButtonElement {
+      const topbar = document.querySelector(".admin-topbar") as HTMLElement;
+      return within(topbar).getByRole("button", { name: /save changes/i }) as HTMLButtonElement;
+    }
+
+    it("Add more photos mid-upload disables Save changes / primary-action / Publish now / Schedule and shows photo-uploading; resolving re-enables them, and NO patch went out meanwhile", async () => {
+      api.patchPost.mockResolvedValue(undefined);
+      render(
+        <ComposeScreen horses={HORSES} trainers={TRAINERS} initial={oneSavedPhotoInitial("u1")} />,
+      );
+
+      // A future schedule pick, so `canSchedule` is true independently of the
+      // upload guard — otherwise `schedule-action` would already read
+      // disabled for an unrelated reason and the test would prove nothing
+      // about `editPhotoUnsettled` specifically.
+      fireEvent.change(screen.getByTestId("schedule-date"), { target: { value: "2099-07-01" } });
+      fireEvent.change(screen.getByTestId("schedule-time"), { target: { value: "18:45" } });
+
+      api.requestPhotoUploads.mockResolvedValueOnce([
+        {
+          sortOrder: 1,
+          path: "u1/photo-1",
+          token: "tok-1",
+          uploadUrl: "https://storage.local/post-media/u1/photo-1",
+          bucket: "post-media",
+        },
+      ]);
+      let resolveUpload!: () => void;
+      api.uploadPhotoToStorage.mockReturnValueOnce(
+        new Promise<void>((resolve) => {
+          resolveUpload = resolve;
+        }),
+      );
+
+      fireEvent.click(screen.getByTestId("photo-add-more"));
+      fireEvent.change(screen.getByTestId("media-input"), { target: { files: photoFiles(1) } });
+
+      // The tile is now genuinely UPLOADING — the PUT is deliberately held.
+      await waitFor(() => expect(api.uploadPhotoToStorage).toHaveBeenCalledTimes(1));
+
+      expect(headerSaveButton().disabled).toBe(true);
+      expect((screen.getByTestId("primary-action") as HTMLButtonElement).disabled).toBe(true);
+      expect((screen.getByTestId("publish-draft") as HTMLButtonElement).disabled).toBe(true);
+      expect((screen.getByTestId("schedule-action") as HTMLButtonElement).disabled).toBe(true);
+      expect(screen.getByTestId("photo-uploading").textContent).toBe(PHOTO_UPLOADING);
+
+      // Nothing was saved while the upload was in flight.
+      expect(api.patchPost).not.toHaveBeenCalled();
+
+      resolveUpload();
+      await waitFor(() => expect(screen.queryByTestId("photo-uploading")).toBeNull());
+
+      expect(headerSaveButton().disabled).toBe(false);
+      expect((screen.getByTestId("primary-action") as HTMLButtonElement).disabled).toBe(false);
+      expect((screen.getByTestId("publish-draft") as HTMLButtonElement).disabled).toBe(false);
+      expect((screen.getByTestId("schedule-action") as HTMLButtonElement).disabled).toBe(false);
+    });
+
+    it("REGRESSION: a 3-photo saved post + a 4th still uploading must not save the 3", async () => {
+      api.patchPost.mockResolvedValue(undefined);
+      const initial: EditInitial = {
+        id: "u2",
+        status: "published",
+        mediaType: "photo",
+        mediaUrl: "https://signed.example/a.jpg",
+        title: "",
+        caption: "Three saved",
+        bylineId: "t1",
+        label: null,
+        scheduledFor: null,
+        horse: HORSES[0],
+        photos: [
+          { path: "u2/original", url: "https://signed.example/a.jpg" },
+          { path: "u2/photo-1", url: "https://signed.example/b.jpg" },
+          { path: "u2/photo-2", url: "https://signed.example/c.jpg" },
+        ],
+      };
+      render(<ComposeScreen horses={HORSES} trainers={TRAINERS} initial={initial} />);
+
+      api.requestPhotoUploads.mockResolvedValueOnce([
+        {
+          sortOrder: 3,
+          path: "u2/photo-3",
+          token: "tok-3",
+          uploadUrl: "https://storage.local/post-media/u2/photo-3",
+          bucket: "post-media",
+        },
+      ]);
+      // Never resolves in this test — the 4th tile stays uploading throughout.
+      api.uploadPhotoToStorage.mockReturnValueOnce(new Promise<void>(() => {}));
+
+      fireEvent.click(screen.getByTestId("photo-add-more"));
+      fireEvent.change(screen.getByTestId("media-input"), { target: { files: photoFiles(1) } });
+      await waitFor(() => expect(api.uploadPhotoToStorage).toHaveBeenCalledTimes(1));
+
+      const btn = screen.getByTestId("primary-action") as HTMLButtonElement;
+      expect(btn.disabled).toBe(true);
+
+      // `disabled` is the whole mechanism from the operator's side: jsdom,
+      // like a browser, never dispatches "click" on a disabled <button>, so
+      // clicking it is a no-op and there is nothing more to drive. Pinned the
+      // same way the sibling `editPhotoEmpty` guard is pinned above
+      // ("remove-to-zero: photo-none shows the required message and
+      // primary-action is disabled") — the early return inside `saveEdit` is
+      // belt-and-braces behind it, and reaching it from a component test
+      // would mean calling the handler off React's internal fiber props,
+      // which pins React's internals rather than this screen's behaviour.
+      fireEvent.click(btn);
+
+      expect(screen.getByTestId("photo-uploading").textContent).toBe(PHOTO_UPLOADING);
+      // The whole regression: never `media: ["u2/original", "u2/photo-1", "u2/photo-2"]`.
+      expect(api.patchPost).not.toHaveBeenCalled();
+    });
+
+    it("afterSlot high-water mark: append, remove the uploading tile, then append again — mints past the abandoned slot, not from the survivors", async () => {
+      api.patchPost.mockResolvedValue(undefined);
+      render(
+        <ComposeScreen horses={HORSES} trainers={TRAINERS} initial={oneSavedPhotoInitial("hw1")} />,
+      );
+
+      // First append mints photo-1 and holds it uploading.
+      api.requestPhotoUploads.mockResolvedValueOnce([
+        {
+          sortOrder: 1,
+          path: "hw1/photo-1",
+          token: "tok-1",
+          uploadUrl: "https://storage.local/post-media/hw1/photo-1",
+          bucket: "post-media",
+        },
+      ]);
+      api.uploadPhotoToStorage.mockReturnValueOnce(new Promise<void>(() => {}));
+
+      fireEvent.click(screen.getByTestId("photo-add-more"));
+      fireEvent.change(screen.getByTestId("media-input"), { target: { files: photoFiles(1) } });
+      await waitFor(() => expect(api.uploadPhotoToStorage).toHaveBeenCalledTimes(1));
+      expect(screen.getAllByTestId(/^photo-tile-\d+$/)).toHaveLength(2);
+      expect(api.requestPhotoUploads).toHaveBeenNthCalledWith(1, "hw1", 1, {
+        afterSlot: 0,
+        keeping: 1,
+      });
+
+      // Remove the still-uploading tile (position 1) — its PUT is abandoned,
+      // not cancelled, so slot 1 is still live.
+      fireEvent.click(screen.getByTestId("photo-remove-1"));
+      expect(screen.getAllByTestId(/^photo-tile-\d+$/)).toHaveLength(1);
+
+      // Append again. Before this fix, `afterSlot` was derived from `photos`
+      // (the survivors), which by now is `[hw1/original]` alone — that would
+      // answer `afterSlot: 0` and re-mint photo-1 straight onto the abandoned
+      // upload. The high-water-mark ref must still answer 1.
+      api.requestPhotoUploads.mockResolvedValueOnce([
+        {
+          sortOrder: 2,
+          path: "hw1/photo-2",
+          token: "tok-2",
+          uploadUrl: "https://storage.local/post-media/hw1/photo-2",
+          bucket: "post-media",
+        },
+      ]);
+      api.uploadPhotoToStorage.mockResolvedValueOnce(undefined);
+
+      fireEvent.click(screen.getByTestId("photo-add-more"));
+      fireEvent.change(screen.getByTestId("media-input"), { target: { files: photoFiles(1) } });
+
+      await waitFor(() => expect(api.requestPhotoUploads).toHaveBeenCalledTimes(2));
+      // `afterSlot: 1`, NOT 0 — the regression this pins. `keeping: 1` still
+      // reflects the surviving strip (the original photo only).
+      expect(api.requestPhotoUploads).toHaveBeenNthCalledWith(2, "hw1", 1, {
+        afterSlot: 1,
+        keeping: 1,
+      });
+    });
+
+    it("a FAILED tile does NOT block the save — documented behaviour: keep what landed, offer a retry", async () => {
+      api.patchPost.mockResolvedValue(undefined);
+      render(
+        <ComposeScreen horses={HORSES} trainers={TRAINERS} initial={oneSavedPhotoInitial("hw2")} />,
+      );
+      fireEvent.change(screen.getByTestId("schedule-date"), { target: { value: "2099-07-01" } });
+      fireEvent.change(screen.getByTestId("schedule-time"), { target: { value: "18:45" } });
+
+      api.requestPhotoUploads.mockResolvedValueOnce([
+        {
+          sortOrder: 1,
+          path: "hw2/photo-1",
+          token: "tok-1",
+          uploadUrl: "https://storage.local/post-media/hw2/photo-1",
+          bucket: "post-media",
+        },
+      ]);
+      api.uploadPhotoToStorage.mockRejectedValueOnce(new Error("network died"));
+
+      fireEvent.click(screen.getByTestId("photo-add-more"));
+      fireEvent.change(screen.getByTestId("media-input"), { target: { files: photoFiles(1) } });
+
+      // Wait for the tile to land in the FAILED state, not uploading.
+      await screen.findByTestId("photo-retry-1");
+
+      // FAILED is not UPLOADING: `photosSettled` (and so `editPhotoUnsettled`)
+      // does not treat it as in-flight — the strip keeps what landed and
+      // offers a retry, exactly as the reorder/remove-mid-upload tests
+      // elsewhere in this file already document for create mode.
+      expect(screen.queryByTestId("photo-uploading")).toBeNull();
+      expect(headerSaveButton().disabled).toBe(false);
+      expect((screen.getByTestId("primary-action") as HTMLButtonElement).disabled).toBe(false);
+      expect((screen.getByTestId("publish-draft") as HTMLButtonElement).disabled).toBe(false);
+      expect((screen.getByTestId("schedule-action") as HTMLButtonElement).disabled).toBe(false);
+    });
+  });
 });

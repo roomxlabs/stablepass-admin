@@ -134,6 +134,16 @@ function initialPhotos(initial: EditInitial | undefined): ComposePhoto[] {
 
 /** ENG-1266 — the one sentence for "you removed them all". */
 const PHOTO_REQUIRED = "A photo post needs at least one photo.";
+/**
+ * ENG-1266 — the same sentence for "you saved before the bytes landed".
+ *
+ * An edit save sends `mediaSetPayload(photos)`, which is the DONE tiles only,
+ * and `PATCH /posts/:id` deletes every `post_media` row above the set it is
+ * given. So saving mid-upload does not "save the photo later" — it drops the
+ * in-flight photo AND trims the rows, under a cheerful "Changes saved.".
+ * Create mode has always gated on `photosSettled`; this is edit mode's half.
+ */
+const PHOTO_UPLOADING = "A photo is still uploading. Wait for it to finish, or remove it.";
 
 function humanSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -310,6 +320,39 @@ export default function ComposeScreen({
    * the source of truth for ORDER and for what gets persisted.
    */
   const [photos, setPhotos] = useState<ComposePhoto[]>(() => initialPhotos(initial));
+  /**
+   * ENG-1266 — the highest upload ordinal this SESSION has ever held for the
+   * current post, which is what `afterSlot` must report.
+   *
+   * Derived from `photos` it would be wrong: removing a tile that is still
+   * uploading drops its path from the array but does NOT abort its PUT, so the
+   * hint would fall back to a slot whose bytes are still on their way. The
+   * route floors the answer at its own derivation, but its floor comes from
+   * `post_media` + the mirror + the Storage listing — and an in-flight object
+   * is in none of those yet. The next append would then be minted straight
+   * onto the live slot and the abandoned PUT would land on top of it: the
+   * operator sees the tile they picked and the post shows the one they threw
+   * away.
+   *
+   * So it only ever goes UP, for the life of one post. `-1` means "holding
+   * nothing" — NOT `nextPhotoSlot([]) - 1`, which is 0, because `photo-0` is a
+   * real ordinal a post can hold and "none" has to be distinguishable from it.
+   * (The send site floors at 0 either way; the distinction is for reading the
+   * ref, not for the wire.) It is reset only where the POST itself changes
+   * (`resetMedia`, a replacing pick) — never by a remove.
+   *
+   * Seeded from `initial.photos` rather than `initialPhotos(initial)`: a
+   * `useRef` initialiser is NOT lazy the way the `useState` one above is, so
+   * it re-runs on every render and only the first value is ever kept. The raw
+   * paths are all this needs, so there is no reason to rebuild the tiles.
+   */
+  const highestSlotEverHeld = useRef(
+    initial?.photos?.length ? nextPhotoSlot(initial.photos.map((p) => p.path)) - 1 : -1,
+  );
+  /** Record slots just minted. Monotonic by construction — see the ref. */
+  function holdSlots(paths: string[]) {
+    highestSlotEverHeld.current = Math.max(highestSlotEverHeld.current, nextPhotoSlot(paths) - 1);
+  }
   /** Cap breach and per-set upload problems — shown above the strip. */
   const [photoError, setPhotoError] = useState<string | null>(null);
   /**
@@ -513,6 +556,23 @@ export default function ComposeScreen({
    * legitimate thing to be halfway through.
    */
   const editPhotoEmpty = isEdit && usesPhotoSet && readyPhotos.length === 0;
+  /**
+   * ENG-1266 — an edit save taken while a photo is still in flight.
+   *
+   * Create mode gates every action on `photosSettled`; edit mode had no
+   * equivalent, so `Save changes` stayed live mid-upload and shipped the DONE
+   * tiles only — which `PATCH /posts/:id` implements by deleting the rows
+   * above them. The photo the operator is watching upload is dropped and the
+   * trailing `post_media` rows go with it, silently.
+   *
+   * Same rule as `photosSettled`, so the two halves of the screen agree: an
+   * UPLOADING tile blocks the save; a FAILED one does not — the documented
+   * behaviour is that the post keeps what landed and the strip offers a retry.
+   * `editPhotoEmpty` is the stronger statement of the `photos.length === 0`
+   * half and is always checked first, so this sentence only ever appears for a
+   * strip that genuinely has something in flight.
+   */
+  const editPhotoUnsettled = isEdit && usesPhotoSet && !photosSettled;
   const canAct = isText ? textReady : draftReady;
   const busy = action.kind === "working";
   // Both halves of the pick are required before the schedule action is allowed.
@@ -548,6 +608,10 @@ export default function ComposeScreen({
     // operator can re-pick a ten-photo set as often as they like.
     revokePhotoUrls(photos);
     setPhotos([]);
+    // The DRAFT is discarded below, so the next photo belongs to a different
+    // post id and no slot of this one is held any more. This is the only kind
+    // of place the high-water mark may go down.
+    highestSlotEverHeld.current = -1;
     setPhotoError(null);
     setFile(null);
     setMediaUrl(null);
@@ -751,6 +815,9 @@ export default function ComposeScreen({
     setMeasure("measuring");
     setUpload({ state: "creating", pct: 0 });
     setPhotos([]);
+    // A replacing pick mints a BRAND NEW draft below, so nothing of the old
+    // post is held. Same exception as `resetMedia`.
+    highestSlotEverHeld.current = -1;
 
     const generation = ++pickGeneration.current;
     const stale = () => pickGeneration.current !== generation;
@@ -809,6 +876,7 @@ export default function ComposeScreen({
         token: targets[slot].token,
       }));
       setPhotos(seeded);
+      holdSlots(seeded.map((p) => p.path));
 
       // Sequential, not Promise.all: ten parallel Storage PUTs from one browser
       // is what makes the slowest of them time out, and the strip is more
@@ -901,9 +969,11 @@ export default function ComposeScreen({
         // bytes have not landed (still uploading, or failed and awaiting a
         // retry). Without this the route would re-issue one of them and the
         // new upload would overwrite a photo the operator is still waiting on.
-        // `- 1` because `nextPhotoSlot` returns the NEXT free ordinal and the
-        // route wants the highest HELD one.
-        afterSlot: Math.max(0, nextPhotoSlot(photos.map((p) => p.path)) - 1),
+        //
+        // The HIGH-WATER MARK, not `photos` — a tile removed mid-upload is
+        // gone from the array but its PUT is still in flight, so deriving the
+        // hint from the survivors would hand back a live slot. See the ref.
+        afterSlot: Math.max(0, highestSlotEverHeld.current),
         // What the operator will keep. The server would otherwise count the
         // orphaned objects of photos they removed (left in Storage by design)
         // and refuse a legitimate append.
@@ -936,6 +1006,7 @@ export default function ComposeScreen({
       token: targets[i].token,
     }));
     setPhotos((prev) => appendPhotos(prev, added));
+    holdSlots(added.map((p) => p.path));
 
     // Sequential, matching the create path: ten parallel PUTs from one browser
     // is what makes the slowest time out. Each tile settles on its own, so one
@@ -1170,6 +1241,13 @@ export default function ComposeScreen({
       setAction({ kind: "error", message: PHOTO_REQUIRED });
       return;
     }
+    // ENG-1266 — and never save one down to the tiles that happen to have
+    // landed: the set we would send omits the in-flight photo, and the PATCH
+    // deletes every row above it. The button is disabled for this too.
+    if (editPhotoUnsettled) {
+      setAction({ kind: "error", message: PHOTO_UPLOADING });
+      return;
+    }
     setAction({ kind: "working" });
     try {
       await patchPost(initial.id, {
@@ -1192,6 +1270,13 @@ export default function ComposeScreen({
     if (!initial) return;
     if (editPhotoEmpty) {
       setAction({ kind: "error", message: PHOTO_REQUIRED });
+      return;
+    }
+    // ENG-1266 — and never save one down to the tiles that happen to have
+    // landed: the set we would send omits the in-flight photo, and the PATCH
+    // deletes every row above it. The button is disabled for this too.
+    if (editPhotoUnsettled) {
+      setAction({ kind: "error", message: PHOTO_UPLOADING });
       return;
     }
     setAction({ kind: "working" });
@@ -1220,6 +1305,13 @@ export default function ComposeScreen({
     if (!initial) return;
     if (editPhotoEmpty) {
       setAction({ kind: "error", message: PHOTO_REQUIRED });
+      return;
+    }
+    // ENG-1266 — and never save one down to the tiles that happen to have
+    // landed: the set we would send omits the in-flight photo, and the PATCH
+    // deletes every row above it. The button is disabled for this too.
+    if (editPhotoUnsettled) {
+      setAction({ kind: "error", message: PHOTO_UPLOADING });
       return;
     }
     const when = combineLocal(scheduleDate, scheduleTime);
@@ -1346,7 +1438,7 @@ export default function ComposeScreen({
                 type="button"
                 className={`btn ${initial?.status === "draft" ? styles.btnLight : "btn-primary"} ${styles.btnSm}`}
                 onClick={saveEdit}
-                disabled={busy || editPhotoEmpty}
+                disabled={busy || editPhotoEmpty || editPhotoUnsettled}
               >
                 {busy ? "Saving…" : "Save changes"}
               </button>
@@ -1356,7 +1448,7 @@ export default function ComposeScreen({
                   className={`btn btn-primary ${styles.btnSm}`}
                   data-testid="publish-draft"
                   onClick={publishDraftNow}
-                  disabled={busy || editPhotoEmpty}
+                  disabled={busy || editPhotoEmpty || editPhotoUnsettled}
                 >
                   {busy ? "Working…" : "Publish now"}
                 </button>
@@ -1904,6 +1996,17 @@ export default function ComposeScreen({
                       {PHOTO_REQUIRED}
                     </div>
                   ) : null}
+                  {/* Same place, same voice, for the other state the post
+                      cannot be saved in. Not `uploadError` — nothing has gone
+                      wrong, the tiles are simply still working, so it reads as
+                      help text rather than a failure. `editPhotoEmpty` wins
+                      when both are true: "there are none" is the more useful
+                      sentence than "one is still coming". */}
+                  {editPhotoUnsettled && !editPhotoEmpty ? (
+                    <div className={styles.help} data-testid="photo-uploading" role="status">
+                      {PHOTO_UPLOADING}
+                    </div>
+                  ) : null}
                 </>
               ) : null}
 
@@ -2228,7 +2331,7 @@ export default function ComposeScreen({
                   onClick={isEdit ? saveEdit : () => runAction(mode)}
                   disabled={
                     isEdit
-                      ? busy || editPhotoEmpty
+                      ? busy || editPhotoEmpty || editPhotoUnsettled
                       : !canAct || busy || (mode === "schedule" && !canSchedule)
                   }
                 >
@@ -2316,7 +2419,7 @@ export default function ComposeScreen({
                   data-testid="schedule-action"
                   style={{ marginTop: 12 }}
                   onClick={scheduleEdit}
-                  disabled={!canSchedule || busy || editPhotoEmpty}
+                  disabled={!canSchedule || busy || editPhotoEmpty || editPhotoUnsettled}
                 >
                   {busy
                     ? "Saving…"

@@ -115,8 +115,15 @@ export type FakeState = {
      * `calls.storage` (e.g. "the signed paths recorded, in order") would have
      * to know about a call it isn't testing. Recorded here instead so those
      * assertions stay exact and untouched.
+     *
+     * `options` (e.g. `{ limit: 1000 }`) is only INCLUDED on the recorded
+     * entry when the caller actually passed one — a plain `list(prefix)` call
+     * still records `{ bucket, path }` with no `options` key at all, so the
+     * four pre-existing `toEqual([{ bucket, path }])` assertions written
+     * before the route ever passed options keep passing unchanged. This is
+     * the same back-compat idiom `MutationRecord.options` already uses.
      */
-    storageList: { bucket: string; path: string }[];
+    storageList: { bucket: string; path: string; options?: { limit?: number } }[];
   };
 };
 
@@ -340,8 +347,14 @@ export function makeFakeClient(state: FakeState) {
         // rows are not written yet (create mode) still sees the photos already
         // sitting in Storage. Recorded on `calls.storageList`, not
         // `calls.storage` — see that field's doc comment.
-        list: async (prefix: string) => {
-          state.calls.storageList.push({ bucket, path: prefix });
+        list: async (prefix: string, options?: { limit?: number }) => {
+          // `options` is only pushed when the caller passed one — see the
+          // doc comment on `calls.storageList` for why that is deliberate.
+          state.calls.storageList.push({
+            bucket,
+            path: prefix,
+            ...(options === undefined ? {} : { options }),
+          });
           return state.storage.list ?? { data: [], error: null };
         },
         createSignedUploadUrl: async (path: string) => {

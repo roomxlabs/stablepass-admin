@@ -230,7 +230,16 @@ describe("POST /api/admin/posts/:id/photo-uploads — ENG-1266", () => {
       // The listing call is recorded, but on its OWN array — it must not
       // corrupt the exact-order assertion available against calls.storage
       // (the signed-upload targets) elsewhere in this file.
-      expect(state.calls.storageList).toEqual([{ bucket: "post-media", path: P1 }]);
+      //
+      // `{ limit: 1000 }`, not the Storage SDK's default of 100: the default
+      // is also LEXICOGRAPHIC (`photo-1, photo-10, photo-100, …, photo-2`),
+      // and orphaned objects are never cleaned up, so a long-lived post can
+      // exceed 100 objects — past which the listing would silently truncate
+      // and the slot floor derived from it could regress onto a slot that
+      // already holds bytes.
+      expect(state.calls.storageList).toEqual([
+        { bucket: "post-media", path: P1, options: { limit: 1000 } },
+      ]);
       expect(state.calls.storage).toEqual([{ bucket: "post-media", path: `${P1}/photo-3` }]);
     });
 
@@ -389,7 +398,9 @@ describe("POST /api/admin/posts/:id/photo-uploads — ENG-1266", () => {
       // The whole point: no upload target was signed off a listing we know is
       // wrong (or unknowable) — no silent post_media-only degrade.
       expect(state.calls.storage).toHaveLength(0);
-      expect(state.calls.storageList).toEqual([{ bucket: "post-media", path: P1 }]);
+      expect(state.calls.storageList).toEqual([
+        { bucket: "post-media", path: P1, options: { limit: 1000 } },
+      ]);
     });
   });
 

@@ -82,7 +82,17 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   // answers "1" for a draft that already holds `photo-1` and `photo-2` — and the
   // appended upload would PUT straight over the operator's second photo. The
   // union of both sources is the only view that is monotonic in both modes.
-  const { data: objects, error: listError } = await sb.storage.from(POST_MEDIA_BUCKET).list(id);
+  // `limit: 1000`, not Supabase's default of 100. The default is also
+  // LEXICOGRAPHIC (`photo-1, photo-10, photo-100, …, photo-2`), and a removed
+  // photo's object is never cleaned up (decision 5), so a long-lived post can
+  // exceed 100 objects between its `original`/`photo-<n>` set and its
+  // orphans. Past that limit `objectPaths` silently truncates and the slot
+  // floor derived from it can REGRESS — re-minting a slot that already holds
+  // bytes. 1000, not `MAX_PHOTOS` (10): this listing counts every ORPHAN ever
+  // left behind too, not just the post's current, persisted set.
+  const { data: objects, error: listError } = await sb.storage
+    .from(POST_MEDIA_BUCKET)
+    .list(id, { limit: 1000 });
   // FAIL CLOSED. The whole derivation below rests on this listing; if it is
   // missing we would silently fall back to the `post_media`-only answer, which
   // for a draft mid-compose is `1` — and that upload would land on top of the

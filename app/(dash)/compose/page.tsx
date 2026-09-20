@@ -3,11 +3,13 @@ import ComposeScreen from "./ComposeScreen";
 import type { EditInitial, HorseOption, MediaType, TrainerOption } from "./types";
 import { aestToday } from "./types";
 import {
+  loadPostPhotos,
   loadRacingHorseIds,
   one,
   toHorseOptions,
   toTrainerOptions,
   type HorseRow,
+  type PostMediaClient,
   type RaceQueryClient,
   type TrainerRow,
 } from "./data";
@@ -135,67 +137,28 @@ export default async function ComposePage({
               )
             : Promise.resolve(null),
       ]);
-      // ENG-1266 — the post's CURRENT ordered photo set, so edit mode can show
-      // the strip and add/remove/reorder against it instead of a read-only
-      // frame. Photo posts only; every other type keeps an empty list.
-      //
-      // A post written before ENG-748 has NO `post_media` rows — the single
-      // object lives only in `post.media_url`. That is not "no photos", it is
-      // one photo, so the legacy row is synthesised into a one-entry set.
-      //
-      // "THE READ FAILED" IS NOT "THE POST HAS NO ROWS", and conflating the two
-      // destroys data. Since this ticket an edit save sends the strip as the
-      // WHOLE `media` set, and `PATCH /posts/:id` implements that by deleting
-      // every `post_media` row above the ones it was given. So a transient
-      // PostgREST/network failure on this read would render a 5-photo post as a
-      // 1-photo strip, and the operator's next save — even a pure caption fix —
-      // would hard-delete rows 1..4 under a cheerful "Changes saved."
-      //
-      // So an errored read degrades to exactly the pre-ENG-1266 screen: media
-      // read-only, and `media` absent from every save. Caption/byline/label
-      // edits still work; the photos are simply not up for editing in a session
-      // that could not see them. Only `error === null` is allowed to mean
-      // "this post genuinely has no rows".
+      // ENG-1266 — the post's CURRENT ordered photo set, for edit mode's photo
+      // strip. Lives in `loadPostPhotos` (data.ts), NOT inline, for the same
+      // reason `loadRacingHorseIds` does above: this file is an async server
+      // component and cannot be unit-tested, and this read has its own
+      // "errored read is not empty" branch that a regression could silently
+      // delete here without a single test noticing. Photo posts only; every
+      // other type keeps `{ photos: [], photosUnavailable: false }`.
       let photos: { path: string; url: string | null }[] = [];
       let photosUnavailable = false;
       if (post.type === "photo") {
-        const { data: mediaRows, error: mediaError } = await sb
-          .from("post_media")
-          .select("media_url,sort_order")
-          .eq("post_id", post.id)
-          .order("sort_order");
-        if (mediaError) {
-          // Includes the deploy-order case (`post_media` not migrated yet):
-          // sending `media` then would 400 the whole save anyway.
-          photosUnavailable = true;
-        } else {
-          const rows = (mediaRows ?? []) as { media_url: string | null; sort_order: number }[];
-          const paths = rows.map((r) => r.media_url).filter((v): v is string => !!v);
-          // The legacy fallback, and also the belt-and-braces for a post whose
-          // rows exist but whose mirror is not among them.
-          const ordered = paths.length > 0 ? paths : post.media_url ? [post.media_url] : [];
-          // A path this post could never save back.
-          //
-          // `PATCH /posts/:id` runs every incoming path through
-          // `normaliseMediaSet(value, postId)`, which requires the `<postId>/`
-          // prefix. Before this ticket edit mode never sent `media`, so a photo
-          // post whose `media_url` predates that convention (an old import, a
-          // stored absolute URL) was simply uneditable-media but perfectly
-          // saveable. Now that every photo save carries the set, such a post
-          // would 400 on a plain CAPTION edit and could never be saved again.
-          //
-          // So it degrades exactly as an errored read does: photos read-only,
-          // `media` omitted, everything else still editable. Checked here rather
-          // than trusted to be impossible, because it is a property of rows
-          // written by older code, not of anything this build controls.
-          if (ordered.some((path) => !path.startsWith(`${post.id}/`))) {
-            photosUnavailable = true;
-          } else {
-            // One round-trip for the whole set rather than N sequential signs.
-            const signedSet = await signPhotoMap(sb, POST_MEDIA_BUCKET, ordered);
-            photos = ordered.map((path) => ({ path, url: signedSet.get(path) ?? null }));
-          }
-        }
+        const result = await loadPostPhotos(
+          // Cast through unknown, same reason as `loadRacingHorseIds` above:
+          // with no generated DB types, matching supabase-js's builder
+          // generics against a hand-written structural type makes tsc unroll
+          // them (TS2589).
+          sb as unknown as PostMediaClient,
+          post.id,
+          post.media_url,
+          (paths) => signPhotoMap(sb, POST_MEDIA_BUCKET, paths),
+        );
+        photos = result.photos;
+        photosUnavailable = result.photosUnavailable;
       }
 
       initial = {

@@ -116,10 +116,15 @@ export async function requestPhotoUploads(
    * INTEGERS, never paths, so the guardrail ("the route derives every path from
    * the post id") is untouched.
    *
-   * `afterSlot` — the highest upload ordinal the strip is currently holding,
-   * INCLUDING slots whose bytes are still uploading or failed. The server floors
-   * the answer at its own derivation, so a wrong or missing hint can only skip
-   * ordinals, never re-issue one.
+   * `afterSlot` — the highest upload ordinal this session has EVER held for
+   * this post, including slots whose bytes are still uploading or failed, and
+   * including slots whose tile the operator has since REMOVED. Not "what the
+   * strip is holding now": removing a tile does not abort its PUT, so a slot
+   * that has left the strip can still be live, and a hint derived from the
+   * survivors would hand it back. The server floors the answer at its own
+   * derivation, so a wrong or missing hint can only skip ordinals, never
+   * re-issue one — but its floor cannot see an in-flight object, which is
+   * exactly the gap this hint exists to cover.
    *
    * `keeping` — how many photos the operator will actually keep. The server
    * would otherwise count ORPHANED objects (a removed photo's bytes are left in

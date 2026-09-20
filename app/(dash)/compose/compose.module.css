@@ -1248,6 +1248,50 @@
   overflow: hidden;
 }
 
+/* --- Preview head avatars (ENG-1268) -------------------------------------
+
+   Both sit INSIDE .postAvatar, so they inherit its 44px circle, its flex
+   centring and its flex-shrink. They only replace what is drawn in it. */
+
+/* The S-mark. The asset is already the mark on #285D50 (--brand-green), so it
+   fills the circle edge to edge; giving it padding on a green background would
+   double the green and shrink the mark off the member card's scale.
+   `background: none` overrides .postAvatar's gradient, which would otherwise
+   show through the PNG's own square corners at the circle's edge. */
+.markAvatar {
+  background: none;
+  overflow: hidden;
+  padding: 0;
+}
+.markAvatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+/* A trainer's photo, cropped to the same circle. Falls back to the initial
+   avatar in the component when there is no photo — this rule is never reached
+   for a photoless trainer. */
+.photoAvatar {
+  background: none;
+  overflow: hidden;
+}
+.photoAvatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+/* A head with nothing to say under the name yet — a StablePass post before a
+   byline is chosen, or a trainer with neither stable nor location. Muted, not
+   green: it is a prompt, not an attribution. */
+.postBylineEmpty {
+  color: var(--muted);
+  font-style: italic;
+}
+
 /* --- The retire (×) action on the title / byline pickers ------------------
 
    A native <select> cannot host a per-row button, so the action lives in a

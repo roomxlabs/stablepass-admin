@@ -11,20 +11,44 @@
 "use client";
 
 import { useState } from "react";
-import type { MeasureState, MediaDimensions, MediaType } from "./types";
+import type { MeasureState, MediaDimensions, MediaType, Subject } from "./types";
 import {
   describeOrientation,
   displayHorseName,
   isReelPreview,
   isUploadType,
   resolveAspect,
+  STABLEPASS_HANDLE,
 } from "./types";
 import HlsVideo from "./HlsVideo";
 import styles from "./compose.module.css";
 
 export type PostPreviewData = {
+  /**
+   * ENG-1268 — WHO the post is posted as, which is what decides the head.
+   *
+   * Optional so the dozens of literals in the existing tests keep compiling;
+   * absent means `horse`, the subject every post had before this ticket, and
+   * the horse head below is byte-identical to the one that shipped.
+   */
+  subject?: Subject;
   horseName: string | null;
+  /**
+   * The attribution line, and its meaning follows the subject: the TRAINER's
+   * name for a horse post (rendered "by <name> · just now"), and the chosen
+   * `post_byline` NAME for a StablePass post (rendered on its own, under
+   * "stablepass"). A trainer post takes neither — the trainer IS the head.
+   */
   byline: string | null;
+  /**
+   * ENG-1268 — the trainer whose head this is, for the `trainer` subject.
+   * `subline` is the trainer-profile header's `stable · location`.
+   *
+   * Passed in already-derived rather than as a `TrainerOption`, because the
+   * preview must not care where a trainer came from (the picker list, or the
+   * post's own embedded row in edit mode).
+   */
+  trainer?: { name: string; photoUrl: string | null; subline: string } | null;
   caption: string;
   mediaType: MediaType | null;
   mediaUrl: string | null;
@@ -72,8 +96,20 @@ export default function PostPreview({
   /** Called once the browser knows the file's intrinsic size, or can't. */
   onMeasure?: (dims: MediaDimensions) => void;
 }) {
-  const { horseName, byline, caption, mediaType, mediaUrl, racesToday, dims, measure, photos, label } =
-    data;
+  const {
+    horseName,
+    byline,
+    caption,
+    mediaType,
+    mediaUrl,
+    racesToday,
+    dims,
+    measure,
+    photos,
+    label,
+    trainer,
+  } = data;
+  const subject: Subject = data.subject ?? "horse";
 
   // ENG-748 — the carousel, and ONLY for two or more photos on a photo post.
   //
@@ -96,9 +132,62 @@ export default function PostPreview({
   // that the frame is unobstructed and the preview is honest about framing.
   const [played, setPlayed] = useState(false);
 
-  // Racing names are registered ALL CAPS; members read them title-cased.
-  const shownName = horseName ? displayHorseName(horseName) : "Select a horse";
+  // ---------------------------------------------------------------------
+  // THE HEAD, BY SUBJECT (ENG-1268) — derived once, rendered once.
+  //
+  // ONE PREVIEW COMPONENT, and the head is a value rather than three copies of
+  // the header JSX. ENG-558's gotcha is explicit that the second copy IS the
+  // bug: this card already drifted from the member card twice, both times
+  // because a duplicate existed to drift. The classic header and the reel
+  // scrim both read these three fields, so a subject can never render one way
+  // in a portrait video and another way in a landscape one.
+  //
+  // Racing names are registered ALL CAPS; members read them title-cased —
+  // which applies to the HORSE name only, never to a trainer's or to the
+  // brand's own lowercase wordmark.
+  // ---------------------------------------------------------------------
+  const horseShownName = horseName ? displayHorseName(horseName) : "Select a horse";
+  const shownName =
+    subject === "stablepass"
+      ? STABLEPASS_HANDLE
+      : subject === "trainer"
+        ? trainer?.name ?? "Select a trainer"
+        : horseShownName;
   const initial = (shownName.trim()[0] ?? "S").toUpperCase();
+  /**
+   * The avatar photo, for a TRAINER head only.
+   *
+   * A horse head has never shown the horse's photo here (it draws the initial
+   * on the green gradient, matching the member card), and the StablePass head
+   * draws the S-mark instead — so this is deliberately not "the subject's
+   * picture", it is the one case that has one.
+   */
+  const headPhoto = subject === "trainer" ? trainer?.photoUrl ?? null : null;
+  /**
+   * The line under the name.
+   *
+   * Three genuinely different sentences, not one template: a horse post is
+   * attributed TO someone ("by Chris Waller · just now"), a trainer post is
+   * BY the head itself so it prints the trainer-profile subline instead
+   * (`stable · location`), and a StablePass post prints the chosen byline
+   * alone. `subline` is empty for a trainer with neither stable nor location,
+   * and an empty line renders nothing rather than a stray separator.
+   */
+  const headSubline =
+    subject === "trainer"
+      ? trainer?.subline ?? ""
+      : subject === "stablepass"
+        ? byline?.trim() ?? ""
+        : "";
+  /**
+   * RACE DAY IS A HORSE FACT. A trainer post and a StablePass post have no
+   * horse at all (`post.horse_id` is null for both since B1), so there is no
+   * race to badge — and a badge with nothing behind it is precisely the
+   * hardcoded lie ENG-558 removed. Gated on the SUBJECT, not on `racesToday`
+   * being falsy, so a stale `true` left over from a horse the operator
+   * switched away from cannot leak a badge onto the new head.
+   */
+  const showRaceBadge = subject === "horse" && racesToday;
 
   // The box the member app will actually use, so a 9:16 reel visibly clamps —
   // and a photo sits at 16:10, agreeing with the readout above it.
@@ -179,10 +268,13 @@ export default function PostPreview({
               Everything inside it goes with it — the label pill AND the race
               badge included, which is why a reel shows neither. */}
           {isReel ? null : (
-          <header className={styles.postHead}>
-            <div className={styles.postAvatar} aria-hidden="true">
-              {initial}
-            </div>
+          <header className={styles.postHead} data-subject={subject}>
+            <PreviewAvatar
+              subject={subject}
+              initial={initial}
+              photoUrl={headPhoto}
+              className={styles.postAvatar}
+            />
             <div className={styles.postMetaWrap}>
               {/* ABOVE the horse name, never in its slot (mobile ENG-750: the
                   earlier hardcoded badge displaced the name and took its tap
@@ -195,18 +287,39 @@ export default function PostPreview({
                   {labelText}
                 </span>
               ) : null}
-              <p className={styles.postHorse}>{shownName}</p>
-              <div className={styles.postByline}>
-                {byline ? (
-                  <>
-                    by <span className={styles.postByTrainer}>{byline}</span> · just now
-                  </>
+              <p className={styles.postHorse} data-testid="preview-head-name">
+                {shownName}
+              </p>
+              <div className={styles.postByline} data-testid="preview-head-sub">
+                {subject === "horse" ? (
+                  byline ? (
+                    <>
+                      by <span className={styles.postByTrainer}>{byline}</span> · just now
+                    </>
+                  ) : (
+                    "just now"
+                  )
+                ) : headSubline ? (
+                  // Trainer: `stable · location`. StablePass: the byline. Both
+                  // in the same green the horse head gives the trainer's name,
+                  // because in both cases this line IS the attribution — the
+                  // muted "· just now" tail belongs to the horse card's
+                  // "posted by someone else" sentence and would read as noise
+                  // under a head that is already the author.
+                  <span className={styles.postByTrainer} data-testid="preview-head-subline">
+                    {headSubline}
+                  </span>
                 ) : (
-                  "just now"
+                  // A trainer with neither stable nor location, or a
+                  // StablePass post before a byline is chosen. Never a bare
+                  // separator, and never "just now" — see above.
+                  <span className={styles.postBylineEmpty}>
+                    {subject === "stablepass" ? "Choose a byline" : "just now"}
+                  </span>
                 )}
               </div>
             </div>
-            {racesToday ? (
+            {showRaceBadge ? (
               <span
                 className={`${styles.pill} ${styles.pillGreen} ${styles.pillDot} ${styles.raceBadge}`}
                 data-testid="preview-race-badge"
@@ -299,18 +412,31 @@ export default function PostPreview({
                   rather than by suppression; the parity test records that
                   explicitly so it cannot be mistaken for an oversight. */}
               {isReel ? (
-                <div className={styles.reelScrim} data-testid="preview-reel-head">
-                  <div className={`${styles.postAvatar} ${styles.reelAvatar}`} aria-hidden="true">
-                    {initial}
-                  </div>
+                <div className={styles.reelScrim} data-testid="preview-reel-head" data-subject={subject}>
+                  <PreviewAvatar
+                    subject={subject}
+                    initial={initial}
+                    photoUrl={headPhoto}
+                    className={`${styles.postAvatar} ${styles.reelAvatar}`}
+                  />
                   <div className={styles.reelMeta}>
                     <p className={styles.reelHorse}>{shownName}</p>
                     {/* No leading "by" — mobile's reel byline is
                         `trainerName · postedAgo`, where the classic card's
                         reads "by <trainer> · just now". Matching the member
-                        card, not this file's other byline. */}
+                        card, not this file's other byline.
+
+                        ENG-1268: the same three-subject split as the classic
+                        head above, reading the SAME derived values, so a
+                        portrait video and a landscape one can never disagree
+                        about who posted it. Only the horse card appends
+                        "· just now" — the other two heads are the author. */}
                     <div className={styles.reelByline}>
-                      {byline ? `${byline} · just now` : "just now"}
+                      {subject === "horse"
+                        ? byline
+                          ? `${byline} · just now`
+                          : "just now"
+                        : headSubline || (subject === "stablepass" ? "Choose a byline" : "")}
                     </div>
                   </div>
                 </div>
@@ -405,6 +531,67 @@ export default function PostPreview({
       <div className={styles.previewFootnote}>
         This is the member card. Web renders the same content in a wider column.
       </div>
+    </div>
+  );
+}
+
+/**
+ * The head avatar, for all three subjects and for both chromes.
+ *
+ * ONE component rather than an inline ternary in each of the two places a head
+ * is drawn — which is the ENG-558 rule applied one level down: the classic
+ * header and the reel scrim must never be able to disagree about what a
+ * StablePass post's avatar is.
+ *
+ * - horse → the initial on the green gradient (unchanged; the member card has
+ *   never shown the horse's own photo here).
+ * - trainer → the trainer's photo, falling back to the initial when they have
+ *   none or the signed URL failed — the existing avatar fallback, not a new one.
+ * - stablepass → the S-mark. The asset is ALREADY the mark on `--brand-green`
+ *   (#285D50, the exact token), so it fills the circle rather than sitting on a
+ *   tinted background that would double the green.
+ *
+ * `aria-hidden` throughout: the name is right beside it in text, so announcing
+ * the avatar would read the subject twice.
+ */
+function PreviewAvatar({
+  subject,
+  initial,
+  photoUrl,
+  className,
+}: {
+  subject: Subject;
+  initial: string;
+  photoUrl: string | null;
+  className: string;
+}) {
+  if (subject === "stablepass") {
+    return (
+      <div
+        className={`${className} ${styles.markAvatar}`}
+        data-testid="preview-avatar-mark"
+        aria-hidden="true"
+      >
+        {/* eslint-disable-next-line @next/next/no-img-element -- static brand asset in /public, fixed 44px box */}
+        <img src="/brand/mark.png" alt="" />
+      </div>
+    );
+  }
+  if (subject === "trainer" && photoUrl) {
+    return (
+      <div
+        className={`${className} ${styles.photoAvatar}`}
+        data-testid="preview-avatar-photo"
+        aria-hidden="true"
+      >
+        {/* eslint-disable-next-line @next/next/no-img-element -- signed trainer photo, fixed 44px box */}
+        <img src={photoUrl} alt="" />
+      </div>
+    );
+  }
+  return (
+    <div className={className} data-testid="preview-avatar-initial" aria-hidden="true">
+      {initial}
     </div>
   );
 }

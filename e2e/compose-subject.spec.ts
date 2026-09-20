@@ -35,7 +35,7 @@ async function openCompose(page: Page) {
   await expect(page.getByTestId("subject-picker")).toBeVisible({ timeout: 30000 });
 }
 
-test("ENG-1268: Horse subject — the legacy flow, unchanged", async ({ page }) => {
+test("ENG-1268: Horse subject — the head that already shipped, unchanged", async ({ page }) => {
   test.setTimeout(90000);
   await signIn(page);
   await openCompose(page);
@@ -56,10 +56,11 @@ test("ENG-1268: Horse subject — the legacy flow, unchanged", async ({ page }) 
   await expect(page.getByTestId("horse-pick")).toBeVisible();
 
   await expect(page.getByTestId("post-preview")).toBeVisible();
+  await expect(page.getByTestId("preview-avatar-initial")).toBeVisible();
   await page.screenshot({ path: "e2e/__screenshots__/eng1268-subject-horse.png", fullPage: true });
 });
 
-test("ENG-1268: Trainer subject — trainer search, no horse, all four tiles", async ({ page }) => {
+test("ENG-1268: Trainer subject — trainer head, no horse, no race badge", async ({ page }) => {
   test.setTimeout(90000);
   await signIn(page);
   await openCompose(page);
@@ -78,17 +79,17 @@ test("ENG-1268: Trainer subject — trainer search, no horse, all four tiles", a
   await page.getByTestId("trainer-results").getByRole("button").first().click();
   await expect(page.getByTestId("trainer-pick")).toBeVisible();
 
-  // The per-subject preview HEAD lands in the follow-up PR on this ticket,
-  // so this spec only proves the SUBJECT half here: a trainer post composes
-  // with no horse at all. The head assertions arrive with the head.
-  await expect(page.getByTestId("post-preview")).toBeVisible();
+  // THE HEAD: the trainer, and NO race badge — race day is a horse fact, and
+  // a trainer post has no horse (post.horse_id is null since B1).
+  await expect(page.getByTestId("preview-head-name")).not.toHaveText("");
+  await expect(page.getByTestId("preview-race-badge")).toHaveCount(0);
   await page.screenshot({
     path: "e2e/__screenshots__/eng1268-subject-trainer.png",
     fullPage: true,
   });
 });
 
-test("ENG-1268: StablePass subject — byline picker, two tiles only", async ({ page }) => {
+test("ENG-1268: StablePass subject — S-mark head, byline, two tiles only", async ({ page }) => {
   test.setTimeout(90000);
   await signIn(page);
   await openCompose(page);
@@ -110,8 +111,12 @@ test("ENG-1268: StablePass subject — byline picker, two tiles only", async ({ 
   await expect(select).toBeVisible();
   await select.selectOption({ label: "Racing TV" });
 
-  // As above: the S-mark head is the follow-up PR's to prove.
-  await expect(page.getByTestId("post-preview")).toBeVisible();
+  // THE HEAD: the S-mark avatar, "stablepass", then the byline — and no race
+  // badge, for the same reason the trainer head has none.
+  await expect(page.getByTestId("preview-avatar-mark")).toBeVisible();
+  await expect(page.getByTestId("preview-head-name")).toHaveText("stablepass");
+  await expect(page.getByTestId("preview-head-subline")).toHaveText("Racing TV");
+  await expect(page.getByTestId("preview-race-badge")).toHaveCount(0);
 
   await page.screenshot({
     path: "e2e/__screenshots__/eng1268-subject-stablepass.png",

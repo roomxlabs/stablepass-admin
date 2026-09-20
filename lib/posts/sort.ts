@@ -47,9 +47,13 @@ export type OrderSpec = {
 //
 // `horse` orders by the EMBEDDED horse name using PostgREST's
 // `embedded(column)` order syntax — the embed is aliased `horse:horse_id(...)`
-// in both callers' select strings, and `post.horse_id` is NOT NULL, so every
-// row participates. It is deliberately not `horse_id`: sorting by a uuid is
-// sorting by nothing an operator can see.
+// in both callers' select strings. It is deliberately not `horse_id`: sorting
+// by a uuid is sorting by nothing an operator can see.
+//
+// CORRECTED, ENG-1269: this used to add "and `post.horse_id` is NOT NULL, so
+// every row participates". B1 made `horse_id` nullable, so that is no longer
+// true and the `!inner` in `postsSelect` below is now a filter as well as a
+// join — see its docstring.
 const ORDER_COLUMN: Record<PostSort, string> = {
   published: "published_at",
   engagement: "like_count",
@@ -63,10 +67,11 @@ const ORDER_COLUMN: Record<PostSort, string> = {
 // and floating twenty of them to the top of an ascending sort hides the rows
 // the operator asked to see.
 // `horse` is included because `HorseEmbed.display_name` is typed `string | null`
-// (app/(dash)/posts/types.ts). Leaving it out was justified by `post.horse_id`
-// being NOT NULL, but that is FK nullability, not COLUMN nullability — a horse
-// with no display_name would float to the top of a descending sort, which is
-// the exact behaviour the two entries below exist to prevent.
+// (app/(dash)/posts/types.ts) — a horse with no display_name would float to the
+// top of a descending sort, which is the exact behaviour the two entries above
+// exist to prevent. Since ENG-1269 `post.horse_id` is nullable too, so the
+// embed itself can be absent; the `!inner` join in `postsSelect` is what keeps
+// those rows out of this sort entirely.
 const NULLABLE: Partial<Record<PostSort, true>> = {
   published: true,
   engagement: true,
@@ -82,9 +87,10 @@ const NULLABLE: Partial<Record<PostSort, true>> = {
  * you use `!inner`"), and without it PostgREST is free to order nothing at all.
  * So the `horse` embed becomes `!inner` for exactly the one sort that needs it.
  *
- * No rows are lost by the inner join: `post.horse_id` is NOT NULL (every post
- * type, `text` included, requires a horse — see the create route), so every row
- * has a horse to join to.
+ * ROWS ARE LOST by the inner join, since ENG-1269. This docstring used to say
+ * the opposite, and it was true until B1 made `post.horse_id` nullable: a
+ * trainer or StablePass post has no horse row to join to, so it drops out of
+ * this ONE sort. See the KNOWN LIMITATION note on `postsSelect` below.
  *
  * Every other sort gets the select string UNCHANGED, byte for byte, so the
  * default query is exactly the one that shipped before this ticket.
@@ -101,19 +107,36 @@ const NULLABLE: Partial<Record<PostSort, true>> = {
 // every row by its label, so dropping it from this string makes every label
 // vanish from the list with a GREEN suite — format.test.ts tests the mapper,
 // not the select. lib/posts/sort.test.ts pins it here for that reason.
+// `subject` + `byline` are LOAD-BEARING the same way `label` is (ENG-1269):
+// `mapPostRow` names every row through `subjectLabel(...)`, so dropping either
+// from this string silently relabels every trainer/StablePass row as a horse
+// post with a GREEN suite — format.test.ts tests the mapper, not the select.
+// lib/posts/sort.test.ts pins them here for that reason.
 export const POSTS_PAGE_SELECT =
-  "id,horse_id,type,status,title,label,body,media_url,mux_playback_id,poster_url,poster_time_s,like_count,published_at,scheduled_for,created_at," +
+  "id,subject,horse_id,byline,type,status,title,label,body,media_url,mux_playback_id,poster_url,poster_time_s,like_count,published_at,scheduled_for,created_at," +
   "horse:horse_id(display_name,racing_name,photo_url),trainer:source_trainer_id(name)";
 
 // `label` (ENG-745) is selected so the posts library can render the category
 // chip; that rendering is a later slice, this only carries it.
 export const POSTS_API_SELECT =
-  "id,horse_id,type,status,title,body,label,like_count,published_at,scheduled_for,created_at," +
+  "id,subject,horse_id,byline,type,status,title,body,label,like_count,published_at,scheduled_for,created_at," +
   "horse:horse_id(display_name,racing_name),trainer:source_trainer_id(name)";
 
 export const HORSE_EMBED = "horse:horse_id(";
 export const HORSE_EMBED_INNER = "horse:horse_id!inner(";
 
+/**
+ * KNOWN LIMITATION, ENG-1269: the `!inner` below is an INNER join, so sorting
+ * by the subject column lists only HORSE posts — a trainer or StablePass post
+ * has no horse row to join to and drops out of that one view. Every other view
+ * (the default `created_at` order and the other three sorts) lists all three
+ * subjects, which is what the acceptance criterion covers.
+ *
+ * It is left as-is rather than widened here because the inner join is the only
+ * thing that makes this sort order anything at all (see the throw below), and
+ * replacing it needs a query-shape change this ticket's surface does not own.
+ * Recorded in `.rx/gotchas.md`.
+ */
 export function postsSelect(select: string, sort: PostSort | ""): string {
   if (sort !== "horse") return select;
   // THROW rather than return the input unchanged. `String.replace` with a

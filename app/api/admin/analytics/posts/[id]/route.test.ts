@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { makeFakeClient, blankState, type FakeState } from "@/lib/testing/supabase-fake";
+import { subjectLabel } from "@/lib/posts/subject";
 
 const state: FakeState = blankState();
 
@@ -50,6 +51,8 @@ describe("GET /api/admin/analytics/posts/:id", () => {
       select: {
         single: {
           id: "p1",
+          subject: "horse",
+          byline: null,
           title: "Big win",
           type: "update",
           published_at: "2026-07-10T00:00:00.000Z",
@@ -95,6 +98,9 @@ describe("GET /api/admin/analytics/posts/:id", () => {
     expect(j.data.post).toEqual({
       id: "p1",
       title: "Big win",
+      // ENG-1269 — the shared subject formatter, alongside the back-compat
+      // horseName/trainerName pair it now sits next to.
+      subject: subjectLabel({ subject: "horse", horseName: "WINX (AUS)", trainerName: "Chris Waller" }),
       horseName: "WINX (AUS)",
       trainerName: "Chris Waller",
       type: "update",

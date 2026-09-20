@@ -4,6 +4,7 @@
 
 import { buildListHref, type SortDir } from "../list-href";
 import { POST_SORT_DEFAULT_DIR, type PostSort } from "@/lib/posts/sort";
+import { subjectLabel } from "@/lib/posts/subject";
 import type { PostRow, PostStatus, PostView, StatusFilter } from "./types";
 
 // Filter chips, in mockup order. The chip key doubles as the `?status=` value
@@ -97,8 +98,16 @@ export function mapPostRow(row: PostRow): PostView {
     // title — genuinely unnamed, rather than merely unlabelled.
     title: row.label?.trim() || row.title?.trim() || "Untitled post",
     excerpt: (row.body ?? "").trim(),
-    horseName: horse?.display_name || horse?.racing_name || "Unassigned",
-    trainerName: trainer?.name ?? null,
+    // ENG-1269 — ONE formatter for all three subjects, shared with the
+    // preview route, the dashboard and per-post analytics. The horse arm keeps
+    // this screen's own precedence (display_name before racing_name) and its
+    // "Unassigned" fallback, so a horse row is byte-identical to before.
+    subject: subjectLabel({
+      subject: row.subject,
+      horseName: horse?.display_name || horse?.racing_name,
+      trainerName: trainer?.name,
+      byline: row.byline,
+    }),
     thumbUrl: horse?.photo_url ?? null,
     type: row.type,
     typeLabel: typeLabel(row.type),
@@ -158,7 +167,10 @@ export function buildPostsHref(p: {
  * header set is unit-testable and stays in step with `lib/posts/sort.ts`.
  */
 export const POST_SORT_COLUMNS: { column: PostSort; label: string; defaultDir: SortDir }[] = [
-  { column: "horse", label: "Horse / trainer", defaultDir: POST_SORT_DEFAULT_DIR.horse },
+  // ENG-1269 — "Horse / trainer" became "Posted as": the column now names a
+  // horse, a trainer or StablePass, and a header that promises only the first
+  // two is the same class of lie as a preview that does not preview.
+  { column: "horse", label: "Posted as", defaultDir: POST_SORT_DEFAULT_DIR.horse },
   { column: "status", label: "Status", defaultDir: POST_SORT_DEFAULT_DIR.status },
   { column: "published", label: "Published", defaultDir: POST_SORT_DEFAULT_DIR.published },
   { column: "engagement", label: "Engagement", defaultDir: POST_SORT_DEFAULT_DIR.engagement },

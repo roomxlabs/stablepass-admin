@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
 import PostAnalytics from "./PostAnalytics";
 import type { PostAnalytics as PostAnalyticsData } from "@/lib/analytics/queries";
+import { subjectLabel } from "@/lib/posts/subject";
 
 vi.mock("next/link", () => ({
   default: ({
@@ -21,6 +22,7 @@ function data(over: Partial<PostAnalyticsData> = {}): PostAnalyticsData {
     post: {
       id: "pa1",
       title: "Last fast gallop before Saturday",
+      subject: subjectLabel({ subject: "horse", horseName: "Mahogany", trainerName: "Chris Waller" }),
       horseName: "Mahogany",
       trainerName: "Chris Waller",
       type: "video",
@@ -88,5 +90,25 @@ describe("PostAnalytics", () => {
   it("handles an unpublished post without rendering Invalid Date", () => {
     render(<PostAnalytics data={data({ post: { ...data().post, publishedAt: null } })} />);
     expect(screen.getByText(/Not published/)).toBeTruthy();
+  });
+
+  // ENG-1269 — a StablePass post has no horse or trainer, so the old
+  // horseName+trainerName pair both rendered empty and the meta line
+  // collapsed to just the type label. The subject formatter fixes that by
+  // naming the byline instead.
+  it("names the byline in the meta line for a StablePass post, rather than collapsing to just the type", () => {
+    render(
+      <PostAnalytics
+        data={data({
+          post: {
+            ...data().post,
+            subject: subjectLabel({ subject: "stablepass", byline: "Racing TV" }),
+            horseName: "",
+            trainerName: "",
+          },
+        })}
+      />,
+    );
+    expect(screen.getByTestId("post-hero").textContent).toContain("stablepass · Racing TV · Video");
   });
 });

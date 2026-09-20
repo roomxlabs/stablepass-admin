@@ -173,6 +173,34 @@ describe("AnalyticsScreen — populated", () => {
   });
 });
 
+// ENG-1269 — `horseName` is null for a trainer/StablePass post's top-post row
+// (B1 made `post.horse_id` nullable). Interpolating it raw used to print
+// "null · Photo" under the title; the sub-line must instead show just the type.
+describe("AnalyticsScreen — top posts with no horse (ENG-1269)", () => {
+  it("renders just the type label, never the string 'null', when horseName is null", () => {
+    render(
+      <AnalyticsScreen
+        view={view({
+          topPosts: [
+            {
+              postId: "pa1",
+              title: "Racing TV wrap",
+              horseName: null,
+              type: "photo",
+              opens: 100,
+              reactions: 10,
+              saves: 2,
+            },
+          ],
+        })}
+      />,
+    );
+    const row = screen.getByTestId("top-posts");
+    expect(row.textContent).toContain("Photo");
+    expect(row.textContent).not.toMatch(/null/i);
+  });
+});
+
 // Guardrail (.rx/guardrails.md + the epic decision): the trials list is the ONE
 // surface allowed to carry member-identifying data. Everything else on this
 // screen is aggregates. This pins that boundary against future edits.

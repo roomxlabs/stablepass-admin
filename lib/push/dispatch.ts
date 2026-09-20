@@ -12,14 +12,31 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 // project.
 export const DISPATCH_SECRET_HEADER = "x-dispatch-secret";
 
-export type NewPostDispatch = {
+type NewPostBase = {
   type: "new_post";
-  horseId: string;
   targetType: "post";
   targetId: string;
   title: string;
   body: string;
 };
+
+/**
+ * A `new_post` is keyed on EXACTLY ONE subject (ENG-1265 / B2).
+ *
+ * push-dispatch validates this itself — `exactly one of horseId, trainerId`,
+ * 422 otherwise — so the union here is the client-side mirror of that rule,
+ * and `?: never` is what makes it bite at compile time rather than at runtime.
+ * An object literal carrying both keys satisfies neither arm, so a caller that
+ * builds the payload by spreading two branches together fails to typecheck
+ * instead of shipping a 422 that `dispatchNewPost` silently swallows to 0.
+ *
+ * A `stablepass`-subject post has NO key here on purpose: it is never
+ * dispatched at all (epic decision 5), so there is no third arm to add — the
+ * publish route must simply not call this function.
+ */
+export type NewPostDispatch =
+  | (NewPostBase & { horseId: string; trainerId?: never })
+  | (NewPostBase & { trainerId: string; horseId?: never });
 
 // Fans out a `new_post` push via push-dispatch. This is best-effort: a push
 // failure (missing secret, network error, push-dispatch 401/500, etc.) must

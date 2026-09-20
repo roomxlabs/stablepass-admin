@@ -6,6 +6,7 @@
 // client and never touch a service-role key. Aggregates only; no owner PII.
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { getAdminUserIds, countMemberRows } from "@/lib/analytics/admin-exclusion";
+import { subjectLabel, type SubjectLabel } from "@/lib/posts/subject";
 
 const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
 const HOUR_MS = 60 * 60 * 1000;
@@ -49,7 +50,13 @@ type SubscriptionWithUser = { status: string; user: SubscriptionUserEmbed | Subs
 function isStaff(user: SubscriptionWithUser["user"]): boolean {
   return !!(Array.isArray(user) ? user[0] : user)?.is_admin;
 }
-type PostRecency = { horse_id: string; published_at: string | null };
+/**
+ * ENG-1269 — `horse_id` is nullable since B1. Every consumer below keys a Map
+ * by it, and a null key would make ONE trainer/StablePass post silently count
+ * as "this horse posted recently" for whichever horse landed on the null
+ * bucket — so null rows are skipped, not defaulted.
+ */
+type PostRecency = { horse_id: string | null; published_at: string | null };
 
 function horseName(h: { racing_name: string | null; display_name: string }): string {
   return h.racing_name ?? h.display_name;
@@ -110,6 +117,7 @@ export async function getAnalytics(sb: SupabaseClient, now: Date = new Date()): 
   const lastPostByHorse = new Map<string, string | null>();
   const postedThisWeek = new Set<string>();
   for (const p of (recentPostsRes.data ?? []) as PostRecency[]) {
+    if (!p.horse_id) continue; // horse-less post: about nobody's horse
     if (!lastPostByHorse.has(p.horse_id)) lastPostByHorse.set(p.horse_id, p.published_at);
     // Compare as timestamps, not ISO strings, so a timezone-offset format
     // (`+00:00` vs `Z`) can't break the "posted this week" boundary check.
@@ -227,7 +235,9 @@ export async function getRaceDay(
       .in("horse_id", horseIds)
       .order("published_at", { ascending: false });
     for (const p of (posts ?? []) as PostRecency[]) {
-      if (p.published_at && !lastPostByHorse.has(p.horse_id)) {
+      // `.in("horse_id", …)` already excludes null rows, but the type is
+      // nullable since B1 and the narrowing is what proves it (ENG-1269).
+      if (p.horse_id && p.published_at && !lastPostByHorse.has(p.horse_id)) {
         lastPostByHorse.set(p.horse_id, p.published_at);
       }
     }
@@ -286,12 +296,19 @@ export type RecentPost = {
   type: string;
   publishedAt: string | null;
   likeCount: number;
-  horse: string | null;
-  trainer: string | null;
+  /**
+   * ENG-1269 — who the post is posted as, from the ONE formatter, replacing
+   * the old `horse`/`trainer` string pair. That pair could only describe a
+   * horse post: a trainer post has no horse and a StablePass post has neither,
+   * so both rendered as "— / —" here.
+   */
+  subject: SubjectLabel;
 };
 
 type RecentPostRow = {
   id: string;
+  subject: string | null;
+  byline: string | null;
   title: string | null;
   type: string;
   published_at: string | null;
@@ -307,7 +324,7 @@ export async function getRecentlyPublished(sb: SupabaseClient, limit = 5): Promi
   const { data } = await sb
     .from("post")
     .select(
-      "id,title,type,published_at,like_count,horse:horse_id(display_name,racing_name),trainer:source_trainer_id(name)",
+      "id,subject,byline,title,type,published_at,like_count,horse:horse_id(display_name,racing_name),trainer:source_trainer_id(name)",
     )
     .eq("status", "published")
     .order("published_at", { ascending: false })
@@ -322,8 +339,12 @@ export async function getRecentlyPublished(sb: SupabaseClient, limit = 5): Promi
       type: p.type,
       publishedAt: p.published_at,
       likeCount: p.like_count ?? 0,
-      horse: horse ? (horse.racing_name ?? horse.display_name) : null,
-      trainer: trainer?.name ?? null,
+      subject: subjectLabel({
+        subject: p.subject,
+        horseName: horse?.racing_name ?? horse?.display_name,
+        trainerName: trainer?.name,
+        byline: p.byline,
+      }),
     };
   });
 }

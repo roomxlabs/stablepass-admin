@@ -8,6 +8,14 @@ import PostActions from "./PostActions";
 import PosterFrameEditor from "./PosterFrameEditor";
 import { whenIso } from "./format";
 import type { PostView } from "./types";
+import type { Subject } from "@/lib/posts/subject";
+
+/** Thumb-fallback glyph per subject (ENG-1269). */
+const SUBJECT_ICON: Record<Subject, "horseHead" | "user" | "bookmark"> = {
+  horse: "horseHead",
+  trainer: "user",
+  stablepass: "bookmark",
+};
 
 // One Posts-library row. The whole row is the way into the post detail
 // (Compose in edit mode) — it replaces the old per-row Edit link. Clicks on
@@ -42,8 +50,12 @@ export default function PostRow({ post: p }: { post: PostView }) {
             // eslint-disable-next-line @next/next/no-img-element -- remote Storage horse photo, CSS-cropped thumb
             <img src={thumbUrl} alt="" data-testid="post-thumb" />
           ) : (
+            /* ENG-1269 — the fallback glyph follows the SUBJECT. A horse head
+               on a trainer or StablePass post reads as "this is about a horse
+               whose photo is missing", which is the one thing the row exists to
+               tell the operator it is not. */
             <div className="thumb-fallback">
-              <Icon name="horseHead" />
+              <Icon name={SUBJECT_ICON[p.subject.subject]} />
             </div>
           )}
         </div>
@@ -62,9 +74,25 @@ export default function PostRow({ post: p }: { post: PostView }) {
           ) : null}
         </div>
       </td>
-      <td className="nowrap">
-        <strong>{p.horseName}</strong>
-        {p.trainerName && <div className="row-sub">{p.trainerName}</div>}
+      {/* "Posted as" (ENG-1269) — horse name / trainer name + a "Trainer" tag /
+          `stablepass` over its byline. One <strong> line plus an optional muted
+          sub-line in every case, so the three subjects sit on the same baseline
+          and the column does not change height per row. */}
+      <td className="subject-cell" data-testid="post-subject">
+        <strong className="subject-name">{p.subject.name}</strong>
+        {/* The tag sits on the SUB-LINE, not beside the name. Inline, the
+            cell's min-content became `name + tag` on one unbreakable line
+            (~180px), and `table-layout: auto` took that width out of the Post
+            column — whose `width: 44%` is only a hint — so every excerpt wrapped
+            to 5-7 lines and the library lost half its row density. On its own
+            line the cell is as narrow as the longest single name again, and the
+            two-line shape is identical for all three subjects. */}
+        {(p.subject.tag || p.subject.detail) && (
+          <div className="row-sub subject-sub">
+            {p.subject.tag && <span className="subject-tag">{p.subject.tag}</span>}
+            {p.subject.detail}
+          </div>
+        )}
       </td>
       <td className="nowrap">
         <span className="pill">{p.typeLabel}</span>

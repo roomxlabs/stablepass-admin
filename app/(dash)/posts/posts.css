@@ -282,3 +282,49 @@
   color: var(--brand-green);
   text-decoration: none;
 }
+
+/* The "Posted as" cell (ENG-1269) ------------------------------------------
+   A horse, a trainer or StablePass can each name a row, so the name needs a
+   qualifier that does not compete with it. `.subject-tag` is deliberately
+   SMALLER and quieter than `.pill` (which the Type and Status columns already
+   spend, to the right of it): three pills across one row reads as chip soup
+   and hides the status pill, the one that actually matters. Baseline-aligned
+   with the name rather than centred, so a tagged row and an untagged row sit
+   on the same line and the column keeps a constant height. */
+/* NOT `.nowrap` (ENG-1269). The old horse cell held one short name, so nowrap
+   cost nothing. A name plus a tag is wide enough that `table-layout: auto`
+   takes the width out of the Post column — whose `width: 44%` is a hint, not a
+   constraint — so the tag goes on the sub-line (see PostRow) and the name
+   ellipsis inside a capped cell. Together these keep the table the compact
+   scan list the mockup (screens/04-posts.html) draws. */
+.adm-table td.subject-cell {
+  max-width: 160px;
+}
+.adm-table td .subject-name {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.adm-table td.subject-cell .subject-sub {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+/* Quieter than `.pill`, deliberately: the Type and Status columns already
+   spend a pill each to the right of this cell, and a third would read as chip
+   soup and bury the status — the pill that actually matters. */
+.adm-table td .subject-tag {
+  flex: none;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1.4;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 1px 6px;
+  border-radius: 4px;
+  border: 1px solid var(--line-dark);
+  color: var(--muted);
+  background: var(--cream);
+}

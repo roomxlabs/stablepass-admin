@@ -15,6 +15,7 @@ import {
   type RaceQueryClient,
   type RaceTodayRow,
 } from "./data";
+import { trainerSubline } from "./types";
 
 function horse(id: string, over: Partial<HorseRow> = {}): HorseRow {
   return {
@@ -111,19 +112,68 @@ describe("toTrainerOptions", () => {
   it("maps names with a display_name fallback", () => {
     expect(
       toTrainerOptions([
-        { id: "t1", name: "Chris Waller", display_name: null },
-        { id: "t2", name: null, display_name: "Peter Moody" },
-        { id: "t3", name: null, display_name: null },
+        { id: "t1", name: "Chris Waller", display_name: null, stable_name: null, location: null, photo_url: null },
+        { id: "t2", name: null, display_name: "Peter Moody", stable_name: null, location: null, photo_url: null },
+        { id: "t3", name: null, display_name: null, stable_name: null, location: null, photo_url: null },
       ]),
     ).toEqual([
-      { id: "t1", name: "Chris Waller" },
-      { id: "t2", name: "Peter Moody" },
-      { id: "t3", name: "Unnamed trainer" },
+      { id: "t1", name: "Chris Waller", photoUrl: null, stableName: null, location: null },
+      { id: "t2", name: "Peter Moody", photoUrl: null, stableName: null, location: null },
+      { id: "t3", name: "Unnamed trainer", photoUrl: null, stableName: null, location: null },
+    ]);
+  });
+
+  // ENG-1268 — the trainer-profile subline fields, mapped straight through
+  // (bare storage path for photoUrl; `page.tsx` signs the whole set later).
+  it("maps stable_name/location/photo_url through, unsigned", () => {
+    expect(
+      toTrainerOptions([
+        {
+          id: "t1",
+          name: "Chris Waller",
+          display_name: null,
+          stable_name: "Rosehill Stables",
+          location: "Rosehill, NSW",
+          photo_url: "trainer-photos/t1.jpg",
+        },
+      ]),
+    ).toEqual([
+      {
+        id: "t1",
+        name: "Chris Waller",
+        photoUrl: "trainer-photos/t1.jpg",
+        stableName: "Rosehill Stables",
+        location: "Rosehill, NSW",
+      },
     ]);
   });
 
   it("is empty for a failed read", () => {
     expect(toTrainerOptions(null)).toEqual([]);
+  });
+});
+
+// ENG-1268 — the trainer-profile subline: `stable · location`, skipping
+// whichever half is missing, empty when both are.
+describe("trainerSubline", () => {
+  it("joins stable and location with a middle dot when both are present", () => {
+    expect(trainerSubline({ stableName: "Rosehill Stables", location: "Rosehill, NSW" })).toBe(
+      "Rosehill Stables · Rosehill, NSW",
+    );
+  });
+
+  it("is just the stable name when location is missing", () => {
+    expect(trainerSubline({ stableName: "Rosehill Stables", location: null })).toBe(
+      "Rosehill Stables",
+    );
+  });
+
+  it("is just the location when stable name is missing", () => {
+    expect(trainerSubline({ stableName: null, location: "Rosehill, NSW" })).toBe("Rosehill, NSW");
+  });
+
+  it("is empty when neither is present", () => {
+    expect(trainerSubline({ stableName: null, location: null })).toBe("");
   });
 });
 

@@ -1220,3 +1220,101 @@
   flex: 1;
   min-width: 180px;
 }
+
+/* ===========================================================================
+   ENG-1268 — "Posting as": the subject picker, the trainer search, the byline
+   picker's retire action, and the two new preview-head avatars.
+
+   Almost nothing here is new visual language, by design (ticket: "follow the
+   existing design, no new mockup"): the subject tiles ARE the Step 2 type
+   tiles, the trainer search rows ARE the horse search rows, and the byline
+   dropdown IS the label dropdown. Only the rules that genuinely could not be
+   reused live below.
+   =========================================================================== */
+
+/* Three tiles, where the type picker has four. Same tile rule (.typeOption) —
+   only the track count differs, so the two pickers stack as one control. */
+.subjectPicker {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+}
+
+/* The picked trainer / the StablePass identity, in the same card the picked
+   horse uses (.horsePick). A separate selector only so the thumb can hold a
+   photo at a circular crop — a horse's pick thumb is a rounded SQUARE. */
+.pickThumbRound {
+  border-radius: 50%;
+  overflow: hidden;
+}
+
+/* --- The retire (×) action on the title / byline pickers ------------------
+
+   A native <select> cannot host a per-row button, so the action lives in a
+   disclosure under the field: the rows that CAN be retired, each with its own
+   ×. Builtin labels are simply absent from the list, which is what "builtin
+   labels show no ×" means in a control shaped like this. */
+.manageToggle {
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  font-size: 12.5px;
+  color: var(--brand-green);
+  cursor: pointer;
+  text-decoration: underline;
+}
+.manageToggle:hover {
+  color: var(--brand-green-dark);
+}
+.manageList {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 6px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--white);
+  max-height: 180px;
+  overflow-y: auto;
+}
+.manageRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  font-size: 13px;
+}
+.manageName {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* The × itself. A real button with an accessible name — "×" alone tells a
+   screen-reader user nothing about WHICH row it removes. */
+.manageRemove {
+  flex: 0 0 auto;
+  width: 24px;
+  height: 24px;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  background: var(--white);
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+}
+.manageRemove:hover:not(:disabled) {
+  border-color: var(--red);
+  color: var(--red);
+}
+.manageRemove:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.manageEmpty {
+  padding: 6px 8px;
+  font-size: 12.5px;
+  color: var(--muted);
+}

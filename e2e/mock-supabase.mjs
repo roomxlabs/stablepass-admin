@@ -157,7 +157,12 @@ const D = 24 * H;
 const ago = (ms) => new Date(Date.now() - ms).toISOString();
 
 const TRAINER_SEED = [
-  { id: "t1", name: "Chris Waller", stable_name: "Chris Waller Racing", location: "Rosehill, NSW", status: "active", horses: 12, email: "chris@wallerstable.com.au", lastPost: 2 * H, marketing_visible: true, website_url: "https://wallerracing.com.au" },
+  // ENG-1268 — `photo_url` only on t1, same "one row proves it seeds, every
+  // other trainer still proves the empty/initials-fallback case" pattern the
+  // `website_url` field above already uses. Bare storage path (never a signed
+  // URL) — `buildDb` maps it straight through, and `page.tsx` signs the whole
+  // trainer set the same way it signs horse photos.
+  { id: "t1", name: "Chris Waller", stable_name: "Chris Waller Racing", location: "Rosehill, NSW", status: "active", horses: 12, email: "chris@wallerstable.com.au", lastPost: 2 * H, marketing_visible: true, website_url: "https://wallerracing.com.au", photo_url: "trainer-photos/t1.jpg" },
   { id: "t2", name: "Peter Moody", stable_name: "Moody Racing", location: "Caulfield, VIC", status: "active", horses: 4, email: "peter@moody.com.au", lastPost: 6 * H },
   { id: "t3", name: "James Cummings", stable_name: "Godolphin Australia", location: "Agnes Banks, NSW", status: "active", horses: 3, email: "james@godolphin.com.au", lastPost: D, marketing_visible: true },
   { id: "t4", name: "Anthony & Sam Cummings", stable_name: "Leilani Lodge", location: "Randwick, NSW", status: "active", horses: 2, email: "team@leilanilodge.com.au", lastPost: 2 * D },
@@ -175,7 +180,9 @@ const TRAINER_SEED = [
 function buildDb(seed) {
   const trainers = seed.map((t) => ({
     id: t.id, name: t.name, display_name: t.name, slug: t.id,
-    stable_name: t.stable_name, location: t.location, bio: null, photo_url: null, status: t.status,
+    // ENG-1268 — `t.photo_url` additive: undefined on every row that predates
+    // it, so `?? null` keeps every other trainer at the initials fallback.
+    stable_name: t.stable_name, location: t.location, bio: null, photo_url: t.photo_url ?? null, status: t.status,
     // ENG-766: marketing-visibility flag + the public-bucket object path it
     // publishes to. Fresh fixtures always start with no copied photo.
     marketing_visible: t.marketing_visible === true, marketing_photo_path: null,
@@ -673,13 +680,37 @@ const POST_LABEL_FIXTURES = [
   { id: "pl-16", name: "Float Trip", is_builtin: false, sort_order: 0 },
 ];
 
+// ENG-1268 — `post_byline`, the StablePass subject's attribution vocabulary.
+// Same lookup-table shape as `post_label` above (admin-managed, no builtins —
+// `post_byline` has no `is_builtin` column at all), read by both the
+// StablePass byline picker (`GET /api/admin/post-bylines`, `.is("retired_at",
+// null)`) and `page.tsx`'s own direct read for the first paint.
+//
+// "Racing TV" is named explicitly because it is the byline the compose-subject
+// e2e spec's happy path picks. "Track Media Wrap" is a second LIVE row so the
+// picker's dropdown is provably a list, not a single hardcoded option. "Old
+// Wrap Show" is RETIRED (non-null `retired_at`) — the row every picker read
+// must exclude, and the one an edit-mode post carrying it must still show
+// (ComposeScreen's `bylineOptions` union, ENG-1267's gotcha).
+const POST_BYLINE_FIXTURES = [
+  { id: "pb-1", name: "Racing TV", sort_order: 1, retired_at: null },
+  { id: "pb-2", name: "Track Media Wrap", sort_order: 2, retired_at: null },
+  { id: "pb-3", name: "Old Wrap Show", sort_order: 3, retired_at: "2026-06-01T00:00:00Z" },
+];
+
 const COMPOSE_EDIT_POSTS = [
-  { id: "ce1", type: "text", status: "draft", title: "Barrier trial complete", body: "Pleased with the way he finished off.", label: "Trial", source_trainer_id: "t1", scheduled_for: null, media_url: null, mux_playback_id: null, horse: HORSE_EMBED },
-  { id: "ce2", type: "text", status: "draft", title: "Quiet day in the box", body: "Nothing much to report today.", label: null, source_trainer_id: "t1", scheduled_for: null, media_url: null, mux_playback_id: null, horse: HORSE_EMBED },
+  // ENG-1268 — `subject`/`byline`/`source_trainer` are additive columns B1's
+  // migration backfills every pre-existing row to `subject: "horse"` /
+  // `byline: null`; these three predate the epic and are horse posts, so they
+  // carry exactly that backfilled shape. `source_trainer` stays null — a
+  // horse post's trainer comes from the embedded `horse.trainer`, never from
+  // this column (that embed is for a TRAINER-subject post only).
+  { id: "ce1", type: "text", status: "draft", title: "Barrier trial complete", body: "Pleased with the way he finished off.", label: "Trial", subject: "horse", byline: null, source_trainer_id: "t1", source_trainer: null, scheduled_for: null, media_url: null, mux_playback_id: null, horse: HORSE_EMBED },
+  { id: "ce2", type: "text", status: "draft", title: "Quiet day in the box", body: "Nothing much to report today.", label: null, subject: "horse", byline: null, source_trainer_id: "t1", source_trainer: null, scheduled_for: null, media_url: null, mux_playback_id: null, horse: HORSE_EMBED },
   // ENG-1266 — a photo post with an already-saved multi-photo set, for the
   // edit-mode strip load + reorder + save e2e. `media_url` mirrors row 0 of
   // POST_MEDIA_FIXTURES.ce3, exactly as the real writer keeps them in step.
-  { id: "ce3", type: "photo", status: "draft", title: null, body: "Two from this morning's session.", label: null, source_trainer_id: "t1", scheduled_for: null, media_url: "ce3/original", mux_playback_id: null, horse: HORSE_EMBED },
+  { id: "ce3", type: "photo", status: "draft", title: null, body: "Two from this morning's session.", label: null, subject: "horse", byline: null, source_trainer_id: "t1", source_trainer: null, scheduled_for: null, media_url: "ce3/original", mux_playback_id: null, horse: HORSE_EMBED },
 ];
 
 // ENG-1266 — `post_media` rows behind the compose EDIT loader's multi-photo
@@ -1483,6 +1514,93 @@ export function startMockSupabase() {
         POST_LABEL_FIXTURES.push(created);
         const accept = req.headers["accept"] ?? "";
         sendJson(res, 201, accept.includes("pgrst.object") ? created : [created]);
+        return;
+      }
+    }
+
+    // /rest/v1/post_byline (ENG-1268) — mirrors the /rest/v1/post_label block
+    // immediately above, for the same reasons: its own branch ahead of the
+    // generic reader, because Add-new/retire have to WRITE here.
+    //
+    // UNLIKE post_label, the `retired_at=is.null` filter IS honoured (rather
+    // than ignored, "as everywhere in this mock"): both readers of this table
+    // (`GET /api/admin/post-bylines` and `page.tsx`'s own read) always send
+    // it, and a post's own RETIRED byline unioning back into the picker
+    // (ComposeScreen's `bylineOptions`) is exactly the behaviour an e2e for
+    // this ticket exists to prove — which requires the retired fixture to be
+    // genuinely excluded from the unfiltered picker read first.
+    if (url.pathname === "/rest/v1/post_byline") {
+      const fold = (n) => n.trim().replace(/\s+/g, " ").toLowerCase();
+      const accept = req.headers["accept"] ?? "";
+      const idParam = url.searchParams.get("id");
+
+      if (req.method === "GET" && idParam && idParam.startsWith("eq.")) {
+        // By-id read: the retire route's `.eq("id", id).maybeSingle()`.
+        const wanted = idParam.slice(3);
+        const match = POST_BYLINE_FIXTURES.find((b) => b.id === wanted) ?? null;
+        sendJson(res, 200, accept.includes("pgrst.object") ? match : match ? [match] : []);
+        return;
+      }
+      if (req.method === "GET") {
+        const wantsLiveOnly = decodeURIComponent(url.search).includes("retired_at=is.null");
+        const rows = wantsLiveOnly
+          ? POST_BYLINE_FIXTURES.filter((b) => b.retired_at == null)
+          : POST_BYLINE_FIXTURES;
+        sendJson(res, 200, rows);
+        return;
+      }
+      if (req.method === "POST") {
+        let parsed = {};
+        try {
+          parsed = JSON.parse(rawBody || "{}");
+        } catch {
+          parsed = {};
+        }
+        const rows = Array.isArray(parsed) ? parsed : [parsed];
+        const name = String(rows[0]?.name ?? "");
+        const clash = POST_BYLINE_FIXTURES.find((b) => fold(b.name) === fold(name));
+        if (clash) {
+          if (clash.retired_at != null) {
+            // Re-adding a RETIRED byline restores the same row/id rather than
+            // minting a twin — the one contract difference from post_label's
+            // idempotent-by-name Add-new (A2 locked a LIVE duplicate to 409).
+            clash.retired_at = null;
+            sendJson(res, 200, accept.includes("pgrst.object") ? clash : [clash]);
+            return;
+          }
+          sendJson(res, 409, {
+            code: "23505",
+            message: 'duplicate key value violates unique constraint "post_byline_name_key"',
+          });
+          return;
+        }
+        const created = {
+          id: `pb-${POST_BYLINE_FIXTURES.length + 1}`,
+          name,
+          sort_order: 0,
+          retired_at: null,
+        };
+        POST_BYLINE_FIXTURES.push(created);
+        sendJson(res, 201, accept.includes("pgrst.object") ? created : [created]);
+        return;
+      }
+      if (req.method === "PATCH" && idParam && idParam.startsWith("eq.")) {
+        // Retire (`.update({retired_at}).eq("id", id)`) and Add-new's
+        // un-retire path both PATCH by id.
+        const wanted = idParam.slice(3);
+        const row = POST_BYLINE_FIXTURES.find((b) => b.id === wanted);
+        if (!row) {
+          sendJson(res, 200, []);
+          return;
+        }
+        let parsed = {};
+        try {
+          parsed = JSON.parse(rawBody || "{}");
+        } catch {
+          parsed = {};
+        }
+        Object.assign(row, parsed);
+        sendJson(res, 200, accept.includes("pgrst.object") ? row : [row]);
         return;
       }
     }

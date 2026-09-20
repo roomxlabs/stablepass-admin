@@ -656,3 +656,268 @@ describe("ENG-748 · multi-photo upload targets", () => {
     );
   });
 });
+
+describe("POST /api/admin/posts — subject (ENG-1268)", () => {
+  /**
+   * Validation must precede every Storage/Mux call, so a rejected request
+   * can never leave an orphan upload target behind: bytes PUT to a signed
+   * URL for a post that was never created land in the bucket forever.
+   */
+  function expectNoUploadTargetsMinted() {
+    expect(state.calls.storage).toEqual([]);
+    expect(createMuxDirectUpload).not.toHaveBeenCalled();
+  }
+
+  it("trainer video happy path → 202, and the insert carries horse_id: null", async () => {
+    asAdmin();
+    state.tables.post = { mutate: { single: { id: "p1", status: "draft", type: "video" } } };
+    const r = await POST(
+      postReq({ subject: "trainer", sourceTrainerId: "t1", type: "video", title: "Weekend preview" }),
+    );
+    expect(r.status).toBe(202);
+    const j = await r.json();
+    expect(j.data.muxUploadId).toBeTruthy();
+    const insertCall = state.calls.mutations.find((m) => m.table === "post" && m.op === "insert");
+    expect(insertCall?.payload).toMatchObject({ horse_id: null });
+  });
+
+  it("stablepass photo happy path with photoCount 3 → 202, 3 upload targets, and the EXACT insert payload", async () => {
+    asAdmin();
+    state.tables.post = { mutate: { single: { id: "p1", status: "draft", type: "photo" } } };
+    state.tables.post_byline = { select: { single: { name: "Racing TV", retired_at: null } } };
+    const r = await POST(
+      postReq({ subject: "stablepass", byline: "Racing TV", type: "photo", photoCount: 3 }),
+    );
+    expect(r.status).toBe(202);
+    const j = await r.json();
+    expect(j.data.uploads).toHaveLength(3);
+    // THE POINT OF THE TICKET — pinned exactly, not with toMatchObject: every
+    // key the route writes, and nothing it doesn't.
+    const insertCall = state.calls.mutations.find((m) => m.table === "post" && m.op === "insert");
+    expect(insertCall?.payload).toEqual({
+      horse_id: null,
+      source_trainer_id: null,
+      subject: "stablepass",
+      byline: "Racing TV",
+      type: "photo",
+      title: null,
+      body: null,
+      status: "draft",
+      watermarked: false,
+      expires_at: null,
+      label: null,
+    });
+  });
+
+  it("stablepass + type 'voice' → 400 validation_failed (epic decision 2: photo/video only), no upload targets minted", async () => {
+    asAdmin();
+    const r = await POST(postReq({ subject: "stablepass", byline: "Racing TV", type: "voice" }));
+    expect(r.status).toBe(400);
+    const j = await r.json();
+    expect(j.error.code).toBe("validation_failed");
+    expectNoUploadTargetsMinted();
+  });
+
+  it("stablepass + type 'text' → 400 validation_failed (epic decision 2: photo/video only), no upload targets minted", async () => {
+    asAdmin();
+    const r = await POST(postReq({ subject: "stablepass", byline: "Racing TV", type: "text" }));
+    expect(r.status).toBe(400);
+    const j = await r.json();
+    expect(j.error.code).toBe("validation_failed");
+    expectNoUploadTargetsMinted();
+  });
+
+  it("trainer post carrying a horseId → 400 validation_failed, no upload targets minted", async () => {
+    asAdmin();
+    const r = await POST(
+      postReq({ subject: "trainer", sourceTrainerId: "t1", horseId: "h1", type: "video" }),
+    );
+    expect(r.status).toBe(400);
+    const j = await r.json();
+    expect(j.error.code).toBe("validation_failed");
+    expectNoUploadTargetsMinted();
+  });
+
+  it("trainer post with no sourceTrainerId → 400 validation_failed, no upload targets minted", async () => {
+    asAdmin();
+    const r = await POST(postReq({ subject: "trainer", type: "video" }));
+    expect(r.status).toBe(400);
+    const j = await r.json();
+    expect(j.error.code).toBe("validation_failed");
+    expectNoUploadTargetsMinted();
+  });
+
+  it("a RETIRED byline → 400 unknown_byline, no upload targets minted", async () => {
+    asAdmin();
+    state.tables.post_byline = {
+      select: { single: { name: "Retired One", retired_at: "2026-09-01T00:00:00Z" } },
+    };
+    const r = await POST(
+      postReq({ subject: "stablepass", byline: "Retired One", type: "photo" }),
+    );
+    expect(r.status).toBe(400);
+    const j = await r.json();
+    expect(j.error.code).toBe("unknown_byline");
+    expectNoUploadTargetsMinted();
+  });
+
+  it("an UNKNOWN byline (no matching post_byline row) → 400 unknown_byline, no upload targets minted", async () => {
+    asAdmin();
+    state.tables.post_byline = { select: { single: null } };
+    const r = await POST(postReq({ subject: "stablepass", byline: "Nope", type: "photo" }));
+    expect(r.status).toBe(400);
+    const j = await r.json();
+    expect(j.error.code).toBe("unknown_byline");
+    expectNoUploadTargetsMinted();
+  });
+
+  it("stablepass post carrying a horseId → 400 validation_failed, no upload targets minted", async () => {
+    asAdmin();
+    const r = await POST(
+      postReq({ subject: "stablepass", horseId: "h1", byline: "Racing TV", type: "photo" }),
+    );
+    expect(r.status).toBe(400);
+    const j = await r.json();
+    expect(j.error.code).toBe("validation_failed");
+    expectNoUploadTargetsMinted();
+  });
+
+  it("an unrecognised subject → 400 validation_failed, no upload targets minted", async () => {
+    asAdmin();
+    const r = await POST(postReq({ subject: "nonsense", type: "photo" }));
+    expect(r.status).toBe(400);
+    const j = await r.json();
+    expect(j.error.code).toBe("validation_failed");
+    expectNoUploadTargetsMinted();
+  });
+
+  it("BACK-COMPAT: no subject key at all defaults to horse — insert carries subject: 'horse', byline: null", async () => {
+    asAdmin();
+    state.tables.horse = { select: { single: { id: "h1" } } };
+    state.tables.post = { mutate: { single: { id: "p1", status: "draft", type: "photo", horse_id: "h1" } } };
+    const r = await POST(postReq({ horseId: "h1", type: "photo", sourceTrainerId: "t1" }));
+    expect(r.status).toBe(202);
+    const insertCall = state.calls.mutations.find((m) => m.table === "post" && m.op === "insert");
+    expect(insertCall?.payload).toMatchObject({
+      subject: "horse",
+      byline: null,
+      horse_id: "h1",
+      source_trainer_id: "t1",
+    });
+  });
+
+  // ---------------------------------------------------------------------
+  // The remaining 400 branches. Each one is here for the SAME reason as the
+  // cases above: not merely that it returns 400, but that it returns it
+  // having minted NOTHING. Without a case per branch, a refactor that moves
+  // one of them below the insert/signing passes the whole suite while
+  // leaving orphan upload targets in the bucket.
+  // ---------------------------------------------------------------------
+
+  it("stablepass with NO byline → 400 validation_failed, no upload targets minted", async () => {
+    asAdmin();
+    const r = await POST(postReq({ subject: "stablepass", type: "photo" }));
+    expect(r.status).toBe(400);
+    const j = await r.json();
+    expect(j.error.code).toBe("validation_failed");
+    expectNoUploadTargetsMinted();
+  });
+
+  it("stablepass with a BLANK byline → 400 validation_failed, no upload targets minted", async () => {
+    asAdmin();
+    const r = await POST(postReq({ subject: "stablepass", byline: "   ", type: "photo" }));
+    expect(r.status).toBe(400);
+    const j = await r.json();
+    expect(j.error.code).toBe("validation_failed");
+    expectNoUploadTargetsMinted();
+  });
+
+  // The forbidden-field branch is `horseId || sourceTrainerId`; the horseId
+  // half is covered above, so this pins the other half of the same `||`.
+  it("stablepass carrying a sourceTrainerId → 400 validation_failed, no upload targets minted", async () => {
+    asAdmin();
+    const r = await POST(
+      postReq({ subject: "stablepass", sourceTrainerId: "t1", byline: "Racing TV", type: "photo" }),
+    );
+    expect(r.status).toBe(400);
+    const j = await r.json();
+    expect(j.error.code).toBe("validation_failed");
+    expectNoUploadTargetsMinted();
+  });
+
+  it("a HORSE post carrying a byline → 400 validation_failed, no upload targets minted", async () => {
+    asAdmin();
+    state.tables.horse = { select: { single: { id: "h1" } } };
+    const r = await POST(
+      postReq({ horseId: "h1", sourceTrainerId: "t1", byline: "Racing TV", type: "photo" }),
+    );
+    expect(r.status).toBe(400);
+    const j = await r.json();
+    expect(j.error.code).toBe("validation_failed");
+    expectNoUploadTargetsMinted();
+  });
+
+  it("a TRAINER post carrying a byline → 400 validation_failed, no upload targets minted", async () => {
+    asAdmin();
+    const r = await POST(
+      postReq({ subject: "trainer", sourceTrainerId: "t1", byline: "Racing TV", type: "video" }),
+    );
+    expect(r.status).toBe(400);
+    const j = await r.json();
+    expect(j.error.code).toBe("validation_failed");
+    expectNoUploadTargetsMinted();
+  });
+
+  // ---------------------------------------------------------------------
+  // `isSubjectCheckViolation`, pinned the same way `isLabelCheckViolation`
+  // is — because it got this wrong once already.
+  //
+  // The first draft of this handler matched the BARE 23514 and ran the branch
+  // ABOVE the label one, so it swallowed `post_label_preset` and
+  // `post_aspect_ratio_positive` and reported both as a subject-shape
+  // problem. The two pre-existing label tests caught it. These two are the
+  // same guard for the new function, so it cannot regress the same way.
+  // ---------------------------------------------------------------------
+
+  it("a post_subject_shape 23514 → 400 validation_failed with the subject message", async () => {
+    asAdmin();
+    state.tables.post = {
+      mutate: {
+        error: {
+          code: "23514",
+          message:
+            'new row for relation "post" violates check constraint "post_subject_shape"',
+        },
+      },
+    };
+    const r = await POST(
+      postReq({ subject: "trainer", sourceTrainerId: "t1", type: "video" }),
+    );
+    expect(r.status).toBe(400);
+    const j = await r.json();
+    expect(j.error.code).toBe("validation_failed");
+    expect(j.error.message).toContain("subject fields");
+  });
+
+  it("the subject mapping does NOT swallow a 23514 from another constraint", async () => {
+    asAdmin();
+    state.tables.post = {
+      mutate: {
+        error: {
+          code: "23514",
+          message:
+            'new row for relation "post" violates check constraint "post_aspect_ratio_positive"',
+        },
+      },
+    };
+    const r = await POST(
+      postReq({ subject: "trainer", sourceTrainerId: "t1", type: "video" }),
+    );
+    expect(r.status).toBe(400);
+    const j = await r.json();
+    // Falls through to the generic branch, which keeps the real constraint
+    // name — NOT the subject message.
+    expect(j.error.code).toBe("insert_failed");
+    expect(j.error.message).toContain("post_aspect_ratio_positive");
+  });
+});

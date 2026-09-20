@@ -23,6 +23,11 @@ const api = vi.hoisted(() => ({
   uploadPhotoToStorage: vi.fn(),
   // ENG-1266 — "Add more photos".
   requestPhotoUploads: vi.fn(),
+  // ENG-1268 — the StablePass byline picker's Add-new / retire, and the
+  // titles picker's retire.
+  createByline: vi.fn(),
+  retireByline: vi.fn(),
+  retireLabel: vi.fn(),
 }));
 vi.mock("./api", () => api);
 
@@ -39,8 +44,8 @@ vi.mock("next/navigation", () => ({
 }));
 
 const TRAINERS: TrainerOption[] = [
-  { id: "t1", name: "Chris Waller" },
-  { id: "t2", name: "Peter Moody" },
+  { id: "t1", name: "Chris Waller", photoUrl: null, stableName: null, location: null },
+  { id: "t2", name: "Peter Moody", photoUrl: null, stableName: null, location: null },
 ];
 
 const HORSES: HorseOption[] = [
@@ -89,7 +94,9 @@ describe("ComposeScreen", () => {
   it("renders the compose flow", () => {
     renderScreen();
     expect(screen.getByRole("heading", { name: "Compose post" })).toBeTruthy();
-    expect(screen.getByText("Which horse is this for?")).toBeTruthy();
+    // ENG-1268 renamed Step 1's heading from "Which horse is this for?" to
+    // "Who is this post from?" — the step now picks a SUBJECT, not just a horse.
+    expect(screen.getByText("Who is this post from?")).toBeTruthy();
     expect(screen.getByText("Add the content.")).toBeTruthy();
     expect(screen.getByText("Write the caption.")).toBeTruthy();
   });
@@ -104,6 +111,9 @@ describe("ComposeScreen", () => {
       title: "Old title",
       caption: "Old caption",
       bylineId: "t1",
+      subject: "horse",
+      byline: null,
+      trainer: null,
       label: null,
       scheduledFor: null,
       horse: HORSES[0],
@@ -161,6 +171,9 @@ describe("ComposeScreen", () => {
       title: "",
       caption: "Almost ready",
       bylineId: "t1",
+      subject: "horse",
+      byline: null,
+      trainer: null,
       label: null,
       scheduledFor: null,
       horse: HORSES[0],
@@ -541,6 +554,9 @@ describe("ComposeScreen", () => {
       title: "T",
       caption: "C",
       bylineId: "t1",
+      subject: "horse" as const,
+      byline: null,
+      trainer: null,
       label: null,
       horse: HORSES[0],
       photos: [{ path: "base/original", url: "https://signed.example/photo.jpg" }],
@@ -580,6 +596,9 @@ describe("ComposeScreen", () => {
       title: "Race day",
       caption: "Big race Saturday",
       bylineId: "t1",
+      subject: "horse",
+      byline: null,
+      trainer: null,
       label: null,
       scheduledFor: "2099-06-20T09:30:00.000Z",
       horse: HORSES[0],
@@ -616,6 +635,9 @@ describe("ComposeScreen", () => {
       title: "T",
       caption: "C",
       bylineId: "t1",
+      subject: "horse",
+      byline: null,
+      trainer: null,
       label: null,
       scheduledFor: null,
       horse: HORSES[0],
@@ -649,6 +671,9 @@ describe("ComposeScreen", () => {
       title: "T",
       caption: "C",
       bylineId: "t1",
+      subject: "horse",
+      byline: null,
+      trainer: null,
       label: null,
       scheduledFor: "2099-06-20T09:30:00.000Z",
       horse: HORSES[0],
@@ -683,6 +708,9 @@ describe("ComposeScreen", () => {
       title: "T",
       caption: "C",
       bylineId: "t1",
+      subject: "horse",
+      byline: null,
+      trainer: null,
       label: null,
       scheduledFor: null,
       horse: HORSES[0],
@@ -838,6 +866,9 @@ describe("ComposeScreen — preview measurement", () => {
       title: "T",
       caption: "C",
       bylineId: "t1",
+      subject: "horse",
+      byline: null,
+      trainer: null,
       label: null,
       scheduledFor: null,
       horse: HORSES[0],
@@ -886,6 +917,9 @@ function editInitial(label: string | null): EditInitial {
     title: "Old title",
     caption: "Old caption",
     bylineId: "t1",
+    subject: "horse",
+    byline: null,
+    trainer: null,
     label,
     scheduledFor: null,
     horse: HORSES[0],
@@ -1428,6 +1462,9 @@ describe("ENG-748 · multi-photo compose", () => {
         title: "T",
         caption: "C",
         bylineId: "t1",
+        subject: "horse",
+        byline: null,
+        trainer: null,
         label: null,
         scheduledFor: null,
         horse: HORSES[0],
@@ -2155,6 +2192,9 @@ describe("ENG-748 · multi-photo compose", () => {
         title: "",
         caption: "Two already saved",
         bylineId: "t1",
+        subject: "horse",
+        byline: null,
+        trainer: null,
         label: null,
         scheduledFor: null,
         horse: HORSES[0],
@@ -2223,6 +2263,9 @@ describe("ENG-748 · multi-photo compose", () => {
         title: "",
         caption: "Existing caption",
         bylineId: "t1",
+        subject: "horse",
+        byline: null,
+        trainer: null,
         label: null,
         scheduledFor: null,
         horse: HORSES[0],
@@ -2358,6 +2401,9 @@ describe("ENG-748 · multi-photo compose", () => {
         title: "",
         caption: "One saved photo",
         bylineId: "t1",
+        subject: "horse",
+        byline: null,
+        trainer: null,
         label: null,
         scheduledFor: null,
         horse: HORSES[0],
@@ -2437,6 +2483,9 @@ describe("ENG-748 · multi-photo compose", () => {
         title: "",
         caption: "Three saved",
         bylineId: "t1",
+        subject: "horse",
+        byline: null,
+        trainer: null,
         label: null,
         scheduledFor: null,
         horse: HORSES[0],
@@ -2577,5 +2626,227 @@ describe("ENG-748 · multi-photo compose", () => {
       expect((screen.getByTestId("publish-draft") as HTMLButtonElement).disabled).toBe(false);
       expect((screen.getByTestId("schedule-action") as HTMLButtonElement).disabled).toBe(false);
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ENG-1268 — subject switching, the per-subject type tiles, and the two
+// pickers (byline / trainer) it introduces.
+// ---------------------------------------------------------------------------
+describe("Posting as (ENG-1268)", () => {
+  function chooseSubjectOption(subject: "horse" | "trainer" | "stablepass") {
+    fireEvent.click(within(screen.getByTestId(`subject-option-${subject}`)).getByRole("radio"));
+  }
+
+  it("selecting StablePass hides the Voice and Text tiles, keeps Photo and Video", () => {
+    renderScreen();
+    chooseSubjectOption("stablepass");
+    expect(screen.queryByTestId("type-option-voice")).toBeNull();
+    expect(screen.queryByTestId("type-option-text")).toBeNull();
+    expect(screen.getByTestId("type-option-photo")).toBeTruthy();
+    expect(screen.getByTestId("type-option-video")).toBeTruthy();
+  });
+
+  it("selecting Trainer shows all four type tiles again", () => {
+    renderScreen();
+    chooseSubjectOption("stablepass");
+    chooseSubjectOption("trainer");
+    for (const type of ["video", "photo", "voice", "text"]) {
+      expect(screen.getByTestId(`type-option-${type}`)).toBeTruthy();
+    }
+  });
+
+  // "Attempting the primary action" here means attempting the thing Step 1
+  // gates: adding media. The `primary-action` (Publish/Save) button is
+  // provably disabled the whole time the subject is unready — `canAct`
+  // requires a draft (which `onPickFile` refuses to mint without a ready
+  // subject), so clicking it is a no-op (see the sibling "primary-action is
+  // disabled and createDraft is never called" idiom above). The guard's own
+  // message therefore surfaces where the guard itself lives: the inline
+  // upload error next to the file picker.
+  it("trainer, no trainer chosen: picking media surfaces 'Pick a trainer first.'", () => {
+    renderScreen();
+    chooseSubjectOption("trainer");
+    const file = new File([new Uint8Array([1, 2, 3])], "clip.mp4", { type: "video/mp4" });
+    fireEvent.change(screen.getByTestId("media-input"), { target: { files: [file] } });
+    expect(screen.getByTestId("media-error").textContent).toBe("Pick a trainer first.");
+    expect(api.createDraft).not.toHaveBeenCalled();
+  });
+
+  it("stablepass, no byline chosen: picking media surfaces 'Choose a byline first.'", () => {
+    renderScreen();
+    chooseSubjectOption("stablepass");
+    const file = new File([new Uint8Array([1, 2, 3])], "clip.mp4", { type: "video/mp4" });
+    fireEvent.change(screen.getByTestId("media-input"), { target: { files: [file] } });
+    expect(screen.getByTestId("media-error").textContent).toBe("Choose a byline first.");
+    expect(api.createDraft).not.toHaveBeenCalled();
+  });
+
+  it("edit mode with subject 'trainer' renders subject-fixed, never the picker", () => {
+    const initial: EditInitial = {
+      id: "post-1268a",
+      status: "draft",
+      subject: "trainer",
+      byline: null,
+      trainer: { id: "t1", name: "Chris Waller", photoUrl: null, stableName: null, location: null },
+      mediaType: "video",
+      mediaUrl: "https://signed.example/video.m3u8",
+      title: "",
+      caption: "Weekend preview",
+      bylineId: "",
+      label: null,
+      scheduledFor: null,
+      horse: null,
+      photos: [],
+    };
+    render(<ComposeScreen horses={HORSES} trainers={TRAINERS} initial={initial} />);
+    expect(screen.getByTestId("subject-fixed")).toBeTruthy();
+    expect(screen.queryByTestId("subject-picker")).toBeNull();
+  });
+
+  // THE RETIRED-BYLINE EDIT PATH — the most important test in this block.
+  // `.rx/gotchas.md` names this exact hazard (the ENG-1267 one, the live
+  // byline-picker instance of it): a <select> handed a value with no matching
+  // <option> silently falls back to index 0 and blanks the post on save,
+  // with no error and no way to notice by re-picking (it already shows the
+  // wrong thing). "Retired One" is deliberately NOT in `bylines` below — the
+  // picker must union the post's own value back in and SELECT it.
+  it("a post's own RETIRED byline is unioned back into the picker and selected", () => {
+    const initial: EditInitial = {
+      id: "post-1268b",
+      status: "published",
+      subject: "stablepass",
+      byline: "Retired One",
+      trainer: null,
+      mediaType: "photo",
+      mediaUrl: "https://signed.example/a.jpg",
+      title: "",
+      caption: "Some caption",
+      bylineId: "",
+      label: null,
+      scheduledFor: null,
+      horse: null,
+      photos: [{ path: "post-1268b/original", url: "https://signed.example/a.jpg" }],
+    };
+    render(
+      <ComposeScreen
+        horses={HORSES}
+        trainers={TRAINERS}
+        initial={initial}
+        bylines={[{ id: "b1", name: "Racing TV" }]}
+      />,
+    );
+    const select = screen.getByTestId("byline-name-select") as HTMLSelectElement;
+    expect(select.value).toBe("Retired One");
+    expect(Array.from(select.options).some((o) => o.value === "Retired One")).toBe(true);
+  });
+
+  it("builtin titles show no × in the manage list; a non-builtin one does", () => {
+    render(
+      <ComposeScreen
+        horses={HORSES}
+        trainers={TRAINERS}
+        labelActions={[
+          { id: "l1", name: "Trackwork", isBuiltin: true },
+          { id: "l2", name: "Mine", isBuiltin: false },
+        ]}
+      />,
+    );
+    fireEvent.click(screen.getByTestId("manage-title-toggle"));
+    expect(screen.getByTestId("manage-title-remove-l2")).toBeTruthy();
+    expect(screen.queryByTestId("manage-title-remove-l1")).toBeNull();
+  });
+
+  // BELT 2 of the retired-value fix, and the belt that actually prevents the
+  // user-visible failure.
+  //
+  // The union above keeps the CONTROL honest. This keeps the SAVE honest: a
+  // caption-only edit of a stablepass post whose byline has since been
+  // retired must send no `byline` key at all. If it sent the displayed value,
+  // the route would refuse it (`unknown_byline`, by design — a retired byline
+  // is withdrawn from NEW use) and the operator could never save the post
+  // again, not even to fix a typo in the caption.
+  it("a caption-only save on a post carrying a RETIRED byline sends no byline key", async () => {
+    api.patchPost.mockResolvedValue(undefined);
+    const initial: EditInitial = {
+      id: "post-1268c",
+      status: "published",
+      subject: "stablepass",
+      byline: "Retired One",
+      trainer: null,
+      mediaType: "photo",
+      mediaUrl: "https://signed.example/a.jpg",
+      title: "",
+      caption: "Old caption",
+      bylineId: "",
+      label: null,
+      scheduledFor: null,
+      horse: null,
+      photos: [{ path: "post-1268c/original", url: "https://signed.example/a.jpg" }],
+    };
+    render(
+      <ComposeScreen
+        horses={HORSES}
+        trainers={TRAINERS}
+        initial={initial}
+        bylines={[{ id: "b1", name: "Racing TV" }]}
+      />,
+    );
+
+    fireEvent.change(screen.getByTestId("caption"), { target: { value: "New caption" } });
+    fireEvent.click(screen.getByTestId("primary-action"));
+
+    await waitFor(() => expect(api.patchPost).toHaveBeenCalled());
+    const [, patch] = api.patchPost.mock.calls[0] as [string, Record<string, unknown>];
+    expect(patch.body).toBe("New caption");
+    // The whole point: ABSENT, not null and not the displayed value.
+    expect("byline" in patch).toBe(false);
+    // And a stablepass post has no trainer byline to send either.
+    expect("sourceTrainerId" in patch).toBe(false);
+  });
+
+  // The same hazard, one control over. `retiredLabelNames` drops a title
+  // retired during this session from the picker — but it must never drop the
+  // title the post being edited actually carries, or retiring a title would
+  // blank it on the very post in front of you.
+  it("retiring the title the edited post carries leaves it selected in the picker", async () => {
+    api.retireLabel.mockResolvedValue(undefined);
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    const initial: EditInitial = {
+      id: "post-1268d",
+      status: "published",
+      subject: "horse",
+      byline: null,
+      trainer: null,
+      mediaType: "photo",
+      mediaUrl: "https://signed.example/a.jpg",
+      title: "",
+      caption: "Old caption",
+      bylineId: "t1",
+      label: "Mine",
+      scheduledFor: null,
+      horse: HORSES[0],
+      photos: [{ path: "post-1268d/original", url: "https://signed.example/a.jpg" }],
+    };
+    render(
+      <ComposeScreen
+        horses={HORSES}
+        trainers={TRAINERS}
+        initial={initial}
+        labels={["Trackwork", "Mine"]}
+        labelActions={[{ id: "l2", name: "Mine", isBuiltin: false }]}
+      />,
+    );
+
+    const select = screen.getByTestId("label-select") as HTMLSelectElement;
+    expect(select.value).toBe("Mine");
+
+    fireEvent.click(screen.getByTestId("manage-title-toggle"));
+    fireEvent.click(screen.getByTestId("manage-title-remove-l2"));
+    await waitFor(() => expect(api.retireLabel).toHaveBeenCalledWith("l2"));
+
+    // Retired for NEW posts, still the value of THIS one.
+    expect(Array.from(select.options).some((o) => o.value === "Mine")).toBe(true);
+    expect(select.value).toBe("Mine");
   });
 });

@@ -10,6 +10,13 @@
 //
 // Filters are kept in a SEPARATE array from the write trace so that
 // `expect(rec.writes).toEqual([])` still means "no write happened".
+//
+// ENG-1267: `eq` was the only comparator recorded, so a READ guarded by
+// `.is("retired_at", null)` (excluding retired rows from a picker) was
+// unprovable — the fake applies no filtering itself, so nothing distinguished
+// that call from an unfiltered read. Every other comparator the fake
+// implements is now recorded too, alongside (not instead of) `eq`'s existing
+// bare format.
 
 export type WriteCall = { table: string; op: "insert" | "upsert" | "update" | "delete"; payload: unknown };
 
@@ -31,6 +38,11 @@ export function blankRecord(): CallRecord {
 // `expect(rec.writes).toEqual([])` silently vacuous.
 const WRITE_OPS = new Set(["insert", "upsert", "update", "delete"]);
 
+// Non-`eq` comparators (ENG-1267) — recorded in the SAME `rec.filters` array
+// as `eq`, but with the comparator name in the string, since a bare
+// `table.column=value` cannot tell `.is(col, null)` apart from `.eq(col, null)`.
+const OTHER_COMPARATORS = new Set(["is", "neq", "in", "ilike", "gt", "gte", "lt", "lte"]);
+
 export function recordCalls<T extends { from: (table: string) => any }>(client: T, rec: CallRecord): T {
   return {
     ...client,
@@ -48,6 +60,8 @@ export function recordCalls<T extends { from: (table: string) => any }>(client: 
               rec.writes.push({ table, op: name as WriteCall["op"], payload: args[0] });
             } else if (name === "eq") {
               rec.filters.push(`${table}.${args[0]}=${args[1]}`);
+            } else if (OTHER_COMPARATORS.has(name)) {
+              rec.filters.push(`${table}.${args[0]} ${name} ${JSON.stringify(args[1])}`);
             }
             const out = value.apply(target, args);
             // Keep the recorder attached across the whole chain.

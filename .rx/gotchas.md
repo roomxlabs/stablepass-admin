@@ -1769,3 +1769,41 @@ decision 5), so a long-lived post's prefix can exceed 100 between its real set a
 past which the listing truncates and any slot floor derived from it can REGRESS onto live bytes.
 Pass an explicit `{ limit: 1000 }`; sizing it to `MAX_PHOTOS` would be wrong, because the listing
 counts every orphan ever left behind, not just the persisted set.
+## A `.select()` fields constant must be a STRING LITERAL, not a concatenation
+`const LABEL_LOOKUP_FIELDS = LABEL_FIELDS + ",retired_at";` widens to plain `string`, which
+collapses supabase-js's `.select()` overload to `GenericStringError[]` — `tsc --noEmit` then fails
+on every field access of the returned rows, with an error that names neither the concatenation nor
+the column. Write the second projection out in full as its own literal (ENG-1267).
+
+## `supabase-fake`'s `.single()` reads the table script TWICE per call
+`single()`/`maybeSingle()` call `pick()` once for `.single` and once for `.error`. A test that
+scripts a MULTI-STEP sequence with `Object.defineProperty(state.tables, t, { get() {…} })` — the
+idiom for an insert-fails-then-re-read-then-update race — must therefore budget **2 getter fires per
+`.single()` step**, not 1. Get it wrong and the mis-aligned step returns `{data:null,error:null}`,
+which reads as a FALSE SUCCESS (a 201 where you expected a 200, or a crash on `null.id`) rather than
+an obvious failure. Cost real debugging time on ENG-1267's un-retire-race tests.
+
+## A lookup route's filter does NOT cover the SSR page that reads the table directly
+`app/(dash)/compose/page.tsx` reads `post_label` straight off Supabase rather than through
+`GET /api/admin/post-labels`, so the `.is("retired_at", null)` exclusion added to the ROUTE
+(ENG-1267) does not apply to the picker's first server-rendered paint. Any filter added to one of
+these lookup routes has to be mirrored in the compose loader (A3's surface) or the feature only
+half-ships. Check both readers whenever you change a lookup's visibility rule.
+
+## Filtering retired rows out of a picker BREAKS the edit path — unless the picker unions the post's own value back in
+The other half of the mirroring hazard above. Once `retired_at` rows are excluded from a lookup
+(ENG-1267), the picker's option set no longer contains a retired name — but an EXISTING post can
+still carry exactly that name, legitimately: retiring stamps `post_label.retired_at` / 
+`post_byline.retired_at` and never touches `post`, which stores the NAME. Hand a `<select>` a current
+value with no matching `<option>` and it falls back to index 0: the control reads "No label" while
+state holds the real value, and it cannot be corrected by re-picking, because that is already what
+it displays, so no change event fires.
+The LABEL picker already solves this, and has since ENG-979 — copy it rather than inventing
+something: `app/(dash)/compose/ComposeScreen.tsx:263-273` unions `initialLabel` into `options`
+(deduped, as an ordinary selectable option — NOT a read-only one), and `:296-298` makes `labelPatch`
+absent unless `label !== initialLabel`, so a save that touches only the caption provably writes
+nothing to the column. Two belts, both needed: the union keeps the control honest, the absent-unless-
+changed patch keeps a mis-rendered control from writing.
+The live hazard is the BYLINE picker A3 (ENG-1268) is adding, which has neither belt yet. A byline
+picker built off `GET /api/admin/post-bylines` alone will omit a retired byline the post carries and
+silently blank or rewrite it on save, with no error anywhere.

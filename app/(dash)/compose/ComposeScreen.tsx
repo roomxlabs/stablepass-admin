@@ -1765,12 +1765,23 @@ export default function ComposeScreen({
   }
 
   const previewData: PostPreviewData = {
-    // ENG-1268 — the per-subject preview HEAD ships in the follow-up PR on
-    // this ticket (the ticket's DoD splits it out). Until it lands the card
-    // draws the horse head it always has, which is why this PR's screenshots
-    // show a horse head under every subject. Nothing else here depends on it.
+    // ENG-1268 — the head follows the subject. The preview is the only place
+    // the operator sees what a member will get, so a StablePass post that
+    // previewed a horse head would be the ENG-558 lie in a new place.
+    subject,
     horseName: horse?.name ?? null,
-    byline: trainerName,
+    // The attribution line, whose meaning follows the subject (see
+    // PostPreviewData.byline): the byline TRAINER for a horse post, and the
+    // chosen `post_byline` name for a StablePass one. A trainer post takes
+    // neither — its head is the trainer.
+    byline: subject === "stablepass" ? byline || null : subject === "trainer" ? null : trainerName,
+    trainer: trainer
+      ? {
+          name: trainer.name,
+          photoUrl: trainer.photoUrl,
+          subline: trainerSubline(trainer),
+        }
+      : null,
     caption,
     // A text post genuinely has no media, so it reports none. PostPreview
     // (ENG-558 / A1) already handles a null media type without crashing —

@@ -637,3 +637,73 @@ describe("reel chrome, across the whole portrait range (ENG-769)", () => {
     expect(kids.indexOf("preview-reactions")).toBeLessThan(kids.indexOf("preview-caption"));
   });
 });
+
+// ---------------------------------------------------------------------------
+// ENG-1268 — the head, by subject. `subject` absent means `horse` (BASE never
+// sets it), so the horse cases below are the byte-identical pre-ticket render.
+// ---------------------------------------------------------------------------
+describe("head by subject (ENG-1268)", () => {
+  it("horse (subject omitted): title-cased name, 'by <trainer> · just now', initial avatar only", () => {
+    renderPreview();
+    expect(screen.getByTestId("preview-head-name").textContent).toBe("Mahogany");
+    expect(screen.getByTestId("preview-head-sub").textContent).toBe("by Chris Waller · just now");
+    expect(screen.getByTestId("preview-avatar-initial")).toBeTruthy();
+    expect(screen.queryByTestId("preview-avatar-mark")).toBeNull();
+    expect(screen.queryByTestId("preview-avatar-photo")).toBeNull();
+  });
+
+  it("horse with a race today shows the race badge", () => {
+    renderPreview({ racesToday: true });
+    expect(screen.getByTestId("preview-race-badge")).toBeTruthy();
+  });
+
+  it("trainer: name is the trainer's, subline is the profile line, photo avatar", () => {
+    renderPreview({
+      subject: "trainer",
+      trainer: { name: "Chris Waller", photoUrl: "https://x/y.jpg", subline: "Rosehill · NSW" },
+      racesToday: true,
+    });
+    expect(screen.getByTestId("preview-head-name").textContent).toBe("Chris Waller");
+    expect(screen.getByTestId("preview-head-subline").textContent).toBe("Rosehill · NSW");
+    expect(screen.getByTestId("preview-avatar-photo")).toBeTruthy();
+    // THE WHOLE POINT of this case: racesToday is TRUE, but race day is a
+    // HORSE fact — a trainer post has no horse (post.horse_id is null), so
+    // there is nothing to badge. A stale `true` left over from a horse the
+    // operator switched away from must not leak a badge onto this head.
+    expect(screen.queryByTestId("preview-race-badge")).toBeNull();
+  });
+
+  it("trainer with no photo falls back to the initial avatar", () => {
+    renderPreview({
+      subject: "trainer",
+      trainer: { name: "Chris Waller", photoUrl: null, subline: "Rosehill · NSW" },
+    });
+    expect(screen.getByTestId("preview-avatar-initial")).toBeTruthy();
+    expect(screen.queryByTestId("preview-avatar-photo")).toBeNull();
+  });
+
+  it("stablepass: name is the lowercase handle, subline is the byline, mark avatar, no race badge", () => {
+    renderPreview({ subject: "stablepass", byline: "Racing TV", racesToday: true });
+    expect(screen.getByTestId("preview-head-name").textContent).toBe("stablepass");
+    expect(screen.getByTestId("preview-head-subline").textContent).toBe("Racing TV");
+    const mark = screen.getByTestId("preview-avatar-mark");
+    expect(mark).toBeTruthy();
+    expect(mark.querySelector("img")?.getAttribute("src")).toBe("/brand/mark.png");
+    expect(screen.queryByTestId("preview-race-badge")).toBeNull();
+  });
+
+  it("ORDER: the name element comes before the sub element in document order", () => {
+    renderPreview();
+    const name = screen.getByTestId("preview-head-name");
+    const sub = screen.getByTestId("preview-head-sub");
+    // DOCUMENT_POSITION_FOLLOWING (4) on `sub` relative to `name` means `sub`
+    // comes AFTER `name` — asserted structurally, not by reading text.
+    expect(name.compareDocumentPosition(sub) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  // ENG-558's gotcha, one level down: the second copy of the card IS the bug.
+  it("ONE PREVIEW COMPONENT: exactly one post-preview renders for a stablepass post", () => {
+    renderPreview({ subject: "stablepass", byline: "Racing TV" });
+    expect(screen.getAllByTestId("post-preview")).toHaveLength(1);
+  });
+});

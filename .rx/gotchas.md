@@ -1881,3 +1881,37 @@ lists all three subjects. A4 left the inner join in place and documented it at t
 than widening its surface into the query shape; if a ticket ever needs the subject sort to cover all
 three, it needs a different ordering strategy (a post-level sort key), not a `!inner` removal, or
 the sort silently orders nothing.
+
+## `select.value === ""` proves nothing about React state once the `<option>` is gone
+ENG-1290's first cut asserted the picker was empty after retiring the selected row. In jsdom a
+`<select>` whose current value has no matching `<option>` reports a fallback (`""` for the label
+picker, the Add-new sentinel for the byline one) **whether or not the component cleared its state** —
+so the label half of the test passed against the deliberately-reverted fix. The mutation run is what
+caught it; the assertion had been written, run green, and would have shipped as proof of nothing.
+Assert a STATE readout instead: the `preview-label` pill (rendered straight from `label`), or a gate
+the state feeds (`media-error` "Choose a byline first." for `subjectReady`). Rule of thumb: when a
+test asserts that a control is empty, ask what the DOM would report if the state were still full —
+if the answer is "the same thing", the test is not testing the fix.
+
+## Clearing a selection on retire must key on the UNION BELT, not on `isEdit`
+The obvious guard for ENG-1290 (`if (byline === row.name) setByline("")`) blanks edit mode too and
+breaks the pre-existing "retiring the title the edited post carries leaves it selected" test. The
+obvious *fix* for that (`!isEdit && …`) is also wrong: an edit-mode operator who picks a DIFFERENT
+row and then retires it has no union-back either, and gets the same dead end. The condition that
+actually matches `options` / `bylineOptions` is `row.name !== initialLabel` / `!== initialByline` —
+the exact single value those belts re-append. Mirror the belt, don't approximate it with a mode flag.
+
+## A mock that ignores a filter silently disarms every test that depends on it
+`e2e/mock-supabase.mjs`'s `/rest/v1/post_label` GET returned all rows regardless of
+`retired_at=is.null`, so `page.tsx`'s `.is("retired_at", null)` on the direct `post_label` read could
+be deleted with the whole suite still green. The `post_byline` branch next to it already honoured the
+filter and even carried a comment boasting that it was "UNLIKE post_label" — the mock documented its
+own blind spot for a whole ticket and nobody read it as a bug. When a mock branch says it ignores a
+filter, that sentence is a missing test, not a design note.
+
+## `e2e/mock-supabase.mjs` has no PATCH branch for `/rest/v1/post_label`
+`post_byline` has one (retire + Add-new's un-retire both PATCH by id); `post_label` has only GET and
+POST. Nothing hit it until ENG-1290 added a retired label fixture, and nothing hits it now — but the
+first e2e that exercises label retire, or Add-new of a name that is retired (the real route un-retires
+the row rather than inserting), will fall through to the generic handler and fail confusingly rather
+than saying "the mock cannot do this yet". Add the branch when you write that spec, not after.

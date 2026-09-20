@@ -109,6 +109,15 @@ test("ENG-1268: StablePass subject — S-mark head, byline, two tiles only", asy
   // Pick a byline from the live post_byline rows the mock serves.
   const select = page.getByTestId("byline-name-select");
   await expect(select).toBeVisible();
+
+  // ENG-1290 — pin the retired-row filter. `page.tsx` reads `post_byline`
+  // DIRECTLY with `.is("retired_at", null)`; nothing proved that filter
+  // existed, so deleting it passed the whole suite. `pb-3` "Old Wrap Show" is
+  // retired in the mock, and this is the assertion that goes red if the
+  // filter is dropped.
+  await expect(select.locator("option", { hasText: "Old Wrap Show" })).toHaveCount(0);
+  await expect(select.locator("option", { hasText: "Racing TV" })).toHaveCount(1);
+
   await select.selectOption({ label: "Racing TV" });
 
   // THE HEAD: the S-mark avatar, "stablepass", then the byline — and no race
@@ -122,4 +131,20 @@ test("ENG-1268: StablePass subject — S-mark head, byline, two tiles only", asy
     path: "e2e/__screenshots__/eng1268-subject-stablepass.png",
     fullPage: true,
   });
+});
+
+test("ENG-1290: a retired title is absent from the compose picker", async ({ page }) => {
+  test.setTimeout(90000);
+  await signIn(page);
+  await openCompose(page);
+
+  // The label twin of the byline assertion above: `page.tsx:128` reads
+  // `post_label` directly with `.is("retired_at", null)`, and `pl-17`
+  // "Old Barn Tour" is the retired fixture that filter must exclude.
+  const select = page.getByTestId("label-select");
+  await expect(select).toBeVisible({ timeout: 30000 });
+  await expect(select.locator("option", { hasText: "Old Barn Tour" })).toHaveCount(0);
+  // A live admin-added row IS offered, so the assertion above is proving the
+  // filter rather than an empty picker.
+  await expect(select.locator("option", { hasText: "Owner Update" })).toHaveCount(1);
 });

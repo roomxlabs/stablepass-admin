@@ -1610,6 +1610,12 @@ export default function ComposeScreen({
    * the value the post being edited carries: `options` and `bylineOptions`
    * append that back after the filter, so retiring the title you are currently
    * using cannot blank the post in front of you.
+   *
+   * ENG-1290 — but that union-back covers exactly ONE value: the edited post's
+   * own `initial.label` / `initial.byline`. It is not a general guarantee, and
+   * it does not exist at all in CREATE mode. Every other selected value left
+   * pointing at a row that was just retired would keep the `<select>` blank
+   * while state still held the name, so the clear below handles them.
    */
   async function onRetire(kind: "label" | "byline", row: { id: string; name: string }) {
     const message = `Remove “${row.name}” from the list? Posts already using it keep it.`;
@@ -1624,6 +1630,42 @@ export default function ComposeScreen({
         await retireByline(row.id);
         setRetiredBylineIds((prev) => (prev.includes(row.id) ? prev : [...prev, row.id]));
         setAddedBylines((prev) => prev.filter((b) => b.id !== row.id));
+      }
+      // ENG-1290 — clear the selection when the row just retired IS the one
+      // selected AND nothing will union it back. Without this the <select>
+      // loses its matching <option> and renders blank while `label` / `byline`
+      // state still holds the name: `subjectReady` stays true (`byline.trim()
+      // !== ""`) and the first save 400s with `unknown_byline` against a picker
+      // that looks empty — a dead end the operator cannot diagnose.
+      //
+      // The guard is `!== initialByline` / `!== initialLabel`, NOT `!isEdit`,
+      // and the difference is load-bearing (pinned by the edit-mode tests),
+      // because that is exactly the condition the union belt above keys on:
+      // `bylineOptions` / `options` re-append the EDITED post's own value after
+      // the retired filter, so that one value stays selectable and must NOT be
+      // cleared (the "cannot blank the post in front of you" invariant, pinned
+      // by the edit-mode tests). Every other selected value — all of create
+      // mode, and an edit-mode operator who picked a different row before
+      // retiring it — has no union-back and does need clearing.
+      // Functional updaters, like every other setter in this block: `byline` /
+      // `label` here would be the values captured BEFORE the `await` above,
+      // and neither <select> is disabled while the retire is in flight. An
+      // operator who moves the picker mid-request would otherwise either have
+      // their fresh choice wiped (stale value still matched `row.name`) or be
+      // left on the row that was just retired (stale value did not match) —
+      // the second being the very dead end this fix closes.
+      //
+      // The fallback is the post's OWN value, not "": in create mode
+      // `initial*` is "" so this IS a clear, while in edit mode snapping back
+      // to `initialLabel` / `initialByline` keeps the control honest about the
+      // post in front of the operator. Clearing to "" there would be worse
+      // than cosmetic — `labelPatch` sends `label: null` for "", so the next
+      // save would quietly UN-TITLE a post whose title was never touched.
+      if (kind === "byline") {
+        setByline((prev) => (prev === row.name && row.name !== initialByline ? initialByline : prev));
+      }
+      if (kind === "label") {
+        setLabel((prev) => (prev === row.name && row.name !== initialLabel ? initialLabel : prev));
       }
     } catch (e) {
       // Nothing is removed from the picker on failure — the row is still live

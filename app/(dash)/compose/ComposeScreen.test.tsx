@@ -2849,4 +2849,194 @@ describe("Posting as (ENG-1268)", () => {
     expect(Array.from(select.options).some((o) => o.value === "Mine")).toBe(true);
     expect(select.value).toBe("Mine");
   });
+
+  // ENG-1290 — the CREATE-mode gap in the fix above. There is no
+  // `initialByline` here for `bylineOptions` to union back in after the
+  // retired-id filter, so the <select> loses its matching <option> the
+  // instant you retire the byline you just picked. Left alone, `byline`
+  // state would still hold the name, `subjectReady` would stay true, and the
+  // first save would 400 with `unknown_byline` against a picker that looks
+  // empty. `onRetire` now clears the selection explicitly instead.
+  it("ENG-1290: retiring the byline you have selected clears it (create mode)", async () => {
+    api.retireByline.mockResolvedValue(undefined);
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    render(
+      <ComposeScreen
+        horses={HORSES}
+        trainers={TRAINERS}
+        bylines={[{ id: "b1", name: "Racing TV" }]}
+      />,
+    );
+    chooseSubjectOption("stablepass");
+
+    const select = screen.getByTestId("byline-name-select") as HTMLSelectElement;
+    fireEvent.change(select, { target: { value: "Racing TV" } });
+    expect(select.value).toBe("Racing TV");
+
+    fireEvent.click(screen.getByTestId("manage-byline-toggle"));
+    fireEvent.click(screen.getByTestId("manage-byline-remove-b1"));
+    await waitFor(() => expect(api.retireByline).toHaveBeenCalledWith("b1"));
+
+    // The STATE proof, asserted first and on its own: `subjectReady` is false
+    // again, so picking media surfaces the same "no byline yet" gate the
+    // sibling "stablepass, no byline chosen" test above proves for a picker
+    // that was never filled in the first place. Without the clear in
+    // `onRetire` this is the 400 `unknown_byline` path instead.
+    //
+    // `select.value` alone would NOT prove this: with the retired <option>
+    // gone the DOM select reports a fallback value whether or not React state
+    // was cleared, so the readiness gate is what the mutation run moves.
+    const file = new File([new Uint8Array([1, 2, 3])], "clip.mp4", { type: "video/mp4" });
+    fireEvent.change(screen.getByTestId("media-input"), { target: { files: [file] } });
+    expect(screen.getByTestId("media-error").textContent).toBe("Choose a byline first.");
+    expect(api.createDraft).not.toHaveBeenCalled();
+
+    // And the picker the operator is looking at agrees with that state.
+    expect(select.value).toBe("");
+    expect(Array.from(select.options).some((o) => o.value === "Racing TV")).toBe(false);
+  });
+
+  // ENG-1290 — the title picker's half of the same create-mode gap. Builtins
+  // cannot be retired at all (`retirableLabels` filters `isBuiltin`), so this
+  // reuses the non-builtin "Mine" fixture from the edit-mode test above.
+  it("ENG-1290: retiring the title you have selected clears it (create mode)", async () => {
+    api.retireLabel.mockResolvedValue(undefined);
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    render(
+      <ComposeScreen
+        horses={HORSES}
+        trainers={TRAINERS}
+        labels={["Trackwork", "Mine"]}
+        labelActions={[{ id: "l2", name: "Mine", isBuiltin: false }]}
+      />,
+    );
+
+    const select = screen.getByTestId("label-select") as HTMLSelectElement;
+    fireEvent.change(select, { target: { value: "Mine" } });
+    expect(select.value).toBe("Mine");
+
+    // The preview pill is the STATE readout: `PostPreview` renders it straight
+    // from `label`, so it shows the stale value when `onRetire` forgets to
+    // clear it — unlike `select.value`, which reads "" either way once the
+    // retired <option> is gone. This is the assertion the mutation run moves.
+    expect(screen.getByTestId("preview-label").textContent).toBe("Mine");
+
+    fireEvent.click(screen.getByTestId("manage-title-toggle"));
+    fireEvent.click(screen.getByTestId("manage-title-remove-l2"));
+    await waitFor(() => expect(api.retireLabel).toHaveBeenCalledWith("l2"));
+
+    expect(screen.queryByTestId("preview-label")).toBeNull();
+    expect(select.value).toBe("");
+    expect(Array.from(select.options).some((o) => o.value === "Mine")).toBe(false);
+  });
+
+  // ENG-1290 — the byline twin of "retiring the title the edited post
+  // carries leaves it selected in the picker" above. The existing byline
+  // union test only proves the case where the value ARRIVES already retired
+  // on first render; this proves the union belt also holds when the retire
+  // happens DURING the edit session.
+  it("ENG-1290: edit mode keeps a retired byline selected (union belt)", async () => {
+    api.retireByline.mockResolvedValue(undefined);
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    const initial: EditInitial = {
+      id: "post-1290a",
+      status: "published",
+      subject: "stablepass",
+      byline: "Racing TV",
+      trainer: null,
+      mediaType: "photo",
+      mediaUrl: "https://signed.example/a.jpg",
+      title: "",
+      caption: "Old caption",
+      bylineId: "",
+      label: null,
+      scheduledFor: null,
+      horse: null,
+      photos: [{ path: "post-1290a/original", url: "https://signed.example/a.jpg" }],
+    };
+    render(
+      <ComposeScreen
+        horses={HORSES}
+        trainers={TRAINERS}
+        initial={initial}
+        bylines={[{ id: "b1", name: "Racing TV" }]}
+      />,
+    );
+
+    const select = screen.getByTestId("byline-name-select") as HTMLSelectElement;
+    expect(select.value).toBe("Racing TV");
+
+    fireEvent.click(screen.getByTestId("manage-byline-toggle"));
+    fireEvent.click(screen.getByTestId("manage-byline-remove-b1"));
+    await waitFor(() => expect(api.retireByline).toHaveBeenCalledWith("b1"));
+
+    // Retired for NEW posts, still the value of THIS one — asserted on the
+    // preview subline (the `byline` state readout) as well as the picker,
+    // since a bare `select.value` check cannot tell a live selection from
+    // jsdom's fallback once an <option> disappears.
+    expect(Array.from(select.options).some((o) => o.value === "Racing TV")).toBe(true);
+    expect(select.value).toBe("Racing TV");
+    expect(screen.getByTestId("preview-head-subline").textContent).toBe("Racing TV");
+  });
+
+  // ENG-1290 — the case that separates the shipped guard from the tempting
+  // `!isEdit` one. An EDIT-mode operator who moves the picker OFF the post's
+  // own byline and then retires the row they moved TO has no union-back
+  // either: `bylineOptions` re-appends `initialByline` and nothing else. Under
+  // `!isEdit` no clear would fire and they would land on the same blank-picker
+  // dead end create mode had. Without this test the whole suite stays green
+  // with the wrong guard, so it is the one that pins the design decision.
+  it("ENG-1290: edit mode still clears a retired row that is NOT the post's own", async () => {
+    api.retireByline.mockResolvedValue(undefined);
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    const initial: EditInitial = {
+      id: "post-1290b",
+      status: "published",
+      subject: "stablepass",
+      byline: "Racing TV",
+      trainer: null,
+      mediaType: "photo",
+      mediaUrl: "https://signed.example/b.jpg",
+      title: "",
+      caption: "Old caption",
+      bylineId: "",
+      label: null,
+      scheduledFor: null,
+      horse: null,
+      photos: [{ path: "post-1290b/original", url: "https://signed.example/b.jpg" }],
+    };
+    render(
+      <ComposeScreen
+        horses={HORSES}
+        trainers={TRAINERS}
+        initial={initial}
+        bylines={[
+          { id: "b1", name: "Racing TV" },
+          { id: "b2", name: "Track Media Wrap" },
+        ]}
+      />,
+    );
+
+    const select = screen.getByTestId("byline-name-select") as HTMLSelectElement;
+    fireEvent.change(select, { target: { value: "Track Media Wrap" } });
+    expect(select.value).toBe("Track Media Wrap");
+
+    fireEvent.click(screen.getByTestId("manage-byline-toggle"));
+    fireEvent.click(screen.getByTestId("manage-byline-remove-b2"));
+    await waitFor(() => expect(api.retireByline).toHaveBeenCalledWith("b2"));
+
+    // Snapped back to the post's OWN byline, which the union belt keeps
+    // selectable — not parked on the row that no longer exists, and not
+    // blanked into a state a save would write as a change the operator never
+    // asked for.
+    //
+    // The preview subline is the STATE readout and is what makes this test
+    // bite: `select.value` reads "Racing TV" here even when nothing was
+    // cleared, because the retired <option> is gone and jsdom falls back to
+    // the first one. Asserting only that would leave BOTH the no-clear and
+    // the `!isEdit` variants green.
+    expect(screen.getByTestId("preview-head-subline").textContent).toBe("Racing TV");
+    expect(select.value).toBe("Racing TV");
+    expect(Array.from(select.options).some((o) => o.value === "Track Media Wrap")).toBe(false);
+  });
 });

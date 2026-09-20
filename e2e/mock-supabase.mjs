@@ -692,6 +692,12 @@ const POST_LABEL_FIXTURES = [
   // every builtin and alphabetically among themselves.
   { id: "pl-15", name: "Owner Update", is_builtin: false, sort_order: 0 },
   { id: "pl-16", name: "Float Trip", is_builtin: false, sort_order: 0 },
+  // ENG-1290 — a RETIRED admin-added label, the label-side twin of the
+  // byline fixture `pb-3` ("Old Wrap Show"). It exists so the
+  // `.is("retired_at", null)` filter `page.tsx` puts on the DIRECT
+  // `post_label` read has something to exclude: without it, deleting that
+  // filter passes the whole suite.
+  { id: "pl-17", name: "Old Barn Tour", is_builtin: false, sort_order: 0, retired_at: "2026-06-01T00:00:00Z" },
 ];
 
 // ENG-1268 — `post_byline`, the StablePass subject's attribution vocabulary.
@@ -1492,7 +1498,16 @@ export function startMockSupabase() {
     if (url.pathname === "/rest/v1/post_label") {
       const fold = (n) => n.trim().replace(/\s+/g, " ").toLowerCase();
       if (req.method === "GET") {
-        sendJson(res, 200, POST_LABEL_FIXTURES);
+        // ENG-1290 — honour `retired_at=is.null`, exactly as the post_byline
+        // branch below does. Both readers of this table (`GET
+        // /api/admin/post-labels` and `page.tsx`'s own direct read) always
+        // send it; ignoring it here is what left the retired-label filter
+        // with no automated proof in any layer.
+        const wantsLiveOnly = decodeURIComponent(url.search).includes("retired_at=is.null");
+        const rows = wantsLiveOnly
+          ? POST_LABEL_FIXTURES.filter((l) => l.retired_at == null)
+          : POST_LABEL_FIXTURES;
+        sendJson(res, 200, rows);
         return;
       }
       if (req.method === "POST") {
@@ -1536,10 +1551,10 @@ export function startMockSupabase() {
     // immediately above, for the same reasons: its own branch ahead of the
     // generic reader, because Add-new/retire have to WRITE here.
     //
-    // UNLIKE post_label, the `retired_at=is.null` filter IS honoured (rather
-    // than ignored, "as everywhere in this mock"): both readers of this table
-    // (`GET /api/admin/post-bylines` and `page.tsx`'s own read) always send
-    // it, and a post's own RETIRED byline unioning back into the picker
+    // Since ENG-1290 both this table's GET branch AND post_label's, just
+    // above, honour the `retired_at=is.null` filter: both readers of this
+    // table (`GET /api/admin/post-bylines` and `page.tsx`'s own read) always
+    // send it, and a post's own RETIRED byline unioning back into the picker
     // (ComposeScreen's `bylineOptions`) is exactly the behaviour an e2e for
     // this ticket exists to prove — which requires the retired fixture to be
     // genuinely excluded from the unfiltered picker read first.

@@ -1789,3 +1789,21 @@ an obvious failure. Cost real debugging time on ENG-1267's un-retire-race tests.
 (ENG-1267) does not apply to the picker's first server-rendered paint. Any filter added to one of
 these lookup routes has to be mirrored in the compose loader (A3's surface) or the feature only
 half-ships. Check both readers whenever you change a lookup's visibility rule.
+
+## Filtering retired rows out of a picker BREAKS the edit path — unless the picker unions the post's own value back in
+The other half of the mirroring hazard above. Once `retired_at` rows are excluded from a lookup
+(ENG-1267), the picker's option set no longer contains a retired name — but an EXISTING post can
+still carry exactly that name, legitimately: retiring stamps `post_label.retired_at` / 
+`post_byline.retired_at` and never touches `post`, which stores the NAME. Hand a `<select>` a current
+value with no matching `<option>` and it falls back to index 0: the control reads "No label" while
+state holds the real value, and it cannot be corrected by re-picking, because that is already what
+it displays, so no change event fires.
+The LABEL picker already solves this, and has since ENG-979 — copy it rather than inventing
+something: `app/(dash)/compose/ComposeScreen.tsx:263-273` unions `initialLabel` into `options`
+(deduped, as an ordinary selectable option — NOT a read-only one), and `:296-298` makes `labelPatch`
+absent unless `label !== initialLabel`, so a save that touches only the caption provably writes
+nothing to the column. Two belts, both needed: the union keeps the control honest, the absent-unless-
+changed patch keeps a mis-rendered control from writing.
+The live hazard is the BYLINE picker A3 (ENG-1268) is adding, which has neither belt yet. A byline
+picker built off `GET /api/admin/post-bylines` alone will omit a retired byline the post carries and
+silently blank or rewrite it on save, with no error anywhere.

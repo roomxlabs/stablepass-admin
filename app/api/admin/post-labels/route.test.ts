@@ -125,6 +125,39 @@ describe("GET /api/admin/post-labels — the picker's live list", () => {
     expect(r.status).toBe(400);
     const j = await r.json();
     expect(j.error.code).toBe("query_failed");
+    // The ticket's contract: no Postgres error.message reaches a response body.
+    expect(JSON.stringify(j)).not.toContain("permission denied");
+  });
+});
+
+describe("POST /api/admin/post-labels — Postgres errors stay out of the body", () => {
+  it("does not leak the Postgres message of a failed INSERT into the response", async () => {
+    asAdmin();
+    state.tables.post_label = {
+      select: { rows: [] },
+      mutate: { error: { code: "42501", message: "permission denied for table post_label" } },
+    };
+    const r = await POST(postReq({ name: "Owner Update" }));
+    expect(r.status).toBe(400);
+    const j = await r.json();
+    expect(j.error.code).toBe("insert_failed");
+    expect(JSON.stringify(j)).not.toContain("permission denied");
+  });
+
+  it("does not leak the Postgres message of a failed duplicate-check READ", async () => {
+    // The third site: the existence read that runs BEFORE the insert. Scripting
+    // an error here (rather than rows) stops the route short of the insert
+    // branch, so this is the only case that exercises it.
+    asAdmin();
+    state.tables.post_label = {
+      select: { error: { code: "42501", message: "permission denied for table post_label" } },
+    };
+    const r = await POST(postReq({ name: "Owner Update" }));
+    expect(r.status).toBe(400);
+    const j = await r.json();
+    expect(j.error.code).toBe("query_failed");
+    expect(JSON.stringify(j)).not.toContain("permission denied");
+    expect(state.calls.mutations).toHaveLength(0);
   });
 });
 
@@ -422,10 +455,18 @@ describe("POST /api/admin/post-labels — un-retire on re-add", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Acceptance: add -> list -> retire -> list omits -> re-add restores same id.
+// Acceptance: add -> list -> re-add restores the same id.
+//
+// Deliberately NOT the retire safety net. This file drives GET/POST against a
+// scripted fake that does no filtering, so a "list omits the retired row" step
+// here would only assert what the script was told to return and would stay
+// green with `.is("retired_at", null)` deleted. The retire exclusion is proven
+// where it can be: the filter is asserted on the real call shape in
+// `route-retired.test.ts`, and the retire mutation itself in
+// `app/api/admin/post-labels/[id]/route.test.ts`.
 // ---------------------------------------------------------------------------
-describe("acceptance — add, list, retire, list-omits, re-add restores the same id", () => {
-  it("walks the full lifecycle", async () => {
+describe("acceptance — add, list, re-add restores the same id", () => {
+  it("walks add -> list -> re-add", async () => {
     asAdmin();
 
     // 1. Add.
@@ -442,14 +483,7 @@ describe("acceptance — add, list, retire, list-omits, re-add restores the same
     const listRes = await GET();
     expect((await listRes.json()).data.map((r: { id: string }) => r.id)).toContain("l-1");
 
-    // 3. Retire it (proven directly by app/api/admin/post-labels/[id]/route.test.ts).
-
-    // 4. List omits it — script the already-filtered result.
-    state.tables.post_label = { select: { rows: [] } };
-    const afterRetireRes = await GET();
-    expect((await afterRetireRes.json()).data).toEqual([]);
-
-    // 5. Re-add restores the SAME id.
+    // 3. Re-add a retired row restores the SAME id (no twin is minted).
     const retired = row("Owner Update", { id: "l-1" });
     (retired as { retired_at?: string | null }).retired_at = "2026-09-20T00:00:00.000Z";
     state.tables.post_label = {

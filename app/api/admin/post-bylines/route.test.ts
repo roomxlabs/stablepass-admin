@@ -331,10 +331,18 @@ describe("POST /api/admin/post-bylines — Add-new", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Acceptance: add -> list -> retire -> list omits -> re-add restores same id.
+// Acceptance: add -> list -> re-add restores the same id.
+//
+// Deliberately NOT the retire safety net. This file drives GET/POST against a
+// scripted fake that does no filtering, so a "list omits the retired row" step
+// here would only assert what the script was told to return and would stay
+// green with `.is("retired_at", null)` deleted. The retire exclusion is proven
+// where it can be: the filter is asserted on the real call shape by this file's
+// "reads with .is(retired_at, null) so retired bylines are excluded" case, and
+// the retire mutation itself in `app/api/admin/post-bylines/[id]/route.test.ts`.
 // ---------------------------------------------------------------------------
-describe("acceptance — add, list, retire, list-omits, re-add restores the same id", () => {
-  it("walks the full lifecycle", async () => {
+describe("acceptance — add, list, re-add restores the same id", () => {
+  it("walks add -> list -> re-add", async () => {
     asAdmin();
 
     // 1. Add.
@@ -352,18 +360,7 @@ describe("acceptance — add, list, retire, list-omits, re-add restores the same
     const listRes = await GET();
     expect((await listRes.json()).data.map((r: { id: string }) => r.id)).toContain("b-1");
 
-    // 3. Retire it (via the [id] route logic, simulated at the data layer —
-    // this file only exercises GET/POST; the [id] route's own test proves the
-    // retire call itself).
-    bylines([row("Trackwork Desk", { id: "b-1", retired_at: "2026-09-20T00:00:00.000Z" })]);
-
-    // 4. List omits it — the fake returns whatever the script says the
-    // filtered read would produce, so script it as already-filtered.
-    state.tables.post_byline = { select: { rows: [] } };
-    const afterRetireRes = await GET();
-    expect((await afterRetireRes.json()).data).toEqual([]);
-
-    // 5. Re-add restores the SAME id.
+    // 3. Re-add a retired row restores the SAME id (no twin is minted).
     state.tables.post_byline = {
       select: { rows: [row("Trackwork Desk", { id: "b-1", retired_at: "2026-09-20T00:00:00.000Z" })] },
       mutate: { single: row("Trackwork Desk", { id: "b-1", retired_at: null }) },

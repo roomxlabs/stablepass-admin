@@ -79,7 +79,11 @@ export async function GET() {
   // in the UI, and the failure mode is worse than it sounds: an operator who
   // sees no categories concludes the feature is broken, or picks nothing and
   // ships an unlabelled post — the exact state this epic is removing.
-  if (error) return fail("query_failed", error.message, 400);
+  if (error) {
+    // Never put a Postgres error.message in a response body — log the code only.
+    console.error("post_label query_failed", error.code);
+    return fail("query_failed", "Could not load the labels.", 400);
+  }
 
   return ok(orderLabels((data ?? []) as LabelRow[]));
 }
@@ -139,7 +143,11 @@ export async function POST(req: Request) {
   const { data: existingRows, error: readError } = await sb
     .from("post_label")
     .select(LABEL_LOOKUP_FIELDS);
-  if (readError) return fail("query_failed", readError.message, 400);
+  if (readError) {
+    // Never put a Postgres error.message in a response body — log the code only.
+    console.error("post_label query_failed", readError.code);
+    return fail("query_failed", "Could not load the labels.", 400);
+  }
 
   const target = labelDuplicateKey(name);
   const match = ((existingRows ?? []) as LabelLookupRow[]).find(
@@ -217,7 +225,9 @@ export async function POST(req: Request) {
       }
       return fail("label_taken", "That label already exists.", 409);
     }
-    return fail("insert_failed", error.message, 400);
+    // Never put a Postgres error.message in a response body — log the code only.
+    console.error("post_label insert_failed", error.code);
+    return fail("insert_failed", "Could not create the label.", 400);
   }
 
   return created(data);

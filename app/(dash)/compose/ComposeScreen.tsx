@@ -15,6 +15,7 @@ import {
   discardDraft,
   patchPost,
   publishPost,
+  requestPhotoUploads,
   schedulePost,
   uploadPhotoToStorage,
   uploadVideoToMux,
@@ -22,6 +23,9 @@ import {
 import { ACCEPT_BY_TYPE, isUploadType, TYPE_LABEL, uploadTypeForFile } from "./types";
 import {
   MAX_PHOTOS,
+  appendCapError,
+  appendPhotos,
+  nextPhotoSlot,
   mediaSetPayload,
   mirrorPath,
   movePhoto,
@@ -36,6 +40,7 @@ import type {
   MeasureState,
   MediaDimensions,
   MediaType,
+  PhotoUploadTarget,
   PosterTimePatch,
   TrainerOption,
 } from "./types";
@@ -98,6 +103,37 @@ function revokePhotoUrls(list: readonly ComposePhoto[]): void {
   if (typeof URL === "undefined" || !URL.revokeObjectURL) return;
   for (const p of list) if (p.previewUrl?.startsWith("blob:")) URL.revokeObjectURL(p.previewUrl);
 }
+
+/**
+ * ENG-1266 — the strip's starting state when Compose opens on an existing post.
+ *
+ * Every entry is `done` by definition: these objects are already in Storage,
+ * which is what makes them removable, reorderable and saveable straight away.
+ * `previewUrl` is the loader's short-lived SIGNED url (never a blob), so
+ * `revokePhotoUrls` leaves it alone — it only revokes `blob:` urls.
+ *
+ * `file` / `token` / `bucket` are deliberately absent: there is nothing to
+ * re-upload for a photo that is already there, and a retry button on it would
+ * have no target to PUT to.
+ *
+ * Non-photo posts (and create mode) start empty.
+ */
+function initialPhotos(initial: EditInitial | undefined): ComposePhoto[] {
+  if (!initial || initial.mediaType !== "photo") return [];
+  return (initial.photos ?? []).map((photo, i) => ({
+    id: `existing-${i}-${photo.path}`,
+    path: photo.path,
+    previewUrl: photo.url,
+    // The object path's last segment is the only name an existing photo has —
+    // the operator's original filename was never stored.
+    name: photo.path.split("/").pop() ?? photo.path,
+    size: 0,
+    state: "done",
+  }));
+}
+
+/** ENG-1266 — the one sentence for "you removed them all". */
+const PHOTO_REQUIRED = "A photo post needs at least one photo.";
 
 function humanSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -174,6 +210,14 @@ export default function ComposeScreen({
   labels?: string[];
 }) {
   const isEdit = !!initial;
+  /**
+   * ENG-1266 — the post's `post_media` read failed, so we do NOT know its photo
+   * set. Everything photo-editing is switched off for this session: no strip,
+   * no Add-more, and — the important one — `media` is never sent, because a
+   * save built on a set we could not read would delete the rows we never saw.
+   * See page.tsx's loader.
+   */
+  const photosUnavailable = !!initial?.photosUnavailable;
   const [search, setSearch] = useState(initial?.horse.name ?? "");
   const [showResults, setShowResults] = useState(false);
   const [horse, setHorse] = useState<HorseOption | null>(initial?.horse ?? null);
@@ -265,7 +309,7 @@ export default function ComposeScreen({
    * single-photo post behaves exactly as it did before this ticket. This list is
    * the source of truth for ORDER and for what gets persisted.
    */
-  const [photos, setPhotos] = useState<ComposePhoto[]>([]);
+  const [photos, setPhotos] = useState<ComposePhoto[]>(() => initialPhotos(initial));
   /** Cap breach and per-set upload problems — shown above the strip. */
   const [photoError, setPhotoError] = useState<string | null>(null);
   /**
@@ -331,6 +375,23 @@ export default function ComposeScreen({
    * discards its own result if it has moved.
    */
   const pickGeneration = useRef(0);
+  /**
+   * ENG-1266 — what the NEXT file-dialog result means.
+   *
+   * One hidden <input type=file> serves three buttons ("Select file",
+   * "Replace all", "Add more photos"), and the dialog result arrives with no
+   * memory of which one opened it. A ref rather than state on purpose: it is
+   * read inside the change handler in the same tick the click set it, and a
+   * state update would not have landed yet.
+   */
+  const pickMode = useRef<"replace" | "append">("replace");
+
+  /**
+   * The post that appended slots are minted against: the draft in create mode,
+   * the post being edited otherwise. Null before the first pick has created a
+   * draft — there is nothing to append to yet.
+   */
+  const uploadPostId = draft?.id ?? initial?.id ?? null;
 
   const trainerName = useMemo(
     () => trainers.find((t) => t.id === bylineId)?.name ?? null,
@@ -359,7 +420,13 @@ export default function ComposeScreen({
    * A photo post outside edit mode always goes through the multi-photo set
    * path — for readiness AND for what gets persisted.
    */
-  const usesPhotoSet = postType === "photo" && !isEdit;
+  // ENG-1266 — edit mode now goes through the SAME set path as create. It used
+  // to be `&& !isEdit` because editing rendered media read-only, which is half
+  // the bug this ticket exists to fix: an operator could not fix a wrong photo
+  // on a post that was already created. The consequence of widening it is that
+  // an edit save now carries `media`, so the strip is what `post_media` and the
+  // `post.media_url` mirror are rewritten from.
+  const usesPhotoSet = postType === "photo" && !photosUnavailable;
   /** The photos that actually landed in Storage, in display order. */
   const readyPhotos = uploadedPhotos(photos);
   /**
@@ -398,8 +465,10 @@ export default function ComposeScreen({
    * `post.media_url`.
    */
   const mediaPatch: { media?: string[] } =
-    // `usesPhotoSet`, not `postType === "photo"`: edit mode has no media
-    // editing, so it must never send a set either. Note this gate is currently
+    // `usesPhotoSet`, not `postType === "photo"`: since ENG-1266 edit mode DOES
+    // send a set, but a session whose `post_media` read failed must not — that
+    // set would delete the rows it never saw (`photosUnavailable`). The length
+    // check below is
     // belt-and-braces — `resetMedia()` runs before `setPostType`, so `photos`
     // is already empty for any other type — which is exactly why it is worth
     // stating rather than relying on the ordering of two calls elsewhere.
@@ -434,6 +503,16 @@ export default function ComposeScreen({
    * the only caller of POST /api/admin/posts.
    */
   const textReady = !!horse && !!bylineId && caption.trim().length > 0;
+  /**
+   * ENG-1266 — an edit save that would leave a photo post with NO photos.
+   *
+   * `readyPhotos`, not `photos`: a tile still uploading or failed has no object
+   * behind it, so saving with only those would write a `post_media` row (and a
+   * mirror) pointing at nothing. Save is disabled rather than the removal being
+   * refused, because removing the last photo on the way to replacing it is a
+   * legitimate thing to be halfway through.
+   */
+  const editPhotoEmpty = isEdit && usesPhotoSet && readyPhotos.length === 0;
   const canAct = isText ? textReady : draftReady;
   const busy = action.kind === "working";
   // Both halves of the pick are required before the schedule action is allowed.
@@ -766,6 +845,127 @@ export default function ComposeScreen({
   }
 
   /**
+   * ENG-1266 — "Add more photos": a pick that APPENDS to the set.
+   *
+   * The bug this closes: `onPickPhotos` REPLACES, so an operator adding photos
+   * one at a time kept throwing the previous one away and ended with a
+   * one-photo post (Justin, 19 Sep). Appending needed its own path, and its own
+   * upload targets — `createDraft` minted every slot up front from
+   * `photoCount`, so there was no way to get another one after the fact.
+   *
+   * THE GENERATION COUNTER IS READ, NEVER BUMPED. Bumping it is what
+   * `resetMedia` / `chooseType` / a replacing pick do to say "everything in
+   * flight is void"; an append voids nothing — the tiles already uploading are
+   * still wanted, and discarding them is the exact behaviour this ticket is
+   * removing. We capture the current value so that a genuine reset DURING an
+   * append still stops our own late writes.
+   */
+  async function onAppendPhotos(picked: File[]) {
+    if (picked.length === 0) return;
+    const postId = uploadPostId;
+    if (!postId) {
+      setPhotoError("Add the first photo before adding more.");
+      return;
+    }
+
+    // The cap, before anything is minted or uploaded — the whole strip counts,
+    // including tiles still uploading, because each already holds a slot.
+    const capError = appendCapError(photos.length, picked.length);
+    if (capError) {
+      setPhotoError(capError);
+      if (fileInputRef.current) fileInputRef.current.value = "";
+      return;
+    }
+
+    // Same MIME rule as a replacing pick: never a silent reclassification.
+    const wrong = picked.find((f) => uploadTypeForFile(f) !== "photo");
+    if (wrong) {
+      const kind = uploadTypeForFile(wrong);
+      setTypeError(
+        `You chose Photo, but “${wrong.name}” is ${kind ? `a ${TYPE_LABEL[kind]}` : wrong.type || "an unrecognised file"}. ` +
+          `Pick photo files only, or change the post type above.`,
+      );
+      if (fileInputRef.current) fileInputRef.current.value = "";
+      return;
+    }
+    setTypeError(null);
+    setPhotoError(null);
+
+    const generation = pickGeneration.current;
+    const stale = () => pickGeneration.current !== generation;
+
+    let targets: PhotoUploadTarget[];
+    try {
+      targets = await requestPhotoUploads(postId, picked.length, {
+        // What the server cannot see: slots this strip already holds whose
+        // bytes have not landed (still uploading, or failed and awaiting a
+        // retry). Without this the route would re-issue one of them and the
+        // new upload would overwrite a photo the operator is still waiting on.
+        // `- 1` because `nextPhotoSlot` returns the NEXT free ordinal and the
+        // route wants the highest HELD one.
+        afterSlot: Math.max(0, nextPhotoSlot(photos.map((p) => p.path)) - 1),
+        // What the operator will keep. The server would otherwise count the
+        // orphaned objects of photos they removed (left in Storage by design)
+        // and refuse a legitimate append.
+        keeping: photos.length,
+      });
+    } catch (e) {
+      if (stale()) return;
+      setPhotoError((e as Error).message);
+      return;
+    }
+    if (stale()) return;
+    // Partial sets are refused outright: uploading 2 of 3 would leave the
+    // operator looking at a strip that quietly lost a file they picked.
+    if (targets.length < picked.length) {
+      setPhotoError("Storage did not return enough upload slots. Nothing was uploaded.");
+      return;
+    }
+
+    const added: ComposePhoto[] = picked.map((f, i) => ({
+      // Keyed by the slot PATH, which the route guarantees is new — an index
+      // key would collide with the tiles already in the strip.
+      id: `${postId}-${targets[i].path}`,
+      path: targets[i].path,
+      previewUrl: objectUrl(f),
+      name: f.name,
+      size: f.size,
+      state: "uploading",
+      file: f,
+      bucket: targets[i].bucket,
+      token: targets[i].token,
+    }));
+    setPhotos((prev) => appendPhotos(prev, added));
+
+    // Sequential, matching the create path: ten parallel PUTs from one browser
+    // is what makes the slowest time out. Each tile settles on its own, so one
+    // failure leaves the rest of the append — and the whole existing set —
+    // untouched.
+    for (let i = 0; i < picked.length; i++) {
+      const target = targets[i];
+      try {
+        await uploadPhotoToStorage({
+          bucket: target.bucket,
+          path: target.path,
+          token: target.token,
+          file: picked[i],
+        });
+        if (stale()) return;
+        setPhotos((prev) =>
+          prev.map((p) => (p.path === target.path ? { ...p, state: "done" } : p)),
+        );
+      } catch (e) {
+        if (stale()) return;
+        setPhotos((prev) =>
+          prev.map((p) =>
+            p.path === target.path ? { ...p, state: "error", error: (e as Error).message } : p,
+          ),
+        );
+      }
+    }
+  }
+
+  /**
    * Reorder the strip. The move itself is `movePhoto`; what matters HERE is
    * that nothing else has to happen — the Storage paths do not move, so there
    * is nothing to re-upload, and `post.media_url` is recomputed from the new
@@ -962,12 +1162,21 @@ export default function ComposeScreen({
   // post — horse and media are fixed here (the PATCH contract covers neither).
   async function saveEdit() {
     if (!initial) return;
+    // ENG-1266 — never save a photo post down to nothing. The button is already
+    // disabled for this, but the guard stays: `mediaPatch` omits the key when
+    // the set is empty, so without it a save would silently keep the old photos
+    // while the operator watched an empty strip and believed they were gone.
+    if (editPhotoEmpty) {
+      setAction({ kind: "error", message: PHOTO_REQUIRED });
+      return;
+    }
     setAction({ kind: "working" });
     try {
       await patchPost(initial.id, {
         body: caption,
         sourceTrainerId: bylineId,
         ...labelPatch,
+        ...mediaPatch,
       });
       setAction({ kind: "ok", message: "Changes saved." });
       router.push("/posts");
@@ -981,12 +1190,17 @@ export default function ComposeScreen({
   // publish endpoint (it accepts draft + scheduled).
   async function publishDraftNow() {
     if (!initial) return;
+    if (editPhotoEmpty) {
+      setAction({ kind: "error", message: PHOTO_REQUIRED });
+      return;
+    }
     setAction({ kind: "working" });
     try {
       await patchPost(initial.id, {
         body: caption,
         sourceTrainerId: bylineId,
         ...labelPatch,
+        ...mediaPatch,
       });
       await publishPost(initial.id);
       setAction({ kind: "ok", message: "Post published." });
@@ -1004,6 +1218,10 @@ export default function ComposeScreen({
   // inline via `scheduleErrorMessage`.
   async function scheduleEdit() {
     if (!initial) return;
+    if (editPhotoEmpty) {
+      setAction({ kind: "error", message: PHOTO_REQUIRED });
+      return;
+    }
     const when = combineLocal(scheduleDate, scheduleTime);
     if (!when) {
       setAction({ kind: "error", message: "Pick a date and time to schedule." });
@@ -1019,6 +1237,7 @@ export default function ComposeScreen({
         body: caption,
         sourceTrainerId: bylineId,
         ...labelPatch,
+        ...mediaPatch,
       });
       await schedulePost(initial.id, when.toISOString());
       setAction({
@@ -1127,7 +1346,7 @@ export default function ComposeScreen({
                 type="button"
                 className={`btn ${initial?.status === "draft" ? styles.btnLight : "btn-primary"} ${styles.btnSm}`}
                 onClick={saveEdit}
-                disabled={busy}
+                disabled={busy || editPhotoEmpty}
               >
                 {busy ? "Saving…" : "Save changes"}
               </button>
@@ -1137,7 +1356,7 @@ export default function ComposeScreen({
                   className={`btn btn-primary ${styles.btnSm}`}
                   data-testid="publish-draft"
                   onClick={publishDraftNow}
-                  disabled={busy}
+                  disabled={busy || editPhotoEmpty}
                 >
                   {busy ? "Working…" : "Publish now"}
                 </button>
@@ -1351,16 +1570,29 @@ export default function ComposeScreen({
                 // ENG-748 — multi-select for PHOTO only, and not in edit mode
                 // (media is read-only there). Video is a single Mux asset and
                 // voice a single Storage object, so neither may offer it.
-                multiple={postType === "photo" && !isEdit}
+                // ENG-748 multi-select for PHOTO, and since ENG-1266 in EDIT
+                // mode too — media is no longer read-only there. Video is a
+                // single Mux asset and voice a single Storage object, so
+                // neither may offer it.
+                multiple={usesPhotoSet}
                 data-testid="media-input"
                 onChange={(e) => {
                   const picked = Array.from(e.target.files ?? []);
+                  // Read and immediately disarm: the next dialog is a replace
+                  // unless a button says otherwise, so a stray pick can never
+                  // inherit the last one's intent.
+                  const mode = pickMode.current;
+                  pickMode.current = "replace";
                   if (picked.length === 0) return;
                   // A photo post always goes through the set path, even for one
                   // file — one code path, so the single-photo case cannot drift
-                  // away from the multi one.
-                  if (postType === "photo" && !isEdit) void onPickPhotos(picked);
-                  else void onPickFile(picked[0]);
+                  // away from the multi one. In edit mode there is no replacing
+                  // pick at all: the post's photos are the set, and the only
+                  // way to add to them is to append.
+                  if (usesPhotoSet) {
+                    if (mode === "append" || isEdit) void onAppendPhotos(picked);
+                    else void onPickPhotos(picked);
+                  } else if (!isEdit) void onPickFile(picked[0]);
                 }}
               />
 
@@ -1369,9 +1601,12 @@ export default function ComposeScreen({
                   <div
                     className={`${styles.preview} ${postType === "voice" ? styles.previewAudio : ""}`}
                   >
-                    {postType === "photo" && mediaUrl ? (
+                    {postType === "photo" && (coverPhoto?.previewUrl ?? mediaUrl) ? (
+                      // ENG-1266 — the COVER of the (now editable) set, which
+                      // is not necessarily the photo this post opened with:
+                      // reordering moves it, and `post.media_url` follows.
                       // eslint-disable-next-line @next/next/no-img-element -- signed existing media
-                      <img src={mediaUrl} alt="" />
+                      <img src={coverPhoto?.previewUrl ?? mediaUrl!} alt="" />
                     ) : postType === "video" && mediaUrl ? (
                       // Signed Mux HLS URL hydrated by the edit page loader.
                       <HlsVideo src={mediaUrl} controls playsInline preload="metadata" />
@@ -1387,7 +1622,16 @@ export default function ComposeScreen({
                   </div>
                   <div className={styles.uploadTools}>
                     <span className={styles.uploadMeta}>
-                      Existing {postType} · media can’t be changed when editing.
+                      {usesPhotoSet
+                        ? // ENG-1266 — they CAN be changed now, so the old
+                          // sentence would be a straight lie. The strip below
+                          // carries the controls.
+                          `${photos.length} ${photos.length === 1 ? "photo" : "photos"} \u00b7 add, remove or reorder them below.`
+                        : photosUnavailable
+                          ? // Honest about WHY, so the operator retries instead
+                            // of concluding the photos are gone.
+                            "This post\u2019s photos couldn\u2019t be loaded, so they can\u2019t be edited right now. Reload to try again \u2014 your other changes still save."
+                          : `Existing ${postType} \u00b7 media can\u2019t be changed when editing.`}
                     </span>
                   </div>
                 </div>
@@ -1432,7 +1676,20 @@ export default function ComposeScreen({
                       ) : null}
                     </span>
                     <span className={styles.uploadActions}>
-                      <button type="button" className={styles.uploadBtn} onClick={() => fileInputRef.current?.click()}>
+                      <button
+                        type="button"
+                        className={styles.uploadBtn}
+                        onClick={() => {
+                          // ENG-1266 — ARM the intent here rather than relying on
+                          // the change handler having disarmed the last one. A
+                          // CANCELLED dialog fires no `change` event, so an
+                          // "Add more photos" click the operator then escaped
+                          // would leave the ref on "append" and turn this
+                          // Replace into an append.
+                          pickMode.current = "replace";
+                          fileInputRef.current?.click();
+                        }}
+                      >
                         {/* A photo pick REPLACES the whole set, so say so once
                             there is more than one to lose. */}
                         {photos.length > 1 ? "Replace all" : "Replace"}
@@ -1461,7 +1718,13 @@ export default function ComposeScreen({
                       type="button"
                       className={`btn ${styles.btnLight} ${styles.btnSm}`}
                       style={{ marginTop: 12 }}
-                      onClick={() => fileInputRef.current?.click()}
+                      onClick={() => {
+                        // Armed here for the same reason as Replace above: a
+                        // cancelled Add-more dialog must not make the first pick
+                        // an append.
+                        pickMode.current = "replace";
+                        fileInputRef.current?.click();
+                      }}
                       disabled={!horse}
                     >
                       Select file
@@ -1494,7 +1757,7 @@ export default function ComposeScreen({
                   single-photo operator never sees either.
 
                   Up/down buttons, not drag — resolved open question, v1. */}
-              {!isEdit && postType === "photo" && photos.length > 0 ? (
+              {usesPhotoSet && (isEdit || photos.length > 0) ? (
                 <>
                   <div className={styles.photoStrip} data-testid="photo-strip">
                     {photos.map((p, i) => (
@@ -1569,7 +1832,10 @@ export default function ComposeScreen({
                           {p.state === "uploading" ? (
                             "uploading…"
                           ) : p.state === "done" ? (
-                            humanSize(p.size)
+                            // A photo loaded from the post has no File behind
+                            // it, so there is no size to print — "saved" is the
+                            // honest word for "this one is already in Storage".
+                            p.size > 0 ? humanSize(p.size) : "saved"
                           ) : (
                             <button
                               type="button"
@@ -1584,13 +1850,60 @@ export default function ComposeScreen({
                       </div>
                     ))}
                   </div>
-                  <div className={styles.help} data-testid="photo-strip-help">
-                    {readyPhotos.length === photos.length
-                      ? `${photos.length} of ${MAX_PHOTOS} photos.`
-                      : `${readyPhotos.length} of ${photos.length} uploaded (max ${MAX_PHOTOS}).`}{" "}
-                    The first uploaded photo is the cover — it is what the feed and the member card
-                    show.
+                  {/* ENG-1266 — the control the whole ticket is about. Styled
+                      with the screen's existing small light button (the same
+                      `.btnLight .btnSm` pairing as Step 3's "Select file"),
+                      because the 03-compose mockup predates multi-photo and
+                      draws no Add-more affordance — client decision: follow the
+                      existing design rather than invent one.
+
+                      Sits BELOW the strip, so the strip stays a pure row of
+                      tiles in display order and the button does not read as an
+                      eleventh position. */}
+                  <div className={styles.photoStripActions}>
+                    <button
+                      type="button"
+                      className={`btn ${styles.btnLight} ${styles.btnSm}`}
+                      data-testid="photo-add-more"
+                      // Deliberately NOT disabled while an earlier batch is
+                      // still uploading: appending mid-upload is allowed and
+                      // the earlier tiles are unaffected.
+                      disabled={!uploadPostId || photos.length >= MAX_PHOTOS}
+                      onClick={() => {
+                        pickMode.current = "append";
+                        if (fileInputRef.current) {
+                          // Clear first: picking the SAME file again fires no
+                          // change event while the input still holds it.
+                          fileInputRef.current.value = "";
+                          fileInputRef.current.click();
+                        }
+                      }}
+                    >
+                      Add more photos
+                    </button>
+                    <span className={styles.help} data-testid="photo-strip-help">
+                      {photos.length >= MAX_PHOTOS
+                        ? `That is the maximum of ${MAX_PHOTOS} photos.`
+                        : readyPhotos.length === photos.length
+                          ? `${photos.length} of ${MAX_PHOTOS} photos.`
+                          : `${readyPhotos.length} of ${photos.length} uploaded (max ${MAX_PHOTOS}).`}{" "}
+                      The first uploaded photo is the cover — it is what the feed and the member card
+                      show.
+                    </span>
                   </div>
+                  {/* Removing the last photo is a legitimate step on the way to
+                      replacing it, so it is allowed — but the post cannot be
+                      SAVED in that state, and the sentence says so where the
+                      operator just made it true. */}
+                  {editPhotoEmpty ? (
+                    <div
+                      className={`${styles.help} ${styles.uploadError}`}
+                      data-testid="photo-none"
+                      role="alert"
+                    >
+                      {PHOTO_REQUIRED}
+                    </div>
+                  ) : null}
                 </>
               ) : null}
 
@@ -1914,7 +2227,9 @@ export default function ComposeScreen({
                   data-testid="primary-action"
                   onClick={isEdit ? saveEdit : () => runAction(mode)}
                   disabled={
-                    isEdit ? busy : !canAct || busy || (mode === "schedule" && !canSchedule)
+                    isEdit
+                      ? busy || editPhotoEmpty
+                      : !canAct || busy || (mode === "schedule" && !canSchedule)
                   }
                 >
                   {busy ? (isEdit ? "Saving…" : "Working…") : isEdit ? "Save changes" : primaryLabel}
@@ -2001,7 +2316,7 @@ export default function ComposeScreen({
                   data-testid="schedule-action"
                   style={{ marginTop: 12 }}
                   onClick={scheduleEdit}
-                  disabled={!canSchedule || busy}
+                  disabled={!canSchedule || busy || editPhotoEmpty}
                 >
                   {busy
                     ? "Saving…"

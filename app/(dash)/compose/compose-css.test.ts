@@ -298,3 +298,23 @@ describe("upload progress is legible on the white footer (ENG-1047)", () => {
     expect(rule(".photoStateBad")).toMatch(/color:\s*var\(--red\)/);
   });
 });
+
+// ENG-1266. "Add more photos" sits below the strip as a row (the button plus
+// its help sentence) rather than as an eleventh tile — a CSS fact Vitest
+// cannot see (CSS modules are stubbed), so without this the whole layout
+// could collapse into a block stack with the suite still green.
+describe("the Add-more-photos row (ENG-1266)", () => {
+  it("declares .photoStripActions exactly once, as a flex row with a gap", () => {
+    const row = rule(".photoStripActions");
+    expect(row).toMatch(/display:\s*flex/);
+    expect(row).toMatch(/gap:\s*\d+px/);
+  });
+
+  it("the Add-more button reuses the screen's existing light button, not a bespoke colour", () => {
+    // .btnLight itself must still be declared exactly once (`rule()` enforces
+    // that) and still be the screen's plain light button — proving the button
+    // introduced no second, near-duplicate rule of its own.
+    const btnLight = rule(".btnLight");
+    expect(btnLight).toMatch(/background:\s*var\(--white\)/);
+  });
+});

@@ -6,7 +6,7 @@
 // the browser then PUTs the bytes straight to Mux (video) or Supabase Storage
 // (photo). Every BFF call is admin-gated server-side by `requireAdmin()`.
 import { supabaseBrowser } from "@/lib/supabase/client";
-import type { CreateDraftResponse, MediaType } from "./types";
+import type { CreateDraftResponse, MediaType, PhotoUploadTarget } from "./types";
 
 async function readData<T>(res: Response): Promise<T> {
   const json = (await res.json().catch(() => null)) as
@@ -95,6 +95,45 @@ export async function patchPost(
     body: JSON.stringify(patch),
   });
   await readData(res);
+}
+
+/**
+ * ENG-1266 — mint `count` MORE direct-upload targets on an existing photo post.
+ * `POST /api/admin/posts/:id/photo-uploads` → 200.
+ *
+ * This is what makes "Add more photos" possible at all: `createDraft` mints
+ * every target up front from `photoCount`, so appending to a draft (or to a
+ * post being edited) has to ask for new slots separately.
+ *
+ * The client sends a COUNT and never a path — the route derives every slot
+ * path from the post id, so nothing here can aim an upload anywhere else.
+ */
+export async function requestPhotoUploads(
+  postId: string,
+  count: number,
+  /**
+   * What the browser knows that the server cannot see yet — both plain
+   * INTEGERS, never paths, so the guardrail ("the route derives every path from
+   * the post id") is untouched.
+   *
+   * `afterSlot` — the highest upload ordinal the strip is currently holding,
+   * INCLUDING slots whose bytes are still uploading or failed. The server floors
+   * the answer at its own derivation, so a wrong or missing hint can only skip
+   * ordinals, never re-issue one.
+   *
+   * `keeping` — how many photos the operator will actually keep. The server
+   * would otherwise count ORPHANED objects (a removed photo's bytes are left in
+   * place by design), which makes replacing a photo on a full post impossible.
+   */
+  holding?: { afterSlot: number; keeping: number },
+): Promise<PhotoUploadTarget[]> {
+  const res = await fetch(`/api/admin/posts/${postId}/photo-uploads`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ count, ...(holding ?? {}) }),
+  });
+  const data = await readData<{ uploads?: PhotoUploadTarget[] }>(res);
+  return data?.uploads ?? [];
 }
 
 export async function publishPost(id: string): Promise<void> {

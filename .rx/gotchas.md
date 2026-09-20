@@ -1698,3 +1698,46 @@ loaded:42,total:100})` on `xhr.upload` for URLs containing `mock-upload` and nev
 **photo** — `page.route("**/storage/v1/**", () => new Promise(() => {}))` so the Storage PUT never
 settles (pct stays 0, tiles stay `uploading…`). Screenshot `page.locator('[class*="progressTrack"]').locator("..")`
 for the zone + footer.
+
+## The mockup path moved AGAIN — `06-stage1-design/` is gone, `dev-handover/` is back (ENG-1266, 20 Sep 2026)
+Two entries above (and `.rx/mockups.md`) insist that `dev-handover/` "has never existed anywhere in
+the workspace" and that the real root is `06-stage1-design/mockups/web/admin/screens/`. **Both of
+those statements are now false.** Verified from this worktree on 20 Sep 2026:
+
+```sh
+ls "$(git rev-parse --git-common-dir)/../../../06-stage1-design/mockups/web/admin/screens/"
+# ls: cannot access '.git/../../../06-stage1-design/...': No such file or directory
+ls /home/reno-fathoni/Documents/rx/stable/dev-handover/StablePass-mockups/mockups/web/admin/screens/
+# 01-signin.html 02-dashboard.html 03-compose.html 04-posts.html 05-horses.html …
+```
+
+So the live design source is **`<workspace>/dev-handover/StablePass-mockups/mockups/web/`** —
+`admin/screens/*.html` plus the shared `style.css`. The workspace root is the parent of the repo
+(`/home/reno-fathoni/Documents/rx/stable`), NOT three levels above `.git`.
+
+**Do not "correct" this back.** The lesson the older entries got right is the one that keeps being
+ignored: *run the `ls` and paste its output before editing any mockup path in this repo.* The path
+has moved twice; the only reliable procedure is to look. `.rx/mockups.md` still names the dead
+`06-stage1-design` root and is the next thing to fix (it was outside ENG-1266's surface).
+
+## `post_media` is written at SAVE, not at upload — so "next free photo slot" cannot come from it alone (ENG-1266)
+Symptom: an "Add more photos" append on an unpublished draft mints `<postId>/photo-1` a second time
+and PUTs over a photo the operator already uploaded.
+Cause: Compose uploads bytes as soon as a photo is picked but only writes `post_media` rows in the
+save PATCH, so mid-compose the table is EMPTY for a draft that already owns `original`, `photo-1`,
+`photo-2`. Deriving "the next slot" from `post_media` therefore answers `1`.
+Do this: derive it from the UNION of `post_media.media_url`, `post.media_url` and the Storage object
+listing for the post's prefix (`sb.storage.from("post-media").list(postId)`) — see
+`nextPhotoSlot()` in `lib/posts/media.ts` and `app/api/admin/posts/[id]/photo-uploads/route.ts`.
+Slots are monotonic on purpose: a removed photo's ordinal is never handed out again, so a gap
+(`original, photo-1, photo-4` → next `photo-5`) is correct, not a bug to compact.
+
+## `lib/testing/supabase-fake.ts` had no `storage.list()` (ENG-1266)
+Any route that lists a bucket prefix is untestable until one is added. It is additive — add the
+method and a `state.storage.list` slot rather than reaching for a bespoke mock in the route test.
+
+## Widening `EditInitial` breaks ~11 existing ComposeScreen tests at once
+`EditInitial` is built inline in a dozen fixtures across `ComposeScreen.test.tsx`. Adding a REQUIRED
+field is a compile error in every one of them, and (ENG-1266) a field that also gates the Save
+button turns them red for a reason unrelated to what they test. Budget for the churn, and give photo
+fixtures a non-empty `photos` array rather than `[]`.

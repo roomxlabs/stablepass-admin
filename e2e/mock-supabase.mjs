@@ -2,6 +2,7 @@
 // Covers just enough of the GoTrue + PostgREST surface for the auth-shell
 // flow: password sign-in, getUser(), and the app_user.is_admin lookup.
 import http from "node:http";
+import zlib from "node:zlib";
 
 // getAuthenticatorAssuranceLevel() decodes session.access_token with auth-js's
 // decodeJWT(), which REQUIRES 3 base64url parts. A placeholder string throws
@@ -675,7 +676,22 @@ const POST_LABEL_FIXTURES = [
 const COMPOSE_EDIT_POSTS = [
   { id: "ce1", type: "text", status: "draft", title: "Barrier trial complete", body: "Pleased with the way he finished off.", label: "Trial", source_trainer_id: "t1", scheduled_for: null, media_url: null, mux_playback_id: null, horse: HORSE_EMBED },
   { id: "ce2", type: "text", status: "draft", title: "Quiet day in the box", body: "Nothing much to report today.", label: null, source_trainer_id: "t1", scheduled_for: null, media_url: null, mux_playback_id: null, horse: HORSE_EMBED },
+  // ENG-1266 — a photo post with an already-saved multi-photo set, for the
+  // edit-mode strip load + reorder + save e2e. `media_url` mirrors row 0 of
+  // POST_MEDIA_FIXTURES.ce3, exactly as the real writer keeps them in step.
+  { id: "ce3", type: "photo", status: "draft", title: null, body: "Two from this morning's session.", label: null, source_trainer_id: "t1", scheduled_for: null, media_url: "ce3/original", mux_playback_id: null, horse: HORSE_EMBED },
 ];
+
+// ENG-1266 — `post_media` rows behind the compose EDIT loader's multi-photo
+// read (page.tsx: `.from("post_media").select("media_url,sort_order").eq(
+// "post_id", id).order("sort_order")`). Keyed by post id; shaped exactly as
+// the column names the loader selects.
+const POST_MEDIA_FIXTURES = {
+  ce3: [
+    { media_url: "ce3/original", sort_order: 0 },
+    { media_url: "ce3/photo-1", sort_order: 1 },
+  ],
+};
 
 // Active horses for the quiet-horse check. h1 posted this week (loud); h2/h3
 // stale; h5 never posted — so three quiet horses, one retired (matches mockup).
@@ -693,6 +709,79 @@ const DASH_HORSES = [
 // and every photo preview in the evidence would have been empty — which would
 // have made a crop screenshot prove nothing at all.
 const STORAGE = new Map();
+
+// ENG-1266 — a minimal solid-colour PNG encoder, so the compose EDIT screenshots
+// show real thumbnails instead of broken-image icons.
+//
+// The edit strip loads photos that were uploaded in some EARLIER session, so
+// nothing in the test run ever PUTs their bytes and `STORAGE` has no entry to
+// serve — every tile renders as a broken <img>, and a screenshot of two broken
+// icons cannot show that a reorder moved anything. Seeding the fixture objects
+// is the same reasoning the comment on STORAGE above already gives for keeping
+// uploaded bytes at all.
+//
+// Hand-rolled rather than a fixture file on disk: the repo deliberately ships no
+// binary image fixtures (compose.spec.ts synthesises its webm, and the
+// multi-photo spec draws its own canvases), and no real client imagery may end
+// up in a PR screenshot. Node's zlib is all a valid PNG needs.
+const CRC_TABLE = Array.from({ length: 256 }, (_, n) => {
+  let c = n;
+  for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+  return c >>> 0;
+});
+const crc32 = (buf) => {
+  let c = 0xffffffff;
+  for (const byte of buf) c = CRC_TABLE[(c ^ byte) & 0xff] ^ (c >>> 8);
+  return (c ^ 0xffffffff) >>> 0;
+};
+const pngChunk = (type, data) => {
+  const len = Buffer.alloc(4);
+  len.writeUInt32BE(data.length);
+  const body = Buffer.concat([Buffer.from(type, "ascii"), data]);
+  const crc = Buffer.alloc(4);
+  crc.writeUInt32BE(crc32(body));
+  return Buffer.concat([len, body, crc]);
+};
+/** A solid `[r,g,b]` PNG, with a contrasting band down its left edge. */
+function solidPng(width, height, [r, g, b], [br, bg, bb]) {
+  const raw = Buffer.alloc(height * (1 + width * 3));
+  for (let y = 0; y < height; y++) {
+    const row = y * (1 + width * 3);
+    raw[row] = 0; // filter: none
+    for (let x = 0; x < width; x++) {
+      const band = x < Math.floor(width / 6);
+      const i = row + 1 + x * 3;
+      raw[i] = band ? br : r;
+      raw[i + 1] = band ? bg : g;
+      raw[i + 2] = band ? bb : b;
+    }
+  }
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(width, 0);
+  ihdr.writeUInt32BE(height, 4);
+  ihdr[8] = 8; // bit depth
+  ihdr[9] = 2; // colour type: truecolour RGB
+  return Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    pngChunk("IHDR", ihdr),
+    pngChunk("IDAT", zlib.deflateSync(raw)),
+    pngChunk("IEND", Buffer.alloc(0)),
+  ]);
+}
+
+// The two objects POST_MEDIA_FIXTURES.ce3 points at. Distinct colours on
+// purpose: the reorder screenshot has to make it obvious which tile moved, and
+// two identical squares would prove nothing. Keyed exactly as the signed-object
+// GET below looks them up (`<bucket>/<path>`).
+for (const [path, colour] of [
+  ["post-media/ce3/original", [0x28, 0x5d, 0x50]],
+  ["post-media/ce3/photo-1", [0x8c, 0x5a, 0x2b]],
+]) {
+  STORAGE.set(path, {
+    body: solidPng(600, 375, colour, [0xfa, 0xf7, 0xf2]),
+    contentType: "image/png",
+  });
+}
 
 async function drainBinary(req) {
   return new Promise((resolve) => {
@@ -1292,6 +1381,29 @@ export function startMockSupabase() {
       // postgrest-js version — honour the id filter regardless (see the horse
       // branch above for the same caveat).
       sendJson(res, 200, accept.includes("pgrst.object") ? match : match ? [match] : []);
+      return;
+    }
+
+    // ENG-1266 — the compose EDIT loader's photo-set read, for a `type:
+    // "photo"` post: `.from("post_media").select("media_url,sort_order").eq(
+    // "post_id", id).order("sort_order")`.
+    //
+    // EXACT pathname match, not `startsWith` — `post_media` is Postgres's own
+    // table, distinct from `post`, but the string itself starts with
+    // "/rest/v1/post" and would otherwise fall into (or shadow) one of the
+    // `/rest/v1/post` branches above/below keyed on `startsWith`.
+    //
+    // Without this branch `post_media` is not a key of `DB`, so the read falls
+    // through every specific branch and the generic dispatcher's
+    // `hasOwnProperty` check, landing on the catch-all `sendJson(res, 200, {})`
+    // at the bottom — an OBJECT, not an array. page.tsx's loader then calls
+    // `.map()` on it and the edit page 500s.
+    if (req.method === "GET" && url.pathname === "/rest/v1/post_media") {
+      const postIdParam = url.searchParams.get("post_id");
+      const wanted = postIdParam && postIdParam.startsWith("eq.") ? postIdParam.slice(3) : null;
+      const rows = (wanted && POST_MEDIA_FIXTURES[wanted]) || [];
+      const sorted = [...rows].sort((a, b) => a.sort_order - b.sort_order);
+      sendJson(res, 200, sorted);
       return;
     }
     // Posts library (T7 / ENG-177). The list read selects `status` — which the

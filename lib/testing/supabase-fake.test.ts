@@ -196,4 +196,32 @@ describe("supabase-fake query builder records its filters", () => {
   it("blankState() starts with empty modifiers", () => {
     expect(blankState().calls.modifiers).toEqual([]);
   });
+
+  // ENG-1266 — `storage.from(bucket).list(prefix)`, additive alongside the
+  // existing signed-URL helpers.
+  describe("storage.list()", () => {
+    it("defaults to an empty listing and records the call on calls.storageList", async () => {
+      const state = blankState();
+      const { data, error } = await makeFakeClient(state).storage.from("post-media").list("p1");
+      expect(data).toEqual([]);
+      expect(error).toBeNull();
+      expect(state.calls.storageList).toEqual([{ bucket: "post-media", path: "p1" }]);
+    });
+
+    it("is scriptable via state.storage.list, same idiom as state.storage.signed", async () => {
+      const state = blankState();
+      state.storage.list = { data: [{ name: "original" }, { name: "photo-1" }], error: null };
+      const { data } = await makeFakeClient(state).storage.from("post-media").list("p1");
+      expect(data).toEqual([{ name: "original" }, { name: "photo-1" }]);
+    });
+
+    it("keeps list() calls OUT of calls.storage, so exact-order assertions on signed uploads are unaffected", async () => {
+      const state = blankState();
+      const sb = makeFakeClient(state);
+      await sb.storage.from("post-media").list("p1");
+      await sb.storage.from("post-media").createSignedUploadUrl("p1/photo-1");
+      expect(state.calls.storage).toEqual([{ bucket: "post-media", path: "p1/photo-1" }]);
+      expect(state.calls.storageList).toEqual([{ bucket: "post-media", path: "p1" }]);
+    });
+  });
 });

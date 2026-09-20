@@ -3,6 +3,8 @@
 // post.{type,status,title,body,like_count,published_at,scheduled_for} plus the
 // embedded horse + source_trainer joins. No owner PII is ever selected.
 
+import type { SubjectLabel } from "@/lib/posts/subject";
+
 export type PostStatus = "draft" | "scheduled" | "published" | "unpublished";
 export type StatusFilter = "all" | PostStatus;
 
@@ -16,7 +18,17 @@ export type TrainerEmbed = { name: string | null };
 /** A row as returned by the list read (mirrors T5's GET select, + horse photo). */
 export type PostRow = {
   id: string;
-  horse_id: string;
+  /**
+   * WHO the post is posted as (ENG-1269 / B1's column). Typed as the loose
+   * `string | null` a raw row really is — `subjectLabel` normalises it — so an
+   * older build reading a newer value renders a horse post rather than
+   * crashing on a union it does not know.
+   */
+  subject: string | null;
+  /** Nullable since B1: a trainer or StablePass post has no horse. */
+  horse_id: string | null;
+  /** FK to `post_byline(name)` — set on StablePass posts only. */
+  byline: string | null;
   type: string;
   status: PostStatus;
   title: string | null;
@@ -47,8 +59,13 @@ export type PostView = {
   id: string;
   title: string;
   excerpt: string;
-  horseName: string;
-  trainerName: string | null;
+  /**
+   * The subject cell, pre-formatted by the ONE formatter
+   * (`lib/posts/subject.ts#subjectLabel`). Replaces the old
+   * `horseName`/`trainerName` pair: those two fields could only ever describe
+   * a horse post, and every surface re-joined them slightly differently.
+   */
+  subject: SubjectLabel;
   thumbUrl: string | null;
   /** Raw post.type — used to gate video-only poster edit (ENG-825). */
   type: string;

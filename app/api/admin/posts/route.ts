@@ -128,7 +128,10 @@ export async function GET(req: Request) {
   const text = u.searchParams.get("q")?.replace(/[(),]/g, " ").trim();
   if (text) {
     const like = `%${text}%`;
-    const ors = [`title.ilike.${like}`, `body.ilike.${like}`];
+    // ENG-1269 — `byline` joins title/body as a post-level text column. A
+    // StablePass post has no horse and no trainer to match on, so without this
+    // the ONLY way to find one by name is to page through the whole library.
+    const ors = [`title.ilike.${like}`, `body.ilike.${like}`, `byline.ilike.${like}`];
     // Extend the search across joined horse / trainer names by resolving the
     // matching ids first, then folding them into the post-level OR.
     const [{ data: horses }, { data: trainers }] = await Promise.all([

@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { describe, it, expect } from "vitest";
 import {
   parsePostSort,
@@ -249,8 +251,75 @@ describe("POSTS_PAGE_SELECT — every column mapPostRow reads", () => {
     expect(POSTS_API_SELECT).toContain(HORSE_EMBED);
   });
 
+  // `subject` + `byline` are LOAD-BEARING the same way `label` is (ENG-1269):
+  // `mapPostRow` names every row through `subjectLabel(...)`, so dropping
+  // either from either select string silently relabels every trainer/
+  // StablePass row as a horse post with a GREEN suite — format.test.ts tests
+  // the mapper against a hand-written row object, never the projection the
+  // page/API actually send.
+  it.each(["subject", "byline"])("selects %s in both POSTS_PAGE_SELECT and POSTS_API_SELECT", (column) => {
+    expect(pageColumns).toContain(column);
+    expect(topLevelColumns(POSTS_API_SELECT)).toContain(column);
+  });
+
   it("selects no owner column (guardrail §4: no owner PII)", () => {
     expect(POSTS_PAGE_SELECT).not.toMatch(/owner/i);
     expect(POSTS_API_SELECT).not.toMatch(/owner/i);
+  });
+});
+
+/**
+ * The free-text search clause is written out TWICE — once in
+ * `app/(dash)/posts/page.tsx#qOrClause` (the screen's own read) and once in
+ * `app/api/admin/posts/route.ts` GET (the BFF list endpoint) — and the two
+ * have already drifted once: `page.tsx` searches `label`, the API route does
+ * not. ENG-1269 added `byline`, which is the ONLY name a StablePass post has
+ * (it carries no horse and no trainer for the id-resolution lookups to match),
+ * so dropping it from either copy makes those posts unfindable by name while
+ * the search box in `PostsLibrary.tsx` still advertises the filter.
+ *
+ * Asserted against the SOURCE TEXT on purpose: `qOrClause` is a module-private
+ * helper inside a Server Component and the API route's clause is built inline,
+ * so neither is reachable from a unit test — and a mocked list read would pass
+ * either way, because the e2e mock ignores `or=` filters entirely. This is the
+ * same read-the-file technique `app/(dash)/skeleton-geometry.test.ts` uses.
+ */
+describe("the posts free-text search clause (ENG-1269)", () => {
+  const read = (...seg: string[]) => readFileSync(join(process.cwd(), ...seg), "utf8");
+  const screen = read("app", "(dash)", "posts", "page.tsx");
+  const api = read("app", "api", "admin", "posts", "route.ts");
+
+  it("searches byline in the posts SCREEN's own read", () => {
+    expect(screen).toContain("`byline.ilike.${like}`");
+  });
+
+  it("searches byline in the LIST ENDPOINT's read", () => {
+    expect(api).toContain("`byline.ilike.${like}`");
+  });
+
+  it("still searches title and body in both", () => {
+    for (const src of [screen, api]) {
+      expect(src).toContain("`title.ilike.${like}`");
+      expect(src).toContain("`body.ilike.${like}`");
+    }
+  });
+});
+
+/**
+ * The publish route's own projection, pinned for the same reason the two list
+ * selects are. The supabase fake in `publish/route.test.ts` serves
+ * `state.tables.post.select.single` regardless of the select string, so
+ * dropping `subject` there would make `subjectKey` read `undefined`, degrade
+ * every trainer post to the horse arm, and dispatch `horseId: null` — with the
+ * whole suite green, because the fixture supplies the fields the fake returns.
+ */
+describe("the publish route's post projection (ENG-1269)", () => {
+  const src = readFileSync(
+    join(process.cwd(), "app", "api", "admin", "posts", "[id]", "publish", "route.ts"),
+    "utf8",
+  );
+
+  it.each(["subject", "horse_id", "source_trainer_id"])("selects %s", (column) => {
+    expect(src).toMatch(new RegExp(`\\.select\\("[^"]*\\b${column}\\b`));
   });
 });

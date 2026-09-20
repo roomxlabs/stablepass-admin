@@ -44,7 +44,22 @@ async function qOrClause(sb: SupabaseClient, q: string): Promise<string | null> 
   // nothing — which undercuts the whole point of the ticket (Mel could not
   // tell her posts apart). `title` stays in the clause so pre-ENG-979 posts,
   // which are named by their title, remain findable by it.
-  const ors = [`title.ilike.${like}`, `label.ilike.${like}`, `body.ilike.${like}`];
+  // ENG-1269 — `byline` joins them for the same reason `label` did: a
+  // StablePass post has NO horse and NO trainer, so the two id-resolution
+  // lookups below can never match it and its byline is the only name it has.
+  // Without this the screen's search box advertises a byline filter (see the
+  // `.search-mini` placeholder in PostsLibrary) that it does not perform.
+  //
+  // This clause is duplicated in `app/api/admin/posts/route.ts` GET and the
+  // two have drifted before (that copy still does not search `label`). Keep
+  // them in step, or hoist the clause the way `POSTS_PAGE_SELECT` /
+  // `POSTS_API_SELECT` were hoisted.
+  const ors = [
+    `title.ilike.${like}`,
+    `label.ilike.${like}`,
+    `body.ilike.${like}`,
+    `byline.ilike.${like}`,
+  ];
   const [{ data: horses }, { data: trainers }] = await Promise.all([
     sb
       .from("horse")

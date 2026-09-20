@@ -1855,3 +1855,29 @@ surface widening, not scope creep, but say so on the ticket.
 (#285D50 exactly, verified at the corner pixel), so the avatar fills the circle with it rather than
 tinting a background behind it — padding or a green background would double the green. Also `chmod
 644`: the mockups tree is mode 700 and `cp` carries that across.
+
+## Squash-merging a parent PR with `--delete-branch` CLOSES its stacked child, it does not retarget it
+Landing a stack with `gh pr merge <parent> --squash --delete-branch` looks clean and silently kills
+the child PR stacked on top of it. GitHub's auto-retarget (base → the parent's base) does NOT fire
+for a squash merge that deletes the head ref: the child's base ref simply disappears, GitHub closes
+the child, and a closed PR whose base ref is missing can be neither reopened nor retargeted — the
+API rejects both until the ref exists again. The child's commits are not lost, but the PR (its
+review threads, its `Closes ENG-NNN` link, its CI history) is only recoverable while the head SHA is
+still retrievable: restore the base ref, reopen, retarget, then `git rebase --onto` the squashed tip.
+Once the SHA is unreachable there is nothing to reopen.
+**Do this instead, in this order:** retarget every stacked child PR to the integration branch FIRST
+(`gh pr edit <child> --base feature/<epic>-v1`), THEN merge the parent — or merge the parent WITHOUT
+`--delete-branch` and clean the branch up after the children are safely rebased. The integrate loop
+hit this on the post-subject-v1 stack; it is a property of `--delete-branch`, not of any one epic.
+
+## The Posts library's subject sort is an INNER join, so it lists horse posts only
+`lib/posts/sort.ts#postsSelect` rewrites `horse:horse_id(` to `horse:horse_id!inner(` when
+`?sort=horse`, because PostgREST will not order parent rows by an embedded column without it. Once
+B1 made `post.horse_id` nullable (ENG-1269) that inner join also became a FILTER: click the
+"Posted as" header and every trainer / StablePass post silently drops out of the list. Nothing
+errors and no count disagrees loudly, so it reads as "my post is gone".
+Every other view — the default `created_at desc` and the status / published / engagement sorts —
+lists all three subjects. A4 left the inner join in place and documented it at the call site rather
+than widening its surface into the query shape; if a ticket ever needs the subject sort to cover all
+three, it needs a different ordering strategy (a post-level sort key), not a `!inner` removal, or
+the sort silently orders nothing.

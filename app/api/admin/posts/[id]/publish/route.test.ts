@@ -290,3 +290,141 @@ describe("POST /api/admin/posts/:id/publish", () => {
     expect(invokeCalls).toHaveLength(0);
   });
 });
+
+// ---------------------------------------------------------------------------
+// ENG-1269 — WHICH subject key (if any) a publish dispatches on.
+//
+// `subjectKey()` is what decides this, driven by `post.subject` rather than by
+// which FK happens to be populated. One case per subject, asserted on the
+// exact recorded invoke body so a `horseId`/`trainerId` key never leaks onto
+// the wrong subject's payload — the `NewPostDispatch` union in lib/push/
+// dispatch.ts makes that a compile error for a hand-built payload, but this
+// route builds the key itself, so nothing there catches a mistake here.
+// ---------------------------------------------------------------------------
+describe("POST /api/admin/posts/:id/publish — subject-keyed dispatch (ENG-1269)", () => {
+  it("horse post → invokes push-dispatch once with horseId, no trainerId key", async () => {
+    asAdmin();
+    process.env.PUSH_DISPATCH_SECRET = "test-secret";
+    state.tables.post = {
+      select: {
+        single: {
+          id: "p1",
+          subject: "horse",
+          horse_id: "h1",
+          source_trainer_id: null,
+          status: "draft",
+          title: "T",
+          body: "B",
+          published_at: null,
+        },
+      },
+      mutate: { single: { id: "p1", status: "published", published_at: "2026-07-11T00:00:00.000Z" } },
+    };
+    state.functions = { "push-dispatch": { data: { notificationsSent: 3 } } };
+
+    const r = await POST(new Request("http://t"), ctx("p1"));
+    expect(r.status).toBe(200);
+    expect(invokeCalls).toHaveLength(1);
+    expect(invokeCalls[0].name).toBe("push-dispatch");
+    expect(invokeCalls[0].body).toEqual({
+      type: "new_post",
+      horseId: "h1",
+      targetType: "post",
+      targetId: "p1",
+      title: "T",
+      body: "B",
+    });
+    expect(invokeCalls[0].body).not.toHaveProperty("trainerId");
+  });
+
+  it("trainer post → invokes push-dispatch once with trainerId, no horseId key", async () => {
+    asAdmin();
+    process.env.PUSH_DISPATCH_SECRET = "test-secret";
+    state.tables.post = {
+      select: {
+        single: {
+          id: "p2",
+          subject: "trainer",
+          horse_id: null,
+          source_trainer_id: "t1",
+          status: "draft",
+          title: "T",
+          body: "B",
+          published_at: null,
+        },
+      },
+      mutate: { single: { id: "p2", status: "published", published_at: "2026-07-11T00:00:00.000Z" } },
+    };
+    state.functions = { "push-dispatch": { data: { notificationsSent: 2 } } };
+
+    const r = await POST(new Request("http://t"), ctx("p2"));
+    expect(r.status).toBe(200);
+    expect(invokeCalls).toHaveLength(1);
+    expect(invokeCalls[0].name).toBe("push-dispatch");
+    expect(invokeCalls[0].body).toEqual({
+      type: "new_post",
+      trainerId: "t1",
+      targetType: "post",
+      targetId: "p2",
+      title: "T",
+      body: "B",
+    });
+    expect(invokeCalls[0].body).not.toHaveProperty("horseId");
+  });
+
+  it("stablepass post → invokes push-dispatch ZERO times, still 200 with notificationsSent: 0", async () => {
+    asAdmin();
+    process.env.PUSH_DISPATCH_SECRET = "test-secret";
+    state.tables.post = {
+      select: {
+        single: {
+          id: "p3",
+          subject: "stablepass",
+          horse_id: null,
+          source_trainer_id: null,
+          status: "draft",
+          title: "T",
+          body: "B",
+          published_at: null,
+        },
+      },
+      mutate: { single: { id: "p3", status: "published", published_at: "2026-07-11T00:00:00.000Z" } },
+    };
+
+    const r = await POST(new Request("http://t"), ctx("p3"));
+    expect(r.status).toBe(200);
+    const j = await r.json();
+    expect(j.data.status).toBe("published");
+    expect(j.data.notificationsSent).toBe(0);
+    expect(invokeCalls).toHaveLength(0);
+  });
+
+  it("a horse post with no horse_id logs and skips dispatch rather than sending horseId: null", async () => {
+    asAdmin();
+    process.env.PUSH_DISPATCH_SECRET = "test-secret";
+    state.tables.post = {
+      select: {
+        single: {
+          id: "p4",
+          subject: "horse",
+          horse_id: null,
+          source_trainer_id: null,
+          status: "draft",
+          title: "T",
+          body: "B",
+          published_at: null,
+        },
+      },
+      mutate: { single: { id: "p4", status: "published", published_at: "2026-07-11T00:00:00.000Z" } },
+    };
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const r = await POST(new Request("http://t"), ctx("p4"));
+    expect(r.status).toBe(200);
+    const j = await r.json();
+    expect(j.data.notificationsSent).toBe(0);
+    expect(invokeCalls).toHaveLength(0);
+    expect(spy).toHaveBeenCalledWith("publish: horse post has no horse_id, skipping push", "p4");
+    spy.mockRestore();
+  });
+});

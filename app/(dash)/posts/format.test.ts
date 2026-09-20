@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { mapPostRow } from "./format";
+import { mapPostRow, POST_SORT_COLUMNS } from "./format";
 import type { PostRow } from "./types";
 
 // ENG-979 — what names a row in the Posts library.
@@ -15,7 +15,9 @@ import type { PostRow } from "./types";
 function row(over: Partial<PostRow> = {}): PostRow {
   return {
     id: "p1",
+    subject: "horse",
     horse_id: "h1",
+    byline: null,
     type: "photo",
     status: "published",
     title: null,
@@ -85,10 +87,82 @@ describe("mapPostRow — the row's name", () => {
   it("leaves the rest of the mapping alone", () => {
     // A guard against the label change quietly disturbing the row model.
     const v = mapPostRow(row({ label: "Trackwork" }));
-    expect(v.horseName).toBe("Mahogany");
-    expect(v.trainerName).toBe("Chris Waller");
+    expect(v.subject.name).toBe("Mahogany");
+    expect(v.subject.detail).toBe("Chris Waller");
     expect(v.excerpt).toBe("Morning at Caulfield.");
     expect(v.likeCount).toBe(12);
     expect(v.editHref).toBe("/compose?id=p1");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ENG-1269 — `mapPostRow`'s `subject`, one case per subject.
+//
+// `lib/posts/subject.test.ts` pins `subjectLabel` itself; these pin that
+// `mapPostRow` feeds it the right fields, INCLUDING this screen's own
+// precedence for the horse name (`display_name` before `racing_name` — the
+// opposite order from the preview route and analytics, both of which prefer
+// `racing_name`) and its "Unassigned" fallback.
+// ---------------------------------------------------------------------------
+describe("mapPostRow — subject (ENG-1269)", () => {
+  it("horse: names the horse by display_name over racing_name, with the trainer as detail", () => {
+    const v = mapPostRow(
+      row({
+        subject: "horse",
+        horse: { display_name: "Mahogany", racing_name: "MAHOGANY (AUS)", photo_url: null },
+        trainer: { name: "Chris Waller" },
+      }),
+    );
+    expect(v.subject).toEqual({
+      subject: "horse",
+      name: "Mahogany",
+      tag: null,
+      detail: "Chris Waller",
+      text: "Mahogany",
+    });
+  });
+
+  it("horse: falls back to racing_name when display_name is empty, then to 'Unassigned'", () => {
+    const withRacingName = mapPostRow(
+      row({ horse: { display_name: null, racing_name: "MAHOGANY (AUS)", photo_url: null } }),
+    );
+    expect(withRacingName.subject.name).toBe("MAHOGANY (AUS)");
+
+    const withNeither = mapPostRow(row({ horse: null, trainer: null }));
+    expect(withNeither.subject.name).toBe("Unassigned");
+    expect(withNeither.subject.detail).toBeNull();
+  });
+
+  it("trainer: names the trainer and tags it, with no horse to name", () => {
+    const v = mapPostRow(
+      row({ subject: "trainer", horse_id: null, horse: null, trainer: { name: "Chris Waller" } }),
+    );
+    expect(v.subject).toEqual({
+      subject: "trainer",
+      name: "Chris Waller",
+      tag: "Trainer",
+      detail: null,
+      text: "Chris Waller · Trainer",
+    });
+  });
+
+  it("stablepass: names the brand handle, with the byline as detail", () => {
+    const v = mapPostRow(
+      row({ subject: "stablepass", horse_id: null, horse: null, trainer: null, byline: "Racing TV" }),
+    );
+    expect(v.subject).toEqual({
+      subject: "stablepass",
+      name: "stablepass",
+      tag: null,
+      detail: "Racing TV",
+      text: "stablepass · Racing TV",
+    });
+  });
+});
+
+describe("POST_SORT_COLUMNS", () => {
+  it("labels the horse column 'Posted as' — it now names a horse, a trainer or StablePass", () => {
+    const horseColumn = POST_SORT_COLUMNS.find((c) => c.column === "horse");
+    expect(horseColumn?.label).toBe("Posted as");
   });
 });

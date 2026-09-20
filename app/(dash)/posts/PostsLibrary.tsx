@@ -128,8 +128,12 @@ export default function PostsLibrary({
             <SearchField
               action="/posts"
               className="search-mini"
-              placeholder="Filter by horse or trainer…"
-              ariaLabel="Filter posts by horse or trainer"
+              // ENG-1269 — `q` searches the byline too, so the placeholder
+              // names it. A search box that silently matches more than it
+              // claims is how an operator concludes a StablePass post is
+              // missing from the library.
+              placeholder="Horse, trainer or byline…"
+              ariaLabel="Filter posts by horse, trainer or byline"
               defaultValue={q}
               hidden={hiddenParams}
             />
@@ -153,9 +157,11 @@ export default function PostsLibrary({
                 <thead>
                   <tr>
                     <th style={{ width: "44%" }}>Post</th>
-                    {/* Horse / trainer is sortable; Type is not — a five-value
+                    {/* "Posted as" is sortable; Type is not — a five-value
                         enum is what the chips are for. Order below matches the
-                        cell order in <PostRow>. */}
+                        cell order in <PostRow>. NOTE (ENG-1269): the subject
+                        sort inner-joins the horse, so it lists horse posts
+                        only — see `postsSelect` in lib/posts/sort.ts. */}
                     <SortableTh {...columnProps("horse")} className="nowrap" />
                     <th className="nowrap">Type</th>
                     <SortableTh {...columnProps("status")} className="nowrap" />

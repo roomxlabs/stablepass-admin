@@ -1,6 +1,39 @@
 import { requireAdmin } from "@/lib/auth/admin";
 import { ok, fail } from "@/lib/api/envelope";
 import { dispatchNewPost } from "@/lib/push/dispatch";
+import { isSubject } from "@/lib/posts/subject";
+
+/**
+ * The push-dispatch subject key for a post, or null when it must not dispatch.
+ *
+ * Returns the single-key object rather than a `{subject, id}` pair so the
+ * `NewPostDispatch` union does the checking: spreading this into the payload
+ * means a `horse` post can only ever produce `horseId` and a `trainer` post
+ * only `trainerId`, and there is no expression here that could produce both.
+ *
+ * Null for `stablepass` (never dispatched), and null for a subject whose own
+ * id column came back empty — a horse post with no `horse_id` is a row B1's
+ * `post_subject_shape` CHECK should have made impossible, so the honest
+ * outcome is "send nothing and log", not "send `horseId: null`" and have
+ * push-dispatch 422 it into a silent 0.
+ */
+function subjectKey(post: {
+  id: string;
+  subject: string | null;
+  horse_id: string | null;
+  source_trainer_id: string | null;
+}): { horseId: string } | { trainerId: string } | null {
+  const subject = isSubject(post.subject) ? post.subject : "horse";
+  if (subject === "stablepass") return null;
+  if (subject === "trainer") {
+    if (post.source_trainer_id) return { trainerId: post.source_trainer_id };
+    console.error("publish: trainer post has no source_trainer_id, skipping push", post.id);
+    return null;
+  }
+  if (post.horse_id) return { horseId: post.horse_id };
+  console.error("publish: horse post has no horse_id, skipping push", post.id);
+  return null;
+}
 
 // POST /api/admin/posts/:id/publish — flip a draft/scheduled post to published,
 // stamp published_at, then fan out a `new_post` push via the be push-dispatch
@@ -14,12 +47,18 @@ export async function POST(_req: Request, { params }: { params: Promise<{ id: st
 
   const { data: post } = (await sb
     .from("post")
-    .select("id,horse_id,status,title,body,published_at")
+    .select("id,subject,horse_id,source_trainer_id,status,title,body,published_at")
     .eq("id", id)
     .maybeSingle()) as {
     data: {
       id: string;
-      horse_id: string;
+      // ENG-1269 — nullable since B1. `subject` says WHICH of the two id
+      // columns is the one to key the push on; never infer it from which FK
+      // happens to be populated (a trainer post legitimately carries neither a
+      // horse nor, for `stablepass`, either one).
+      subject: string | null;
+      horse_id: string | null;
+      source_trainer_id: string | null;
       status: string;
       title: string | null;
       body: string | null;
@@ -68,14 +107,30 @@ export async function POST(_req: Request, { params }: { params: Promise<{ id: st
     // `dispatchNewPost` swallows to 0).
     const title = post.title?.trim() || "New post";
     const body = post.body?.trim() || post.title?.trim() || "A new update is available.";
-    notificationsSent = await dispatchNewPost(sb, {
-      type: "new_post",
-      horseId: post.horse_id,
-      targetType: "post",
-      targetId: post.id,
-      title,
-      body,
-    });
+
+    // ENG-1269 / epic decision 5 — WHICH subject key (if any) this push carries.
+    //
+    // Driven by `post.subject`, not by which FK is populated: a trainer post
+    // may legitimately carry no horse, and B1's default ('horse') is what
+    // every pre-epic row reads back as, so the horse arm below is byte-for-byte
+    // the payload this route has always sent.
+    //
+    // `stablepass` returns null and we DO NOT INVOKE AT ALL — not "invoke with
+    // no key". push-dispatch 422s on a keyless new_post, and `dispatchNewPost`
+    // swallows a 422 to 0, so a keyless invoke would look identical from here
+    // while still burning a function call and logging an error on every
+    // StablePass publish. The acceptance criterion is "invokes nothing".
+    const key = subjectKey(post);
+    if (key) {
+      notificationsSent = await dispatchNewPost(sb, {
+        ...key,
+        type: "new_post",
+        targetType: "post",
+        targetId: post.id,
+        title,
+        body,
+      });
+    }
   }
 
   return ok({ id: updated.id, status: updated.status, publishedAt: updated.published_at, notificationsSent });

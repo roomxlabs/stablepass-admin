@@ -168,3 +168,34 @@ export function normaliseMediaSet(
   if (new Set(paths).size !== paths.length) return null;
   return paths.map((mediaUrl, sortOrder) => ({ sortOrder, mediaUrl }));
 }
+
+/**
+ * ENG-1266 — the next free upload SLOT for a post that already has photos.
+ *
+ * Takes every object path known to belong to the post (its `post_media` rows,
+ * its `post.media_url` mirror, and — crucially — the objects already sitting
+ * under the post's Storage prefix) and returns `1 + the highest photo-<n>`
+ * ordinal among them. Slot 0 is `<postId>/original` and is never re-minted, so
+ * the floor is 1.
+ *
+ * MONOTONIC BY CONSTRUCTION, and that is the whole point: a removed photo's
+ * slot is never handed out again. If it were, the operator's next upload would
+ * PUT over an object a still-live `post_media` row might point at — and a
+ * signed upload URL minted earlier for that same path could overwrite a photo
+ * the operator has since put in its place. A gap (`original, photo-1, photo-4`)
+ * is therefore normal and is left alone: the answer is `5`, not `2`.
+ *
+ * Only the trailing `photo-<n>` segment counts, anchored to the end of the path
+ * so a post id that happens to contain "photo-9" cannot inflate the ordinal.
+ */
+export function nextPhotoSlot(paths: readonly (string | null | undefined)[]): number {
+  let highest = 0;
+  for (const path of paths) {
+    if (!path) continue;
+    const m = /(?:^|\/)photo-(\d+)$/.exec(path);
+    if (!m) continue;
+    const n = Number(m[1]);
+    if (Number.isInteger(n) && n > highest) highest = n;
+  }
+  return highest + 1;
+}

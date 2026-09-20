@@ -1698,3 +1698,74 @@ loaded:42,total:100})` on `xhr.upload` for URLs containing `mock-upload` and nev
 **photo** — `page.route("**/storage/v1/**", () => new Promise(() => {}))` so the Storage PUT never
 settles (pct stays 0, tiles stay `uploading…`). Screenshot `page.locator('[class*="progressTrack"]').locator("..")`
 for the zone + footer.
+
+## The mockup path moved AGAIN — `06-stage1-design/` is gone, `dev-handover/` is back (ENG-1266, 20 Sep 2026)
+Two entries above (and `.rx/mockups.md`) insist that `dev-handover/` "has never existed anywhere in
+the workspace" and that the real root is `06-stage1-design/mockups/web/admin/screens/`. **Both of
+those statements are now false.** Verified from this worktree on 20 Sep 2026:
+
+```sh
+ls "$(git rev-parse --git-common-dir)/../../../06-stage1-design/mockups/web/admin/screens/"
+# ls: cannot access '.git/../../../06-stage1-design/...': No such file or directory
+ls /home/reno-fathoni/Documents/rx/stable/dev-handover/StablePass-mockups/mockups/web/admin/screens/
+# 01-signin.html 02-dashboard.html 03-compose.html 04-posts.html 05-horses.html …
+```
+
+So the live design source is **`<workspace>/dev-handover/StablePass-mockups/mockups/web/`** —
+`admin/screens/*.html` plus the shared `style.css`. The workspace root is the parent of the repo
+(`/home/reno-fathoni/Documents/rx/stable`), NOT three levels above `.git`.
+
+**Do not "correct" this back.** The lesson the older entries got right is the one that keeps being
+ignored: *run the `ls` and paste its output before editing any mockup path in this repo.* The path
+has moved twice; the only reliable procedure is to look. `.rx/mockups.md` still names the dead
+`06-stage1-design` root and is the next thing to fix (it was outside ENG-1266's surface).
+
+## `post_media` is written at SAVE, not at upload — so "next free photo slot" cannot come from it alone (ENG-1266)
+Symptom: an "Add more photos" append on an unpublished draft mints `<postId>/photo-1` a second time
+and PUTs over a photo the operator already uploaded.
+Cause: Compose uploads bytes as soon as a photo is picked but only writes `post_media` rows in the
+save PATCH, so mid-compose the table is EMPTY for a draft that already owns `original`, `photo-1`,
+`photo-2`. Deriving "the next slot" from `post_media` therefore answers `1`.
+Do this: derive it from the UNION of `post_media.media_url`, `post.media_url` and the Storage object
+listing for the post's prefix (`sb.storage.from("post-media").list(postId)`) — see
+`nextPhotoSlot()` in `lib/posts/media.ts` and `app/api/admin/posts/[id]/photo-uploads/route.ts`.
+Slots are monotonic on purpose: a removed photo's ordinal is never handed out again, so a gap
+(`original, photo-1, photo-4` → next `photo-5`) is correct, not a bug to compact.
+
+## `lib/testing/supabase-fake.ts` had no `storage.list()` (ENG-1266)
+Any route that lists a bucket prefix is untestable until one is added. It is additive — add the
+method and a `state.storage.list` slot rather than reaching for a bespoke mock in the route test.
+
+## Widening `EditInitial` breaks ~11 existing ComposeScreen tests at once
+`EditInitial` is built inline in a dozen fixtures across `ComposeScreen.test.tsx`. Adding a REQUIRED
+field is a compile error in every one of them, and (ENG-1266) a field that also gates the Save
+button turns them red for a reason unrelated to what they test. Budget for the churn, and give photo
+fixtures a non-empty `photos` array rather than `[]`.
+
+## A removed tile does not release its upload slot (ENG-1266)
+Symptom: remove a photo while it is still uploading, add another, and the post ends up showing the
+file you discarded instead of the one you picked.
+Cause: `dropPhoto` only edits React state — the Storage PUT is never aborted. So a client hint
+derived from the SURVIVING tiles (`nextPhotoSlot(photos.map(p => p.path)) - 1`) falls back to a slot
+whose bytes are still in flight, and the route cannot floor it back: its own derivation reads
+`post_media` + the mirror + the Storage listing, and an in-flight object is in none of those yet.
+The append is minted onto the live slot and the abandoned PUT lands on top of it afterwards.
+Do this: keep a HIGH-WATER MARK ref (`highestSlotEverHeld` in `ComposeScreen.tsx`), bumped on every
+mint and lowered only where the POST itself changes (`resetMedia`, a replacing pick) — never by a
+remove. Send that as `afterSlot`.
+
+## An edit-mode save must be gated on uploads settling (ENG-1266)
+Symptom: "Changes saved." while a photo is still uploading — and the photo is gone, along with the
+`post_media` rows behind it.
+Cause: `mediaSetPayload()` is the DONE tiles only, and `PATCH /posts/:id` deletes every row above the
+set it is given. Create mode has always gated on `photosSettled`; edit mode's actions were only
+gated on `busy || editPhotoEmpty`, so a mid-upload save shipped a SHORTER set and the route trimmed
+to it. Whenever you add an action that sends `media`, gate it on `editPhotoUnsettled` too — a
+partial set is not a partial save here, it is a delete.
+
+## Supabase Storage `list()` defaults to 100 objects, sorted LEXICOGRAPHICALLY (ENG-1266)
+`photo-1, photo-10, photo-100, …, photo-2`. Removed photos' objects are never cleaned up (epic
+decision 5), so a long-lived post's prefix can exceed 100 between its real set and its orphans —
+past which the listing truncates and any slot floor derived from it can REGRESS onto live bytes.
+Pass an explicit `{ limit: 1000 }`; sizing it to `MAX_PHOTOS` would be wrong, because the listing
+counts every orphan ever left behind, not just the persisted set.

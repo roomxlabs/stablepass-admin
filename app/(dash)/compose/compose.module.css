@@ -1199,3 +1199,24 @@
   font-size: 13px;
   color: var(--red);
 }
+
+/* ENG-1266 — the row under the photo strip: "Add more photos" plus the count.
+   No new visual vocabulary: the button itself is the screen's existing
+   `.btnLight`/`.btnSm` pair (the same one Step 3's "Select file" uses), so this
+   rule only has to place it. The 03-compose mockup predates multi-photo and
+   draws no Add-more control, so there is no reference frame to match — client
+   decision was to follow the existing design rather than invent one. */
+.photoStripActions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-top: 10px;
+}
+/* The count sentence sits beside the button rather than under it, so it stops
+   being a block and stops claiming the row's full width. */
+.photoStripActions .help {
+  margin-top: 0;
+  flex: 1;
+  min-width: 180px;
+}

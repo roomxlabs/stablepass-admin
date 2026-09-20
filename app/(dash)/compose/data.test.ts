@@ -3,12 +3,15 @@
 // these tests the regression (`racesToday: true`) sails through the suite.
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  loadPostPhotos,
   loadRacingHorseIds,
   one,
   racingHorseIds,
   toHorseOptions,
   toTrainerOptions,
   type HorseRow,
+  type PostMediaClient,
+  type PostMediaRow,
   type RaceQueryClient,
   type RaceTodayRow,
 } from "./data";
@@ -195,5 +198,160 @@ describe("loadRacingHorseIds", () => {
     const got = await loadRacingHorseIds(client, "2026-08-18");
     expect(got.ids.size).toBe(0);
     expect(got.failed).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// loadPostPhotos — edit mode's post_media read.
+//
+// Extracted from page.tsx (ENG-1266 review): page.tsx is an async server
+// component and cannot be unit-tested, and this read owns the "an errored
+// read is not the same fact as zero rows" branch that a regression could
+// silently delete there without a single test noticing.
+// ---------------------------------------------------------------------------
+
+const POST_ID = "post-1";
+
+function postMediaSpyClient(result: { data: PostMediaRow[] | null; error: { message: string } | null }) {
+  const calls: { table?: string; columns?: string; eq?: [string, string]; order?: string } = {};
+  const client: PostMediaClient = {
+    from(table) {
+      calls.table = table;
+      return {
+        select(columns) {
+          calls.columns = columns;
+          return {
+            eq(column, value) {
+              calls.eq = [column, value];
+              return {
+                order(column2) {
+                  calls.order = column2;
+                  return Promise.resolve(result);
+                },
+              };
+            },
+          };
+        },
+      };
+    },
+  };
+  return { client, calls };
+}
+
+describe("loadPostPhotos", () => {
+  it("mediaError → photosUnavailable, empty photos, and the signer is NEVER called", async () => {
+    const { client } = postMediaSpyClient({ data: null, error: { message: "permission denied" } });
+    const signSet = vi.fn();
+
+    const got = await loadPostPhotos(client, POST_ID, null, signSet);
+
+    expect(got).toEqual({ photos: [], photosUnavailable: true });
+    expect(signSet).not.toHaveBeenCalled();
+  });
+
+  it("rows present, in sort_order order → signed photos; a path missing from the signed map yields url: null", async () => {
+    // The query itself asks Postgres to sort (`.order("sort_order")`,
+    // asserted below) — the function trusts that ordering rather than
+    // re-sorting client-side, so the spy hands rows back ALREADY in
+    // sort_order 0, 1, ... order, exactly as the real query would.
+    const { client, calls } = postMediaSpyClient({
+      data: [
+        { media_url: `${POST_ID}/original`, sort_order: 0 },
+        { media_url: `${POST_ID}/photo-1`, sort_order: 1 },
+      ],
+      error: null,
+    });
+    const signSet = vi.fn().mockResolvedValue(new Map([[`${POST_ID}/photo-1`, "https://signed/photo-1"]]));
+
+    const got = await loadPostPhotos(client, POST_ID, null, signSet);
+
+    expect(calls.table).toBe("post_media");
+    expect(calls.columns).toBe("media_url,sort_order");
+    expect(calls.eq).toEqual(["post_id", POST_ID]);
+    expect(calls.order).toBe("sort_order");
+    // The signer got the paths in sort_order order.
+    expect(signSet).toHaveBeenCalledWith([`${POST_ID}/original`, `${POST_ID}/photo-1`]);
+    expect(got).toEqual({
+      photos: [
+        { path: `${POST_ID}/original`, url: null }, // missing from the signed map
+        { path: `${POST_ID}/photo-1`, url: "https://signed/photo-1" },
+      ],
+      photosUnavailable: false,
+    });
+  });
+
+  it("no rows but a legacy post.media_url → a ONE-entry synthesised set", async () => {
+    const { client } = postMediaSpyClient({ data: [], error: null });
+    const signSet = vi.fn().mockResolvedValue(new Map([[`${POST_ID}/original`, "https://signed/original"]]));
+
+    const got = await loadPostPhotos(client, POST_ID, `${POST_ID}/original`, signSet);
+
+    expect(signSet).toHaveBeenCalledWith([`${POST_ID}/original`]);
+    expect(got).toEqual({
+      photos: [{ path: `${POST_ID}/original`, url: "https://signed/original" }],
+      photosUnavailable: false,
+    });
+  });
+
+  it("a row path that does not start with `<postId>/` → photosUnavailable, empty photos, signer never called", async () => {
+    const { client } = postMediaSpyClient({
+      data: [{ media_url: "https://old-cdn.example/absolute.jpg", sort_order: 0 }],
+      error: null,
+    });
+    const signSet = vi.fn();
+
+    const got = await loadPostPhotos(client, POST_ID, null, signSet);
+
+    expect(got).toEqual({ photos: [], photosUnavailable: true });
+    expect(signSet).not.toHaveBeenCalled();
+  });
+
+  it("a legacy media_url mirror that does not start with `<postId>/` → same prefix-mismatch degrade", async () => {
+    const { client } = postMediaSpyClient({ data: [], error: null });
+    const signSet = vi.fn();
+
+    const got = await loadPostPhotos(client, POST_ID, "https://old-cdn.example/absolute.jpg", signSet);
+
+    expect(got).toEqual({ photos: [], photosUnavailable: true });
+    expect(signSet).not.toHaveBeenCalled();
+  });
+
+  it("genuinely empty (no rows, no media_url) → photos: [], photosUnavailable: false — DECIDED behaviour", async () => {
+    // No rows and no legacy mirror is a real, valid state: the strip is
+    // empty. `editPhotoEmpty` in ComposeScreen then hard-disables Save /
+    // Publish / Schedule, and the operator's only way forward is "Add more
+    // photos" — that is deliberate, not a bug to route around here. A photo
+    // post must have a photo, so this function reports the plain fact and
+    // lets the screen own refusing to save it.
+    const { client } = postMediaSpyClient({ data: [], error: null });
+    // The prefix check passes vacuously on an empty set, so the function
+    // still calls through to the signer with `[]` — it is `signPhotoMap`'s
+    // own job (and is already covered by its own tests) to treat an empty
+    // path list as a no-op rather than a Storage round-trip.
+    const signSet = vi.fn().mockResolvedValue(new Map());
+
+    const got = await loadPostPhotos(client, POST_ID, null, signSet);
+
+    expect(got).toEqual({ photos: [], photosUnavailable: false });
+    expect(signSet).toHaveBeenCalledWith([]);
+  });
+
+  it("data: null with error: null is NOT an errored read — it falls through to the legacy mirror", async () => {
+    // PostgREST can hand back `{ data: null, error: null }`, which the code
+    // absorbs with `mediaRows ?? []`. Pinned because that `??` is otherwise
+    // vacuous in the tests above, and because the distinction is the whole
+    // point of this function: only `error !== null` may set
+    // `photosUnavailable`. A null body with no error is "no rows", so the
+    // legacy mirror still has to be synthesised rather than the post
+    // degrading to media-read-only.
+    const { client } = postMediaSpyClient({ data: null, error: null });
+    const signSet = vi.fn().mockResolvedValue(new Map([[`${POST_ID}/original`, "https://signed/original"]]));
+
+    const got = await loadPostPhotos(client, POST_ID, `${POST_ID}/original`, signSet);
+
+    expect(got).toEqual({
+      photos: [{ path: `${POST_ID}/original`, url: "https://signed/original" }],
+      photosUnavailable: false,
+    });
   });
 });

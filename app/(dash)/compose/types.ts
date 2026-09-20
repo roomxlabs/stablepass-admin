@@ -121,7 +121,23 @@ export type CreateDraftResponse = {
    * `post_media.sort_order` is then assigned from DISPLAY position, not from
    * this. See `lib/posts/media.ts`.
    */
-  uploads?: { sortOrder: number; path: string; token: string; uploadUrl: string; bucket: string }[];
+  uploads?: PhotoUploadTarget[];
+};
+
+/**
+ * One signed direct-upload target: where a single photo's bytes go, and the
+ * one-shot credential to PUT them there. Returned by `POST /api/admin/posts`
+ * at create time and by `POST /api/admin/posts/:id/photo-uploads` for every
+ * slot appended afterwards (ENG-1266) — the same shape from both, so the strip
+ * has one code path for "a slot to fill".
+ */
+export type PhotoUploadTarget = {
+  /** The upload SLOT, never the display position. See lib/posts/media.ts. */
+  sortOrder: number;
+  path: string;
+  token: string;
+  uploadUrl: string;
+  bucket: string;
 };
 
 /**
@@ -150,6 +166,32 @@ export type EditInitial = {
    */
   label: string | null;
   horse: HorseOption;
+  /**
+   * ENG-1266 — the post's CURRENT ordered photo set, for a photo post only.
+   *
+   * `path` is the bare Storage object path (what `post_media.media_url` holds
+   * and what a save sends back); `url` is a short-lived SIGNED URL for display,
+   * or null when signing failed — the tile then draws its frame without an
+   * image rather than a broken one, and the path is still saveable.
+   *
+   * Ordered by `post_media.sort_order`. A LEGACY photo post written before
+   * ENG-748 has no `post_media` rows at all, so the loader synthesises a
+   * single entry from `post.media_url`; editing it and saving two photos is
+   * what finally gives it rows 0..1. Empty for every non-photo type.
+   */
+  photos: { path: string; url: string | null }[];
+  /**
+   * ENG-1266 — true when the `post_media` read FAILED, as opposed to coming
+   * back empty.
+   *
+   * The two must never be conflated. An edit save sends the strip as the whole
+   * `media` set and the route deletes every row above it, so a strip built from
+   * a failed read would silently truncate the post. When this is set the screen
+   * degrades to the pre-ENG-1266 behaviour — media read-only, `media` omitted
+   * from every save — so the photos cannot be edited, but they also cannot be
+   * lost. Absent/false is the normal case.
+   */
+  photosUnavailable?: boolean;
 };
 
 /**

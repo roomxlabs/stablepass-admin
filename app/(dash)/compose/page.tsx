@@ -3,11 +3,13 @@ import ComposeScreen from "./ComposeScreen";
 import type { EditInitial, HorseOption, MediaType, TrainerOption } from "./types";
 import { aestToday } from "./types";
 import {
+  loadPostPhotos,
   loadRacingHorseIds,
   one,
   toHorseOptions,
   toTrainerOptions,
   type HorseRow,
+  type PostMediaClient,
   type RaceQueryClient,
   type TrainerRow,
 } from "./data";
@@ -135,6 +137,30 @@ export default async function ComposePage({
               )
             : Promise.resolve(null),
       ]);
+      // ENG-1266 — the post's CURRENT ordered photo set, for edit mode's photo
+      // strip. Lives in `loadPostPhotos` (data.ts), NOT inline, for the same
+      // reason `loadRacingHorseIds` does above: this file is an async server
+      // component and cannot be unit-tested, and this read has its own
+      // "errored read is not empty" branch that a regression could silently
+      // delete here without a single test noticing. Photo posts only; every
+      // other type keeps `{ photos: [], photosUnavailable: false }`.
+      let photos: { path: string; url: string | null }[] = [];
+      let photosUnavailable = false;
+      if (post.type === "photo") {
+        const result = await loadPostPhotos(
+          // Cast through unknown, same reason as `loadRacingHorseIds` above:
+          // with no generated DB types, matching supabase-js's builder
+          // generics against a hand-written structural type makes tsc unroll
+          // them (TS2589).
+          sb as unknown as PostMediaClient,
+          post.id,
+          post.media_url,
+          (paths) => signPhotoMap(sb, POST_MEDIA_BUCKET, paths),
+        );
+        photos = result.photos;
+        photosUnavailable = result.photosUnavailable;
+      }
+
       initial = {
         id: post.id,
         status: post.status,
@@ -154,6 +180,8 @@ export default async function ComposePage({
           trainerName: t?.name ?? t?.display_name ?? null,
           racesToday: h ? racingToday.has(h.id) : false,
         },
+        photos,
+        photosUnavailable,
       };
     }
   }

@@ -133,6 +133,39 @@ describe("mapPostRow — subject (ENG-1269)", () => {
     expect(withNeither.subject.detail).toBeNull();
   });
 
+  // ENG-1295 — the `.trim()` at format.ts's `horseName` had no proof: the case
+  // above only covers `display_name: null`, which passes with or without it.
+  //
+  // The BE's `subject_name` computed column — what the "Posted as" sort orders
+  // by — is `coalesce(nullif(btrim(display_name),''), nullif(btrim(racing_name),''))`,
+  // so it treats a whitespace-only `display_name` as ABSENT and sorts the row
+  // under the racing name. Without the trim here, `"   "` is truthy at the
+  // `||`, short-circuits the fallback, and `subjectLabel`'s own `clean()`
+  // renders "Unassigned" — the list ordered by a string the operator cannot
+  // see. These two pin the cell to the same resolution as the SQL.
+  //
+  // Which is which: the whitespace-only case is the MUTATION GUARD — delete the
+  // `.trim()` and it, alone in the whole suite, goes red. The padded case is
+  // the acceptance criterion restated (trim changes the padding, not which
+  // name wins); `subjectLabel`'s own `clean()` would trim it anyway, so it
+  // survives that mutation. Do not delete the whitespace case thinking the
+  // padded one covers it.
+  it("horse: a whitespace-only display_name is ABSENT, so the cell reads the racing name (not 'Unassigned')", () => {
+    const v = mapPostRow(
+      row({ horse: { display_name: "   ", racing_name: "MAHOGANY (AUS)", photo_url: null } }),
+    );
+    expect(v.subject.name).toBe("MAHOGANY (AUS)");
+    expect(v.subject.name).not.toBe("Unassigned");
+    expect(v.subject.text).toBe("MAHOGANY (AUS)");
+  });
+
+  it("horse: a padded display_name renders trimmed and still wins over racing_name", () => {
+    const v = mapPostRow(
+      row({ horse: { display_name: "  Mahogany  ", racing_name: "MAHOGANY (AUS)", photo_url: null } }),
+    );
+    expect(v.subject.name).toBe("Mahogany");
+  });
+
   it("trainer: names the trainer and tags it, with no horse to name", () => {
     const v = mapPostRow(
       row({ subject: "trainer", horse_id: null, horse: null, trainer: { name: "Chris Waller" } }),

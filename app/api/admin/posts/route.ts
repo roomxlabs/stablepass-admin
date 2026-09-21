@@ -16,7 +16,6 @@ import {
   POST_SORT_DEFAULT_DIR,
   parsePostSort,
   postsOrder,
-  postsSelect,
 } from "@/lib/posts/sort";
 
 const POST_MEDIA_BUCKET = "post-media"; // T15 private bucket (photo/voice)
@@ -89,13 +88,9 @@ export async function GET(req: Request) {
 
   let query = sb
     .from("post")
-    .select(
-      // `postsSelect` makes the horse embed `!inner` for the horse-name sort
-      // only — PostgREST will not order parent rows by an embedded column
-      // otherwise. Every other sort gets this string unchanged.
-      postsSelect(POSTS_API_SELECT, sort),
-      { count: "exact" },
-    );
+    // The sort is a plain `.order()` on the `subject_name` computed column
+    // (ENG-1293), so the projection never changes per sort.
+    .select(POSTS_API_SELECT, { count: "exact" });
   for (const o of postsOrder(sort, dir)) {
     query = query.order(o.column, {
       ascending: o.ascending,

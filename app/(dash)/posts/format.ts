@@ -104,7 +104,15 @@ export function mapPostRow(row: PostRow): PostView {
     // "Unassigned" fallback, so a horse row is byte-identical to before.
     subject: subjectLabel({
       subject: row.subject,
-      horseName: horse?.display_name || horse?.racing_name,
+      // `.trim()` before the `||`, ENG-1293: the BE's `subject_name` computed
+      // column — what the "Posted as" sort now orders by — is
+      // `coalesce(nullif(btrim(display_name),''), nullif(btrim(racing_name),''))`,
+      // so it treats a whitespace-only `display_name` as absent and falls
+      // through to the racing name. Without the trim here the cell would read
+      // "Unassigned" while the row sorted under the racing name: the list
+      // ordered by a string the operator cannot see, which is the exact class
+      // of divergence this ticket exists to remove.
+      horseName: horse?.display_name?.trim() || horse?.racing_name,
       trainerName: trainer?.name,
       byline: row.byline,
     }),
@@ -170,7 +178,9 @@ export const POST_SORT_COLUMNS: { column: PostSort; label: string; defaultDir: S
   // ENG-1269 — "Horse / trainer" became "Posted as": the column now names a
   // horse, a trainer or StablePass, and a header that promises only the first
   // two is the same class of lie as a preview that does not preview.
-  { column: "horse", label: "Posted as", defaultDir: POST_SORT_DEFAULT_DIR.horse },
+  // ENG-1293 renamed the sort KEY horse → subject to match the label; the
+  // label itself is unchanged.
+  { column: "subject", label: "Posted as", defaultDir: POST_SORT_DEFAULT_DIR.subject },
   { column: "status", label: "Status", defaultDir: POST_SORT_DEFAULT_DIR.status },
   { column: "published", label: "Published", defaultDir: POST_SORT_DEFAULT_DIR.published },
   { column: "engagement", label: "Engagement", defaultDir: POST_SORT_DEFAULT_DIR.engagement },

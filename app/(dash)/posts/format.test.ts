@@ -161,8 +161,8 @@ describe("mapPostRow — subject (ENG-1269)", () => {
 });
 
 describe("POST_SORT_COLUMNS", () => {
-  it("labels the horse column 'Posted as' — it now names a horse, a trainer or StablePass", () => {
-    const horseColumn = POST_SORT_COLUMNS.find((c) => c.column === "horse");
-    expect(horseColumn?.label).toBe("Posted as");
+  it("labels the subject column 'Posted as' — it now names a horse, a trainer or StablePass", () => {
+    const subjectColumn = POST_SORT_COLUMNS.find((c) => c.column === "subject");
+    expect(subjectColumn?.label).toBe("Posted as");
   });
 });

@@ -28,6 +28,26 @@ function wrapClient(client: ReturnType<typeof makeFakeClient>) {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       (b as any).select = (...a: unknown[]) => {
         selects.push({ table: t, select: a[0] });
+        // PostgREST semantics: `horse:horse_id!inner(...)` is an INNER JOIN, so
+        // a post with no horse row (trainer / StablePass, since post.horse_id
+        // became nullable) is dropped from the ROWS and from count:"exact".
+        // The fake otherwise returns whatever is seeded regardless of the
+        // select string, which is precisely why ENG-1291 shipped green.
+        // It filters the seeded rows IN PLACE. `beforeEach` reseeds from
+        // `blankState()`, so nothing leaks between tests — but a single test
+        // issuing two GETs against one seed would see the second read the
+        // already-filtered rows. Reseed per GET if you write one.
+        if (t === "post" && typeof a[0] === "string" && a[0].includes("horse:horse_id!inner(")) {
+          const tbl = state.tables.post;
+          if (tbl?.select?.rows) {
+            const kept = tbl.select.rows.filter(
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              (r: any) => r.horse_id != null,
+            );
+            tbl.select.rows = kept;
+            if (typeof tbl.select.count === "number") tbl.select.count = kept.length;
+          }
+        }
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         return (origSelect as any)(...a);
       };
@@ -84,15 +104,27 @@ describe("GET /api/admin/posts — sort", () => {
     ]);
   });
 
-  it("?sort=horse uses the column's default dir (asc) and still tiebreaks", async () => {
+  it("?sort=subject uses the column's default dir (asc) and still tiebreaks", async () => {
+    asAdmin();
+    state.tables.post = { select: { rows: [], count: 0 } };
+    const r = await GET(new Request("http://t/api/admin/posts?sort=subject"));
+    expect(r.status).toBe(200);
+    expect(postOrders()).toEqual([
+      // nullsFirst:false because subject_name is null when the name cannot be
+      // resolved.
+      { table: "post", args: ["subject_name", { ascending: true, nullsFirst: false }] },
+      { table: "post", args: ["created_at", { ascending: false }] },
+      { table: "post", args: ["id", { ascending: false }] },
+    ]);
+  });
+
+  it("the legacy ?sort=horse bookmark still means the Posted-as sort (mapped to subject), and does not 500", async () => {
     asAdmin();
     state.tables.post = { select: { rows: [], count: 0 } };
     const r = await GET(new Request("http://t/api/admin/posts?sort=horse"));
     expect(r.status).toBe(200);
     expect(postOrders()).toEqual([
-      // nullsFirst:false — horse.display_name is `string | null`, and a null
-      // name must not float to the top of a descending sort.
-      { table: "post", args: ["horse(display_name)", { ascending: true, nullsFirst: false }] },
+      { table: "post", args: ["subject_name", { ascending: true, nullsFirst: false }] },
       { table: "post", args: ["created_at", { ascending: false }] },
       { table: "post", args: ["id", { ascending: false }] },
     ]);
@@ -148,18 +180,78 @@ describe("GET /api/admin/posts — sort", () => {
 });
 
 describe("GET /api/admin/posts — the select string the sort actually sends", () => {
-  it("makes the horse embed !inner for ?sort=horse, and leaves it alone otherwise", async () => {
-    // PostgREST will not order PARENT rows by an embedded column unless the
-    // embed is an inner join, so this is the difference between the horse sort
-    // working and silently ordering nothing.
+  it("no produced select contains `!inner`, for ANY sort key", async () => {
+    // The assertion that would have caught ENG-1291.
+    asAdmin();
+    for (const sort of ["", "subject", "published", "engagement", "status", "horse", "bogus"]) {
+      state.tables.post = { select: { rows: [], count: 0 } };
+      selects.length = 0;
+      const url = sort ? `http://t/api/admin/posts?sort=${sort}` : "http://t/api/admin/posts";
+      await GET(new Request(url));
+      expect(postSelects().some((s) => s.includes("!inner"))).toBe(false);
+    }
+  });
+
+  it("every produced select carries subject_name — the column the sort orders by", async () => {
     asAdmin();
     state.tables.post = { select: { rows: [], count: 0 } };
-    await GET(new Request("http://t/api/admin/posts?sort=horse"));
-    expect(postSelects().some((s) => s.includes("horse:horse_id!inner("))).toBe(true);
+    await GET(new Request("http://t/api/admin/posts?sort=subject"));
+    expect(postSelects().some((s) => s.includes("subject_name"))).toBe(true);
+  });
+
+  it("the select is byte-identical for every sort", async () => {
+    asAdmin();
+    state.tables.post = { select: { rows: [], count: 0 } };
+    selects.length = 0;
+    await GET(new Request("http://t/api/admin/posts?sort=subject"));
+    const subjectSelect = postSelects()[0];
 
     selects.length = 0;
-    await GET(new Request("http://t/api/admin/posts?sort=published"));
-    expect(postSelects().some((s) => s.includes("!inner"))).toBe(false);
+    await GET(new Request("http://t/api/admin/posts"));
+    const defaultSelect = postSelects()[0];
+
+    expect(subjectSelect).toBe(defaultSelect);
+  });
+});
+
+// ENG-1291 regression: sorting by "Posted as" used to inner-join the horse
+// embed, which drops trainer and StablePass posts from both the rows AND the
+// exact count. This is the test that would have caught it — MUTATION-VERIFIED
+// (see the ticket's verification steps): it fails RED if any select regains
+// `horse:horse_id!inner(`.
+describe("GET /api/admin/posts?sort=subject — all three subjects come back (ENG-1291 regression)", () => {
+  it("returns all three subjects, and the exact count is not shrunk by the join", async () => {
+    asAdmin();
+    const rows = [
+      { id: "p-horse", subject: "horse", horse_id: "h1", byline: null, subject_name: "Mahogany" },
+      {
+        id: "p-trainer",
+        subject: "trainer",
+        horse_id: null,
+        byline: null,
+        subject_name: "Chris Waller",
+      },
+      {
+        id: "p-stablepass",
+        subject: "stablepass",
+        horse_id: null,
+        byline: "Racing TV",
+        // NOT the byline: the BE's `subject_name` stablepass arm is the
+        // literal `'stablepass'` (ENG-1292's migration), which is what
+        // `subjectLabel` renders as the NAME with the byline as the detail.
+        subject_name: "stablepass",
+      },
+    ];
+    state.tables.post = { select: { rows, count: 3 } };
+    const r = await GET(new Request("http://t/api/admin/posts?sort=subject&dir=asc"));
+    expect(r.status).toBe(200);
+    const j = await r.json();
+    expect(j.data).toHaveLength(3);
+    expect(new Set(j.data.map((row: { id: string }) => row.id))).toEqual(
+      new Set(["p-horse", "p-trainer", "p-stablepass"]),
+    );
+    // The count:"exact" total must not shrink — that is half the original bug.
+    expect(j.meta.count).toBe(3);
   });
 });
 

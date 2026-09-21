@@ -4,14 +4,12 @@ import { describe, it, expect } from "vitest";
 import {
   parsePostSort,
   postsOrder,
-  postsSelect,
-  HORSE_EMBED,
-  HORSE_EMBED_INNER,
   POSTS_API_SELECT,
   POSTS_PAGE_SELECT,
   POST_SORT_KEYS,
   type PostSort,
 } from "./sort";
+import * as sortModule from "./sort";
 import { mapPostRow } from "@/app/(dash)/posts/format";
 
 describe("parsePostSort", () => {
@@ -24,6 +22,27 @@ describe("parsePostSort", () => {
     expect(parsePostSort(undefined)).toBe("");
     expect(parsePostSort(null)).toBe("");
     expect(parsePostSort(42)).toBe("");
+  });
+
+  it("maps the legacy `horse` value to `subject` — an old bookmark keeps its sort (ENG-1293)", () => {
+    // The rename decision, pinned here and not only at the route: `?sort=horse`
+    // is what every pre-ENG-1293 bookmark and shared link carries, and it meant
+    // "Posted as". Mapping it preserves that; dropping it to the default order
+    // would silently show the operator a different list than the one they saved.
+    expect(parsePostSort("horse")).toBe("subject");
+  });
+
+  it("an Object.prototype key is NOT a sort value", () => {
+    // The alias lookup takes a user-controlled string. With an object literal,
+    // `key in aliases` / `aliases[key]` walk the prototype chain, so
+    // `?sort=constructor` returns a Function typed `PostSort` — invisible to
+    // `tsc`, since indexing a Record<string, PostSort> is typed PostSort
+    // whatever comes out. It then reaches ORDER_COLUMN[sort] as `undefined`
+    // and PostgREST 400s on `.order(undefined, …)`, whose message this route
+    // echoes back. The allow-list exists so NO input escapes it.
+    for (const key of ["constructor", "toString", "valueOf", "hasOwnProperty", "__proto__"]) {
+      expect(parsePostSort(key)).toBe("");
+    }
   });
 });
 
@@ -43,14 +62,15 @@ describe("postsOrder", () => {
     published: "published_at",
     engagement: "like_count",
     status: "status",
-    horse: "horse(display_name)",
+    subject: "subject_name",
   };
-  // `horse` is nullable too: HorseEmbed.display_name is `string | null`.
+  // `subject` is nullable too: `subject_name` is null when the name cannot be
+  // resolved.
   const nullable: Record<PostSort, boolean> = {
     published: true,
     engagement: true,
     status: false,
-    horse: true,
+    subject: true,
   };
 
   it.each(POST_SORT_KEYS)("orders on the right column for key '%s', tracking dir", (key) => {
@@ -83,46 +103,40 @@ describe("postsOrder", () => {
   });
 });
 
-describe("postsSelect — the horse-name sort needs an INNER embed", () => {
-  // Anchored on the strings the app ACTUALLY sends, not a literal written here.
-  // A test that invents its own select proves the helper and nothing about the
-  // wiring: reformat either real constant and the horse sort would quietly stop
-  // ordering while a literal-based test stayed green.
-  const REAL = [
-    ["page", POSTS_PAGE_SELECT],
-    ["api", POSTS_API_SELECT],
-  ] as const;
-
-  it.each(REAL)("leaves the %s select byte-identical for the default order", (_n, select) => {
-    expect(postsSelect(select, "")).toBe(select);
+// ENG-1293 closed ENG-1291 (a helper deleted while a caller still hand-rolled
+// the same `.replace(...)` inline, so the `!inner` filter shipped a second
+// time from a different line). Assert on the SOURCE TEXT, not just on what a
+// (now nonexistent) helper returns — a source-text assertion is the only kind
+// that also catches a caller reintroducing the rewrite inline.
+describe("the inner-join mechanism is GONE (ENG-1293)", () => {
+  it("neither real select string contains `!inner`", () => {
+    expect(POSTS_PAGE_SELECT).not.toContain("!inner");
+    expect(POSTS_API_SELECT).not.toContain("!inner");
   });
 
-  it.each(REAL)("leaves the %s select byte-identical for every non-horse sort", (_n, select) => {
-    for (const sort of ["published", "engagement", "status"] as const) {
-      expect(postsSelect(select, sort)).toBe(select);
-    }
+  // Both CALL SITES, not just the module. Deleting `postsSelect` does not stop
+  // a caller hand-rolling `SELECT.replace("horse:horse_id(", "horse:horse_id!inner(")`
+  // inline, and nothing else in the suite would see it: the screen
+  // (`app/(dash)/posts/page.tsx`) is a Server Component no unit test imports,
+  // and the e2e mock implements no join semantics, so ENG-1291 could ship
+  // green a second time from the very surface it was reported against.
+  it.each([
+    ["the sort model", ["lib", "posts", "sort.ts"]],
+    ["the posts SCREEN", ["app", "(dash)", "posts", "page.tsx"]],
+    ["the list ENDPOINT", ["app", "api", "admin", "posts", "route.ts"]],
+  ])("%s contains no `!inner` rewrite at all", (_name, seg) => {
+    expect(readFileSync(join(process.cwd(), ...seg), "utf8")).not.toContain("!inner");
   });
 
-  it.each(REAL)("makes ONLY the horse embed inner in the %s select", (_n, select) => {
-    const out = postsSelect(select, "horse");
-    expect(out).toContain(HORSE_EMBED_INNER);
-    // The trainer embed must NOT become inner — it is a different relationship,
-    // and making it inner would change WHICH ROWS the list returns.
-    expect(out).toContain("trainer:source_trainer_id(name)");
-    expect(out).not.toContain("trainer:source_trainer_id!inner");
-    // Nothing else moved.
-    expect(out.replace("!inner", "")).toBe(select);
+  it("the removed helpers are gone from the module's exports", () => {
+    expect("postsSelect" in sortModule).toBe(false);
+    expect("HORSE_EMBED" in sortModule).toBe(false);
+    expect("HORSE_EMBED_INNER" in sortModule).toBe(false);
   });
 
-  it("THROWS rather than silently returning the input when the embed is missing", () => {
-    // `String.replace` with a non-matching needle returns the original string,
-    // so without this guard a renamed alias degrades the sort to a no-op that
-    // still produces a perfectly valid query.
-    expect(() => postsSelect("id,horse_id,type,status", "horse")).toThrow(/horse:horse_id\(/);
-  });
-
-  it("does not throw for a missing embed when the sort is not `horse`", () => {
-    expect(postsSelect("id,status", "published")).toBe("id,status");
+  it("ORDER_COLUMN.subject is the computed column", () => {
+    // ORDER_COLUMN itself is module-private; read it back through postsOrder.
+    expect(postsOrder("subject", "asc")[0].column).toBe("subject_name");
   });
 });
 
@@ -145,9 +159,9 @@ describe("postsOrder — the tiebreaker is TOTAL, not merely stable", () => {
 
   it("sinks NULLs for every nullable sort column, in BOTH directions", () => {
     // published_at is null for drafts, like_count before any engagement, and
-    // horse.display_name is typed `string | null`. A null floating to the top
-    // of a descending sort buries the rows the operator asked to see.
-    for (const sort of ["published", "engagement", "horse"] as const) {
+    // subject_name is null when the name cannot be resolved. A null floating
+    // to the top of a descending sort buries the rows the operator asked to see.
+    for (const sort of ["published", "engagement", "subject"] as const) {
       for (const dir of ["asc", "desc"] as const) {
         expect(postsOrder(sort, dir)[0].nullsFirst).toBe(false);
       }
@@ -244,12 +258,22 @@ describe("POSTS_PAGE_SELECT — every column mapPostRow reads", () => {
     expect(mapPostRow({ ...authoredAfterEng979, label: undefined }).title).toBe("Untitled post");
   });
 
-  it("keeps the horse embed alias the horse sort rewrites", () => {
-    // postsSelect() throws on a miss rather than no-opping, but only if the
-    // alias is what it expects — pin the two together.
-    expect(POSTS_PAGE_SELECT).toContain(HORSE_EMBED);
-    expect(POSTS_API_SELECT).toContain(HORSE_EMBED);
+  it("still selects the horse + trainer embeds that render the Posted-as cell", () => {
+    // The embeds feed the CELL (`mapPostRow`'s subject formatting); they are
+    // just no longer rewritten to `!inner` for a sort.
+    expect(POSTS_PAGE_SELECT).toContain("horse:horse_id(");
+    expect(POSTS_PAGE_SELECT).toContain("trainer:source_trainer_id(");
+    expect(POSTS_API_SELECT).toContain("horse:horse_id(");
+    expect(POSTS_API_SELECT).toContain("trainer:source_trainer_id(");
   });
+
+  it.each(["subject_name"])(
+    "selects %s in both select strings — it is what the Posted-as sort orders by",
+    (column) => {
+      expect(pageColumns).toContain(column);
+      expect(topLevelColumns(POSTS_API_SELECT)).toContain(column);
+    },
+  );
 
   // `subject` + `byline` are LOAD-BEARING the same way `label` is (ENG-1269):
   // `mapPostRow` names every row through `subjectLabel(...)`, so dropping

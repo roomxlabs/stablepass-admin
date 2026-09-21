@@ -2685,6 +2685,123 @@ describe("Posting as (ENG-1268)", () => {
     expect(api.createDraft).not.toHaveBeenCalled();
   });
 
+  // ================== THE "Select file" BUTTON'S OWN disabled STATE ========
+  //
+  // ENG-1298 — the production regression these two tests exist to make
+  // impossible again. ENG-1268 threaded `subjectReady` through every HANDLER
+  // (`onPickFile` above), but the Step 3 empty-state "Select file" button kept
+  // `disabled={!horse}`. On a trainer or StablePass post `horse` is null, so
+  // the button was DEAD: the file input is hidden and is only ever opened by
+  // `fileInputRef.current?.click()`, the drop-zone <label> has no `htmlFor`
+  // and does not wrap the input, and Replace / "Add more photos" only render
+  // once media exists. No media could be attached at all.
+  //
+  // Every test above drives the pick PROGRAMMATICALLY (`fireEvent.change` on
+  // `media-input`), which bypasses the button entirely — which is exactly why
+  // the whole suite stayed green while the screen was unusable. So these
+  // assert the BUTTON, and they assert it in both directions: disabled while
+  // the subject is unsatisfied, enabled the moment it is.
+  //
+  // Queried by TEXT, not by role+name: the button sits inside the drop-zone
+  // `<label>`, and a <button> is a labelable element, so its ACCESSIBLE name is
+  // the whole label ("Choose a video… Select file"), not its own text. getByText
+  // returns the <button> itself (it is the closest element holding the string),
+  // which is asserted below so a future refactor into a <span> cannot silently
+  // turn `.disabled` into `undefined` and pass.
+  function selectFileBtn() {
+    const el = screen.getByText("Select file");
+    expect(el.tagName).toBe("BUTTON");
+    return el as HTMLButtonElement;
+  }
+
+  it("horse: 'Select file' is disabled until a horse is picked, then enabled", () => {
+    renderScreen();
+    expect(selectFileBtn().disabled).toBe(true);
+    pickHorse("horse-opt-h1");
+    expect(selectFileBtn().disabled).toBe(false);
+  });
+
+  it("trainer: 'Select file' is disabled until a trainer is picked, then enabled", () => {
+    renderScreen();
+    chooseSubjectOption("trainer");
+    expect(selectFileBtn().disabled).toBe(true);
+
+    fireEvent.change(screen.getByTestId("trainer-search"), { target: { value: "Chris" } });
+    fireEvent.click(screen.getByTestId("trainer-opt-t1"));
+    expect(screen.getByTestId("trainer-pick")).toBeTruthy();
+
+    // The regression: with `disabled={!horse}` this stays true forever, because
+    // a trainer post never has a horse.
+    expect(selectFileBtn().disabled).toBe(false);
+  });
+
+  it("stablepass: 'Select file' is disabled until a byline is chosen, then enabled", () => {
+    render(
+      <ComposeScreen horses={HORSES} trainers={TRAINERS} bylines={[{ id: "b1", name: "Racing TV" }]} />,
+    );
+    chooseSubjectOption("stablepass");
+    expect(selectFileBtn().disabled).toBe(true);
+
+    fireEvent.change(screen.getByTestId("byline-name-select"), { target: { value: "Racing TV" } });
+
+    // Same regression, second subject: a StablePass post never has a horse
+    // either.
+    expect(selectFileBtn().disabled).toBe(false);
+  });
+
+  // THE HORSE-SUBJECT TIGHTENING, pinned deliberately.
+  //
+  // `subjectReady` for a horse is `!!horse && !!bylineId` — strictly stronger
+  // than the `!!horse` this button used to test. `selectHorse` pre-fills
+  // `bylineId` from `h.trainerId`, which is `string | null` (types.ts), and
+  // `data.ts` really can yield null (the pick card renders "no trainer set"
+  // for it). So a TRAINER-LESS horse now leaves the button disabled until the
+  // Step 4 "Trainer byline" select is filled in.
+  //
+  // That is the honest state — the handler has refused this case since
+  // ENG-1268, it just refused it with the wrong words AFTER the operator had
+  // chosen a file. The button and the handler now agree. This test exists so
+  // the tightening is INTENDED rather than a silent side effect, and so the
+  // recovery path (the always-rendered Step 4 select) is proven to work.
+  it("horse with NO stable trainer: 'Select file' waits for the Step 4 byline", () => {
+    const orphan: HorseOption = {
+      id: "h3",
+      name: "Orphan Annie",
+      photoUrl: null,
+      stableName: null,
+      trainerId: null,
+      trainerName: null,
+      racesToday: false,
+    };
+    render(<ComposeScreen horses={[orphan]} trainers={TRAINERS} />);
+
+    fireEvent.change(screen.getByTestId("horse-search"), { target: { value: "Orph" } });
+    fireEvent.click(screen.getByTestId("horse-opt-h3"));
+    expect(screen.getByTestId("horse-pick")).toBeTruthy();
+
+    // Horse picked, but no byline came with it.
+    expect(selectFileBtn().disabled).toBe(true);
+
+    // The recovery: Step 4's byline select is rendered for every horse post.
+    fireEvent.change(screen.getByTestId("byline-select"), { target: { value: "t1" } });
+    expect(selectFileBtn().disabled).toBe(false);
+  });
+
+  // And the button, once enabled, actually opens the file dialog on a trainer
+  // post — the hidden input's click is the ONLY way in, so a live `onClick`
+  // behind a live `disabled` is what "the operator can attach media" means.
+  it("trainer: clicking the enabled 'Select file' clicks the hidden file input", () => {
+    renderScreen();
+    chooseSubjectOption("trainer");
+    fireEvent.change(screen.getByTestId("trainer-search"), { target: { value: "Chris" } });
+    fireEvent.click(screen.getByTestId("trainer-opt-t1"));
+
+    const input = screen.getByTestId("media-input") as HTMLInputElement;
+    const clicked = vi.spyOn(input, "click").mockImplementation(() => {});
+    fireEvent.click(selectFileBtn());
+    expect(clicked).toHaveBeenCalledTimes(1);
+  });
+
   it("edit mode with subject 'trainer' renders subject-fixed, never the picker", () => {
     const initial: EditInitial = {
       id: "post-1268a",

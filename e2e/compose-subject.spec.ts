@@ -148,3 +148,66 @@ test("ENG-1290: a retired title is absent from the compose picker", async ({ pag
   // filter rather than an empty picker.
   await expect(select.locator("option", { hasText: "Owner Update" })).toHaveCount(1);
 });
+
+// ENG-1298 — the production regression: Step 3's "Select file" button kept
+// `disabled={!horse}` after ENG-1268 subject-keyed every handler, so on a
+// trainer or StablePass post it was dead and NO media could be attached.
+//
+// A screenshot could not have caught it (the button renders either way) and
+// the unit suite drove the picker programmatically, past the button. So this
+// one CLICKS it in a real browser and proves the native file chooser opens —
+// the only route in, since the <input type=file> is hidden and is opened
+// solely by `fileInputRef.current?.click()`.
+//
+// `button:has-text(...)` rather than getByRole: the button sits inside the
+// drop-zone <label>, and a <button> is labelable, so its accessible name is
+// the whole label, not "Select file".
+const selectFile = 'button:has-text("Select file")';
+
+test("ENG-1298: Trainer subject — 'Select file' enables and opens the file chooser", async ({
+  page,
+}) => {
+  test.setTimeout(90000);
+  await signIn(page);
+  await openCompose(page);
+
+  await page.getByTestId("subject-option-trainer").click();
+
+  // Before the subject is satisfied the guard still holds — the button is the
+  // gate, not decoration.
+  await expect(page.locator(selectFile)).toBeDisabled();
+
+  await page.getByTestId("trainer-search").click();
+  await page.getByTestId("trainer-results").getByRole("button").first().click();
+  await expect(page.getByTestId("trainer-pick")).toBeVisible();
+
+  // THE REGRESSION: with `disabled={!horse}` this stays disabled forever.
+  await expect(page.locator(selectFile)).toBeEnabled();
+
+  // And it really opens the dialog. `filechooser` is the browser event the
+  // hidden input fires; nothing else on this screen can produce it.
+  const [chooser] = await Promise.all([
+    page.waitForEvent("filechooser", { timeout: 15000 }),
+    page.locator(selectFile).click(),
+  ]);
+  expect(chooser).toBeTruthy();
+
+  await page.screenshot({
+    path: "e2e/__screenshots__/eng1298-trainer-select-file-enabled.png",
+    fullPage: true,
+  });
+});
+
+test("ENG-1298: StablePass subject — 'Select file' enables once a byline is chosen", async ({
+  page,
+}) => {
+  test.setTimeout(90000);
+  await signIn(page);
+  await openCompose(page);
+
+  await page.getByTestId("subject-option-stablepass").click();
+  await expect(page.locator(selectFile)).toBeDisabled();
+
+  await page.getByTestId("byline-name-select").selectOption({ label: "Racing TV" });
+  await expect(page.locator(selectFile)).toBeEnabled();
+});

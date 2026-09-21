@@ -57,7 +57,15 @@ export type FakeState = {
   tables: Record<string, TableScript>;
   functions: Record<string, { data?: any; error?: any }>;
   rpcs: Record<string, { data?: any; error?: any }>;
-  storage: { signed?: { data?: any; error?: any } };
+  storage: {
+    signed?: { data?: any; error?: any };
+    /**
+     * ENG-1266 — the result of `sb.storage.from(bucket).list(prefix)`, scripted
+     * the same way `signed` scripts `createSignedUploadUrl`. Defaults to an
+     * empty listing (`{ data: [], error: null }`) when unset.
+     */
+    list?: { data?: any; error?: any };
+  };
   calls: {
     functions: { name: string; body: any }[];
     or: string[];
@@ -98,6 +106,24 @@ export type FakeState = {
     modifiers: { table: string; kind: "order" | "range"; args: any[] }[];
     /** Storage signed-upload targets requested, so "text makes no Storage call" is provable. */
     storage: { bucket: string; path: string }[];
+    /**
+     * ENG-1266 — `sb.storage.from(bucket).list(prefix)` calls, kept OUT of
+     * `calls.storage` deliberately: a route that lists a post's Storage prefix
+     * before minting signed upload URLs (photo-uploads/route.ts) would
+     * otherwise interleave a `list` entry ahead of the `createSignedUploadUrl`
+     * ones, and every existing/`toEqual`-exact assertion against
+     * `calls.storage` (e.g. "the signed paths recorded, in order") would have
+     * to know about a call it isn't testing. Recorded here instead so those
+     * assertions stay exact and untouched.
+     *
+     * `options` (e.g. `{ limit: 1000 }`) is only INCLUDED on the recorded
+     * entry when the caller actually passed one — a plain `list(prefix)` call
+     * still records `{ bucket, path }` with no `options` key at all, so the
+     * four pre-existing `toEqual([{ bucket, path }])` assertions written
+     * before the route ever passed options keep passing unchanged. This is
+     * the same back-compat idiom `MutationRecord.options` already uses.
+     */
+    storageList: { bucket: string; path: string; options?: { limit?: number } }[];
   };
 };
 
@@ -316,6 +342,21 @@ export function makeFakeClient(state: FakeState) {
     },
     storage: {
       from: (bucket: string) => ({
+        // ENG-1266 — `photo-uploads/route.ts` lists the post's Storage prefix
+        // BEFORE minting any signed upload URL, so a draft whose `post_media`
+        // rows are not written yet (create mode) still sees the photos already
+        // sitting in Storage. Recorded on `calls.storageList`, not
+        // `calls.storage` — see that field's doc comment.
+        list: async (prefix: string, options?: { limit?: number }) => {
+          // `options` is only pushed when the caller passed one — see the
+          // doc comment on `calls.storageList` for why that is deliberate.
+          state.calls.storageList.push({
+            bucket,
+            path: prefix,
+            ...(options === undefined ? {} : { options }),
+          });
+          return state.storage.list ?? { data: [], error: null };
+        },
         createSignedUploadUrl: async (path: string) => {
           state.calls.storage.push({ bucket, path });
           return (
@@ -358,6 +399,15 @@ export function blankState(): FakeState {
     functions: {},
     rpcs: {},
     storage: {},
-    calls: { functions: [], or: [], from: [], rpc: [], mutations: [], modifiers: [], storage: [] },
+    calls: {
+      functions: [],
+      or: [],
+      from: [],
+      rpc: [],
+      mutations: [],
+      modifiers: [],
+      storage: [],
+      storageList: [],
+    },
   };
 }

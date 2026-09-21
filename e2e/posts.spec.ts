@@ -61,6 +61,32 @@ test("ENG-979: the list shows the label, and 'Untitled post' only when truly unn
   await page.screenshot({ path: "e2e/__screenshots__/26-posts-labelled.png", fullPage: true });
 });
 
+// ENG-1269 — the "Posted as" column names all three subjects. p1 is a horse
+// post, p8 a trainer post, p9 a StablePass post.
+test("ENG-1269: the library names a horse, a trainer (tagged) and stablepass (with its byline)", async ({
+  page,
+}) => {
+  test.setTimeout(60000);
+  await signIn(page);
+  await page.goto("/posts");
+  await expect(page.locator(".adm-table tbody tr").first()).toBeVisible({ timeout: 30000 });
+
+  const subjectCells = page.locator('[data-testid="post-subject"]');
+
+  // Horse post (p1): named by the horse.
+  await expect(subjectCells.filter({ hasText: "Mahogany" }).first()).toBeVisible();
+
+  // Trainer post (p8): named by the trainer, tagged "Trainer".
+  const trainerCell = subjectCells.filter({ hasText: "Peter Moody" }).filter({ hasText: "Trainer" });
+  await expect(trainerCell).toHaveCount(1);
+
+  // StablePass post (p9): named "stablepass", with its byline underneath.
+  const stablepassCell = subjectCells.filter({ hasText: "stablepass" }).filter({ hasText: "Racing TV" });
+  await expect(stablepassCell).toHaveCount(1);
+
+  await page.screenshot({ path: "e2e/__screenshots__/27-posts-subjects.png", fullPage: true });
+});
+
 test("posts library — empty", async ({ page }) => {
   test.setTimeout(60000);
   await signIn(page);

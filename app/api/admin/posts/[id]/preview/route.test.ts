@@ -110,3 +110,93 @@ describe("GET /api/admin/posts/:id/preview", () => {
     expect(j.data.mobile.playbackUrl).toBeNull();
   });
 });
+
+// ---------------------------------------------------------------------------
+// ENG-1269 — the `subject`/`subjectName`/`subjectTag`/`subjectDetail`/
+// `subjectText` fields, one case per subject, plus proof that `horseName` and
+// `byline` still behave exactly as before (back-compat for whatever already
+// reads them) and that a null horse/trainer embed does not crash a
+// trainer/StablePass post.
+// ---------------------------------------------------------------------------
+describe("GET /api/admin/posts/:id/preview — subject (ENG-1269)", () => {
+  it("horse post: subject block names the horse, byline/horseName stay back-compat", async () => {
+    asAdmin();
+    state.tables.post = {
+      select: {
+        single: {
+          id: "p1",
+          subject: "horse",
+          byline: null,
+          type: "photo",
+          status: "published",
+          horse: { id: "h1", display_name: "Mahogany", racing_name: "MAHOGANY (AUS)" },
+          trainer: { id: "t1", name: "Chris Waller" },
+        },
+      },
+    };
+    const r = await GET(req(), params);
+    const j = await r.json();
+    expect(j.data.mobile.subject).toBe("horse");
+    expect(j.data.mobile.subjectName).toBe("MAHOGANY (AUS)");
+    expect(j.data.mobile.subjectTag).toBeNull();
+    expect(j.data.mobile.subjectDetail).toBe("Chris Waller");
+    expect(j.data.mobile.subjectText).toBe("MAHOGANY (AUS)");
+    // Back-compat fields, unchanged by this ticket.
+    expect(j.data.mobile.horseName).toBe("MAHOGANY (AUS)");
+    expect(j.data.mobile.byline).toBe("Chris Waller");
+  });
+
+  it("trainer post: subject block tags 'Trainer'; no horse embed to crash on", async () => {
+    asAdmin();
+    state.tables.post = {
+      select: {
+        single: {
+          id: "p2",
+          subject: "trainer",
+          byline: null,
+          type: "video",
+          status: "published",
+          horse: null,
+          trainer: { id: "t1", name: "Chris Waller" },
+        },
+      },
+    };
+    const r = await GET(req(), params);
+    const j = await r.json();
+    expect(j.data.mobile.subject).toBe("trainer");
+    expect(j.data.mobile.subjectName).toBe("Chris Waller");
+    expect(j.data.mobile.subjectTag).toBe("Trainer");
+    expect(j.data.mobile.subjectDetail).toBeNull();
+    expect(j.data.mobile.subjectText).toBe("Chris Waller · Trainer");
+    // `horseName` is honestly null — there is no horse to name.
+    expect(j.data.mobile.horseName).toBeNull();
+    expect(j.data.mobile.byline).toBe("Chris Waller");
+  });
+
+  it("stablepass post: subject block names the byline; no horse or trainer embed to crash on", async () => {
+    asAdmin();
+    state.tables.post = {
+      select: {
+        single: {
+          id: "p3",
+          subject: "stablepass",
+          byline: "Racing TV",
+          type: "photo",
+          status: "published",
+          horse: null,
+          trainer: null,
+        },
+      },
+    };
+    const r = await GET(req(), params);
+    const j = await r.json();
+    expect(j.data.mobile.subject).toBe("stablepass");
+    expect(j.data.mobile.subjectName).toBe("stablepass");
+    expect(j.data.mobile.subjectTag).toBeNull();
+    expect(j.data.mobile.subjectDetail).toBe("Racing TV");
+    expect(j.data.mobile.subjectText).toBe("stablepass · Racing TV");
+    // No trainer at all — the back-compat `byline` field is honestly null.
+    expect(j.data.mobile.horseName).toBeNull();
+    expect(j.data.mobile.byline).toBeNull();
+  });
+});

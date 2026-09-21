@@ -277,3 +277,148 @@ test("compose: a single photo gets no carousel — 1 and 0 render alike", async 
     fullPage: true,
   });
 });
+
+// ---------------------------------------------------------------------------
+// ENG-1266 — "Add more photos" (append) and the edit-mode strip.
+// ---------------------------------------------------------------------------
+
+/**
+ * Mint `count` MORE upload targets for `postId`, starting at `startSlot` —
+ * `POST /api/admin/posts/:id/photo-uploads`, the route this ticket added.
+ * Intercepted the same way `mockMultiUpload` intercepts the create-draft call:
+ * the browser fetch is what we own here, not the mock Postgres server.
+ */
+async function mockAppendUploads(page: Page, postId: string, startSlot: number, count: number) {
+  await page.route(`**/api/admin/posts/${postId}/photo-uploads`, async (route) => {
+    if (route.request().method() !== "POST") return route.continue();
+    const uploads = Array.from({ length: count }, (_, i) => {
+      const slot = startSlot + i;
+      const object = `${postId}/photo-${slot}`;
+      return {
+        sortOrder: slot,
+        path: object,
+        token: "e2e",
+        uploadUrl: `http://127.0.0.1:8787/storage/v1/object/upload/sign/post-media/${object}?token=e2e`,
+        bucket: "post-media",
+      };
+    });
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ data: { uploads } }),
+    });
+  });
+}
+
+/** The strip's paths, in display order — same reading as `stripOrder()` above. */
+async function tilePaths(page: Page): Promise<string[]> {
+  return page
+    .locator('[data-testid^="photo-tile-"]')
+    .evaluateAll((els) => els.map((el) => el.getAttribute("data-photo-path") ?? ""));
+}
+
+test("compose: pick 1, Add more photos → 2 more, strip shows 3 in pick order", async ({ page }) => {
+  test.setTimeout(120000);
+  await signIn(page);
+  // The first pick is a single-photo create (photoCount omitted, exactly the
+  // byte-identical request every pre-ENG-1266 single pick sends).
+  await mockMultiUpload(page, 1);
+  // "Add more" mints slots 1 and 2 on the SAME post — this is the endpoint
+  // `createDraft`'s up-front `photoCount` cannot serve after the fact.
+  await mockAppendUploads(page, "p-e2e", 1, 2);
+
+  await page.goto("/compose");
+  await expect(page.getByRole("heading", { name: "Compose post" })).toBeVisible();
+  await page.getByTestId("horse-search").fill("Mah");
+  await page.getByTestId("horse-opt-h1").click();
+  await page.getByTestId("caption").fill("Picked one, then added two more.");
+  await chooseType(page, "photo");
+
+  const [first] = await numberedPhotos(page, 1);
+  await page
+    .getByTestId("media-input")
+    .setInputFiles({ name: "gallop-1.png", mimeType: "image/png", buffer: first });
+  await expect(page.getByTestId("upload-done")).toBeVisible({ timeout: 20000 });
+  await expect(page.locator('[data-testid^="photo-tile-"]')).toHaveCount(1);
+
+  // "Add more photos" flips the next file-dialog result to APPEND, then opens
+  // the same hidden input the initial pick used.
+  await page.getByTestId("photo-add-more").click();
+  const more = await numberedPhotos(page, 2);
+  await page.getByTestId("media-input").setInputFiles(
+    more.map((buffer, i) => ({ name: `extra-${i + 1}.png`, mimeType: "image/png", buffer })),
+  );
+
+  // Three tiles, and the append did not touch the two already there — the
+  // pick order survives exactly, which is the ticket's headline regression.
+  await expect(page.locator('[data-testid^="photo-tile-"]')).toHaveCount(3);
+  await expect(page.locator('[data-testid^="photo-state-"]:has-text("uploading")')).toHaveCount(0, {
+    timeout: 20000,
+  });
+  expect(await tilePaths(page)).toEqual(["p-e2e/original", "p-e2e/photo-1", "p-e2e/photo-2"]);
+  await expect(page.getByTestId("photo-strip-help")).toContainText("3 of 10 photos");
+
+  await topOfPage(page);
+  await page.screenshot({
+    path: "e2e/__screenshots__/29-compose-append-photos.png",
+    fullPage: true,
+  });
+});
+
+test("compose edit: an existing 2-photo post loads, reorders, and saves the new order", async ({
+  page,
+}) => {
+  test.setTimeout(120000);
+  await signIn(page);
+
+  // The SAVE PATCH is intercepted directly, the same seam `mockMultiUpload`
+  // owns for create: `page.tsx`'s SSR loader (the part this test is actually
+  // proving — the `post_media` read the mock server now serves for `ce3`) runs
+  // server-to-server against the mock Postgres and is not interceptable here,
+  // but the client's save fetch IS a browser request, so pinning its body is
+  // both simpler and more precise than round-tripping a real
+  // `post_media` upsert through the fake PostgREST.
+  let savedBody: { media?: string[] } | null = null;
+  await page.route("**/api/admin/posts/ce3", async (route) => {
+    if (route.request().method() !== "PATCH") return route.continue();
+    savedBody = route.request().postDataJSON();
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ data: { id: "ce3" } }),
+    });
+  });
+
+  await page.goto("/compose?id=ce3");
+  await expect(page.getByRole("heading", { name: "Edit post" })).toBeVisible({ timeout: 30000 });
+
+  // The strip loads from `post_media` (ce3/original, ce3/photo-1), signed by
+  // the loader — this is the mock-server addition this ticket needed.
+  await expect(page.locator('[data-testid^="photo-tile-"]')).toHaveCount(2);
+  await expect(page.getByTestId("photo-tile-0").getByTestId("photo-cover")).toBeVisible();
+  expect(await tilePaths(page)).toEqual(["ce3/original", "ce3/photo-1"]);
+
+  await topOfPage(page);
+  await page.screenshot({
+    path: "e2e/__screenshots__/30-compose-edit-photo-strip.png",
+    fullPage: true,
+  });
+
+  // Reorder: bring the second photo to the front. The cover badge — the
+  // post.media_url mirror's stand-in — follows it.
+  await page.getByTestId("photo-up-1").click();
+  await expect(page.getByTestId("photo-tile-0").getByTestId("photo-cover")).toBeVisible();
+  expect(await tilePaths(page)).toEqual(["ce3/photo-1", "ce3/original"]);
+
+  await topOfPage(page);
+  await page.screenshot({
+    path: "e2e/__screenshots__/31-compose-edit-photo-reordered.png",
+    fullPage: true,
+  });
+
+  await page.getByTestId("primary-action").click();
+  await expect.poll(() => savedBody, { timeout: 15000 }).not.toBeNull();
+  // The new display order, contiguous from the new cover — exactly what the
+  // route mirrors into post.media_url.
+  expect(savedBody?.media).toEqual(["ce3/photo-1", "ce3/original"]);
+});

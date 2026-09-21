@@ -77,11 +77,62 @@ export type HorseOption = {
   racesToday: boolean;
 };
 
-/** A trainer for the editable byline dropdown (the full list is loaded). */
+/**
+ * `post.subject` and its rules live in `lib/posts/subject.ts`, NOT here.
+ *
+ * The BFF routes need the same three values and the same per-subject type
+ * rules that this screen does, and a route cannot import from
+ * `app/(dash)/compose/`. One definition, re-exported — the same split
+ * `lib/posts/labels.ts` took under ENG-745, and for the same reason: two
+ * copies of "which types may a StablePass post be" is how the picker starts
+ * offering a tile the route rejects.
+ */
+// Imported as well as re-exported: `export type { … } from` forwards the name
+// but does NOT bring it into this module's scope, and `EditInitial` below
+// annotates a field with it.
+import type { Subject } from "@/lib/posts/subject";
+export type { Subject };
+export {
+  isSubject,
+  STABLEPASS_HANDLE,
+  SUBJECT_LABEL,
+  SUBJECTS,
+  subjectAllowsType,
+  TYPES_BY_SUBJECT,
+} from "@/lib/posts/subject";
+
+/**
+ * A trainer the operator can attribute a post to.
+ *
+ * ENG-1268 widened this past `{id, name}`: the Trainer subject renders a
+ * search result row (photo + `stable · location`) and a preview head from the
+ * same option, so the picker needs what the trainer-profile header shows.
+ *
+ * GUARDRAIL 3 — `trainer_contact` is NOT here and must never be. The loader
+ * selects `id,name,display_name,stable_name,location,photo_url` and nothing
+ * else; a trainer's contact details are not part of composing a post.
+ */
 export type TrainerOption = {
   id: string;
   name: string;
+  /** Signed `trainer-photos` URL, or null → the initials fallback. */
+  photoUrl: string | null;
+  stableName: string | null;
+  location: string | null;
 };
+
+/**
+ * The trainer-profile subline: `stable · location`, skipping whichever is
+ * missing, and empty when both are.
+ *
+ * One function because three places print it — the search result row, the
+ * picked-trainer card and the preview head — and a card that disagrees with
+ * the preview beside it is the ENG-558 class of lie this screen keeps
+ * re-learning.
+ */
+export function trainerSubline(t: { stableName: string | null; location: string | null }): string {
+  return [t.stableName, t.location].filter((v): v is string => !!v && v.trim() !== "").join(" · ");
+}
 
 /**
  * The 202 payload from `POST /api/admin/posts`. Video drafts carry a Mux
@@ -121,7 +172,23 @@ export type CreateDraftResponse = {
    * `post_media.sort_order` is then assigned from DISPLAY position, not from
    * this. See `lib/posts/media.ts`.
    */
-  uploads?: { sortOrder: number; path: string; token: string; uploadUrl: string; bucket: string }[];
+  uploads?: PhotoUploadTarget[];
+};
+
+/**
+ * One signed direct-upload target: where a single photo's bytes go, and the
+ * one-shot credential to PUT them there. Returned by `POST /api/admin/posts`
+ * at create time and by `POST /api/admin/posts/:id/photo-uploads` for every
+ * slot appended afterwards (ENG-1266) — the same shape from both, so the strip
+ * has one code path for "a slot to fill".
+ */
+export type PhotoUploadTarget = {
+  /** The upload SLOT, never the display position. See lib/posts/media.ts. */
+  sortOrder: number;
+  path: string;
+  token: string;
+  uploadUrl: string;
+  bucket: string;
 };
 
 /**
@@ -136,6 +203,33 @@ export type CreateDraftResponse = {
 export type EditInitial = {
   id: string;
   status: string; // draft | scheduled | published | unpublished
+  /**
+   * ENG-1268 — who the post was posted AS. IMMUTABLE: `PATCH /posts/:id`
+   * rejects a `subject` key outright, so edit mode shows it read-only (the
+   * same `type-fixed` treatment the post type has had since ENG-611).
+   *
+   * A row written before this epic has `post.subject` defaulted to `horse` by
+   * B1's migration, so there is no null case to handle here.
+   */
+  subject: Subject;
+  /**
+   * ENG-1268 — `post.byline`, the StablePass subject's attribution. Null for
+   * a horse/trainer post, which take their byline from the trainer instead.
+   *
+   * It stores the NAME, not a `post_byline` id — which is why a RETIRED byline
+   * still renders here perfectly: retiring stamps `post_byline.retired_at` and
+   * never touches `post`. The picker has to union this value back into its
+   * options or the control silently blanks it (see ComposeScreen).
+   */
+  byline: string | null;
+  /**
+   * ENG-1268 — the post's own trainer, for a `trainer`-subject post: the
+   * preview head and the read-only picked-trainer card both render it.
+   *
+   * Null for a horse post (whose byline trainer comes from `trainers`) and for
+   * a StablePass post (which has none).
+   */
+  trainer: TrainerOption | null;
   mediaType: MediaType;
   mediaUrl: string | null;
   title: string;
@@ -149,7 +243,39 @@ export type EditInitial = {
    * old post the first time someone edits it.
    */
   label: string | null;
-  horse: HorseOption;
+  /**
+   * NULLABLE since ENG-1268: `post.horse_id` is nullable as of B1, so a
+   * trainer/StablePass post genuinely has no horse. Every reader must narrow
+   * rather than assume — the old non-null type is exactly what made "a horse
+   * heads every post" an untypeable-away assumption.
+   */
+  horse: HorseOption | null;
+  /**
+   * ENG-1266 — the post's CURRENT ordered photo set, for a photo post only.
+   *
+   * `path` is the bare Storage object path (what `post_media.media_url` holds
+   * and what a save sends back); `url` is a short-lived SIGNED URL for display,
+   * or null when signing failed — the tile then draws its frame without an
+   * image rather than a broken one, and the path is still saveable.
+   *
+   * Ordered by `post_media.sort_order`. A LEGACY photo post written before
+   * ENG-748 has no `post_media` rows at all, so the loader synthesises a
+   * single entry from `post.media_url`; editing it and saving two photos is
+   * what finally gives it rows 0..1. Empty for every non-photo type.
+   */
+  photos: { path: string; url: string | null }[];
+  /**
+   * ENG-1266 — true when the `post_media` read FAILED, as opposed to coming
+   * back empty.
+   *
+   * The two must never be conflated. An edit save sends the strip as the whole
+   * `media` set and the route deletes every row above it, so a strip built from
+   * a failed read would silently truncate the post. When this is set the screen
+   * degrades to the pre-ENG-1266 behaviour — media read-only, `media` omitted
+   * from every save — so the photos cannot be edited, but they also cannot be
+   * lost. Absent/false is the normal case.
+   */
+  photosUnavailable?: boolean;
 };
 
 /**

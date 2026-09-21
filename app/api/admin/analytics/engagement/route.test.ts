@@ -126,6 +126,25 @@ describe("GET /api/admin/analytics/engagement", () => {
     expect(j.data.topPosts[0]).toMatchObject({ opens: 0, reactions: 0, saves: 0 });
   });
 
+  // ENG-1269 — `admin_top_posts.horse_name` is null for a trainer/StablePass
+  // post (B1 made `post.horse_id` nullable). Pinned honestly through the BFF —
+  // it must pass the RPC's null straight through, not coerce it to "" or omit
+  // the key, either of which would hide the null from the screen that has to
+  // render around it.
+  it("passes through a null horse_name for a trainer/StablePass top post untouched", async () => {
+    asAdmin();
+    state.rpcs.admin_trainer_engagement = { data: [] };
+    state.rpcs.admin_horse_engagement = { data: [] };
+    state.rpcs.admin_top_posts = {
+      data: [{ post_id: "p9", title: "Newsroom wrap", horse_name: null, type: "photo" }],
+    };
+
+    const r = await GET(new Request("http://localhost/api/admin/analytics/engagement"));
+    expect(r.status).toBe(200);
+    const j = await r.json();
+    expect(j.data.topPosts[0].horseName).toBeNull();
+  });
+
   it("500s with a generic message when an rpc errors (no schema/SQL leakage)", async () => {
     asAdmin();
     state.rpcs.admin_trainer_engagement = { error: { message: 'relation "impression" does not exist' } };

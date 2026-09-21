@@ -41,7 +41,25 @@ const ADD_NEW_SENTINEL = "__stablepass_add_new_label__";
 /** Columns the picker needs. `id` is never sent to a member surface — `post.label` stores the NAME. */
 const LABEL_FIELDS = "id,name,is_builtin,sort_order";
 
+// The existence check (ENG-1267) needs `retired_at` to tell a retired
+// duplicate apart from a live one, but the response shape returned to the
+// picker must stay byte-identical to `LABEL_FIELDS` — so this is a SEPARATE
+// constant for the lookup read only, never used on a `.select()` whose result
+// reaches a response body directly.
+// A literal, not a concatenation of `LABEL_FIELDS`: Supabase's `.select()`
+// overload resolution needs a string LITERAL type to infer the row shape, and
+// `LABEL_FIELDS + ",retired_at"` widens to plain `string`, which resolves to
+// an untyped `GenericStringError` result instead.
+const LABEL_LOOKUP_FIELDS = "id,name,is_builtin,sort_order,retired_at";
+
 type LabelRow = { id: string; name: string; is_builtin: boolean; sort_order: number };
+type LabelLookupRow = LabelRow & { retired_at: string | null };
+
+/** Strips `retired_at` off a lookup row before it reaches a response body, so
+ * the shape stays identical to what `LABEL_FIELDS` alone would have read. */
+function toLabelDto(row: LabelLookupRow): LabelRow {
+  return { id: row.id, name: row.name, is_builtin: row.is_builtin, sort_order: row.sort_order };
+}
 
 /**
  * GET /api/admin/post-labels — the live category list for Compose's picker.
@@ -54,12 +72,18 @@ export async function GET() {
   if ("res" in g) return g.res;
   const { sb } = g;
 
-  const { data, error } = await sb.from("post_label").select(LABEL_FIELDS);
+  // Retired labels (ENG-1267) are excluded: they stay valid on the posts that
+  // already carry them, but are no longer offered for a NEW post.
+  const { data, error } = await sb.from("post_label").select(LABEL_FIELDS).is("retired_at", null);
   // Throw rather than degrade. An empty picker and a failed read look identical
   // in the UI, and the failure mode is worse than it sounds: an operator who
   // sees no categories concludes the feature is broken, or picks nothing and
   // ships an unlabelled post — the exact state this epic is removing.
-  if (error) return fail("query_failed", error.message, 400);
+  if (error) {
+    // Never put a Postgres error.message in a response body — log the code only.
+    console.error("post_label query_failed", error.code);
+    return fail("query_failed", "Could not load the labels.", 400);
+  }
 
   return ok(orderLabels((data ?? []) as LabelRow[]));
 }
@@ -118,16 +142,40 @@ export async function POST(req: Request) {
   // operator-supplied string to avoid "Race_Day" matching "Race Day".
   const { data: existingRows, error: readError } = await sb
     .from("post_label")
-    .select(LABEL_FIELDS);
-  if (readError) return fail("query_failed", readError.message, 400);
+    .select(LABEL_LOOKUP_FIELDS);
+  if (readError) {
+    // Never put a Postgres error.message in a response body — log the code only.
+    console.error("post_label query_failed", readError.code);
+    return fail("query_failed", "Could not load the labels.", 400);
+  }
 
   const target = labelDuplicateKey(name);
-  const match = ((existingRows ?? []) as LabelRow[]).find(
+  const match = ((existingRows ?? []) as LabelLookupRow[]).find(
     (r) => labelDuplicateKey(r.name) === target,
   );
-  // 200, not 201: nothing was created. The client selects `data.name` either
-  // way, which is what makes Add-new idempotent from the operator's side.
-  if (match) return ok(match);
+  if (match) {
+    // The only existing row was retired (ENG-1267) — re-adding it restores
+    // the SAME row rather than minting a twin.
+    if (match.retired_at != null) {
+      const { data: updated, error: updateError } = await sb
+        .from("post_label")
+        .update({ retired_at: null })
+        .eq("id", match.id)
+        .select(LABEL_FIELDS)
+        .single();
+      // Generic sentence, code only in the log: a PostgREST/Postgres message
+      // can carry constraint names, RLS wording and row contents, none of which
+      // belongs in a response body (ENG-1267).
+      if (updateError) {
+        console.error("post_label update_failed", updateError.code);
+        return fail("update_failed", "Could not restore the label.", 400);
+      }
+      return ok(updated ?? toLabelDto({ ...match, retired_at: null }));
+    }
+    // 200, not 201: nothing was created. The client selects `data.name` either
+    // way, which is what makes Add-new idempotent from the operator's side.
+    return ok(toLabelDto(match));
+  }
 
   const { data, error } = await sb
     .from("post_label")
@@ -155,14 +203,31 @@ export async function POST(req: Request) {
     // Re-read and hand back the winner rather than failing the operator for
     // losing a race they cannot see.
     if (error.code === "23505") {
-      const { data: raced } = await sb.from("post_label").select(LABEL_FIELDS);
-      const winner = ((raced ?? []) as LabelRow[]).find(
+      const { data: raced } = await sb.from("post_label").select(LABEL_LOOKUP_FIELDS);
+      const winner = ((raced ?? []) as LabelLookupRow[]).find(
         (r) => labelDuplicateKey(r.name) === target,
       );
-      if (winner) return ok(winner);
+      if (winner) {
+        if (winner.retired_at != null) {
+          const { data: updated, error: updateError } = await sb
+            .from("post_label")
+            .update({ retired_at: null })
+            .eq("id", winner.id)
+            .select(LABEL_FIELDS)
+            .single();
+          if (updateError) {
+            console.error("post_label update_failed", updateError.code);
+            return fail("update_failed", "Could not restore the label.", 400);
+          }
+          return ok(updated ?? toLabelDto({ ...winner, retired_at: null }));
+        }
+        return ok(toLabelDto(winner));
+      }
       return fail("label_taken", "That label already exists.", 409);
     }
-    return fail("insert_failed", error.message, 400);
+    // Never put a Postgres error.message in a response body — log the code only.
+    console.error("post_label insert_failed", error.code);
+    return fail("insert_failed", "Could not create the label.", 400);
   }
 
   return created(data);

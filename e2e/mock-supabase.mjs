@@ -2,6 +2,7 @@
 // Covers just enough of the GoTrue + PostgREST surface for the auth-shell
 // flow: password sign-in, getUser(), and the app_user.is_admin lookup.
 import http from "node:http";
+import zlib from "node:zlib";
 
 // getAuthenticatorAssuranceLevel() decodes session.access_token with auth-js's
 // decodeJWT(), which REQUIRES 3 base64url parts. A placeholder string throws
@@ -95,13 +96,20 @@ const HORSE_FIXTURES = HORSE_SEED.map((h) => ({
 // statuses so the row-action variants render. photo_url is null so the neutral
 // thumb fallback shows (no external asset needed).
 const POST_FIXTURES = [
-  { id: "p1", horse_id: "h1", type: "video", status: "published", label: "Trackwork", title: "Last fast gallop before Saturday", body: "He's spot-on. Track was rolling and he came home strong.", like_count: 142, published_at: "2026-07-11T04:10:00Z", scheduled_for: null, created_at: "2026-07-11T04:00:00Z", horse: { display_name: "Mahogany", racing_name: "MAHOGANY (AUS)", photo_url: null }, trainer: { name: "Chris Waller" } },
-  { id: "p2", horse_id: "h3", type: "photo", status: "published", label: "Owner Update", title: "Track session — three furlongs strong", body: "Morning at Caulfield, going was good.", like_count: 89, published_at: "2026-07-11T00:10:00Z", scheduled_for: null, created_at: "2026-07-11T00:00:00Z", horse: { display_name: "Black Caviar", racing_name: "BLACK CAVIAR (AUS)", photo_url: null }, trainer: { name: "Peter Moody" } },
-  { id: "p3", horse_id: "h4", type: "video", status: "scheduled", label: "Race Preview", title: "Saturday preview — race morning walk", body: "Set to go live race morning, 6:00am.", like_count: 0, published_at: null, scheduled_for: "2026-07-18T20:00:00Z", created_at: "2026-07-10T22:00:00Z", horse: { display_name: "Northern Star", racing_name: null, photo_url: null }, trainer: { name: "Peter Moody" } },
-  { id: "p4", horse_id: "h2", type: "text", status: "published", label: null, title: "Routine day — barrier trial complete", body: "Pleased with the way he finished off.", like_count: 56, published_at: "2026-07-10T09:00:00Z", scheduled_for: null, created_at: "2026-07-10T09:00:00Z", horse: { display_name: "Verry Elleegant", racing_name: "VERRY ELLEEGANT (NZ)", photo_url: null }, trainer: { name: "Chris Waller" } },
-  { id: "p5", horse_id: "h6", type: "photo", status: "draft", label: null, title: null, body: "Draft, waiting on photo from Chris.", like_count: 0, published_at: null, scheduled_for: null, created_at: "2026-07-10T06:00:00Z", horse: { display_name: "Winx", racing_name: "WINX (AUS)", photo_url: null }, trainer: { name: "Chris Waller" } },
-  { id: "p6", horse_id: "h1", type: "video", status: "published", label: "Race Day \u00b7 Today", title: "Track gallop — pack work", body: "Group session from Rosehill.", like_count: 118, published_at: "2026-07-09T05:00:00Z", scheduled_for: null, created_at: "2026-07-09T05:00:00Z", horse: { display_name: "Mahogany", racing_name: "MAHOGANY (AUS)", photo_url: null }, trainer: { name: "Chris Waller" } },
-  { id: "p7", horse_id: "h1", type: "photo", status: "unpublished", label: "Stable Update", title: "Stable life — Mahogany on the walker", body: "Cool-down after morning work.", like_count: 34, published_at: "2026-07-08T05:00:00Z", scheduled_for: null, created_at: "2026-07-08T05:00:00Z", horse: { display_name: "Mahogany", racing_name: "MAHOGANY (AUS)", photo_url: null }, trainer: { name: "Chris Waller" } },
+  { id: "p1", subject: "horse", byline: null, horse_id: "h1", type: "video", status: "published", label: "Trackwork", title: "Last fast gallop before Saturday", body: "He's spot-on. Track was rolling and he came home strong.", like_count: 142, published_at: "2026-07-11T04:10:00Z", scheduled_for: null, created_at: "2026-07-11T04:00:00Z", horse: { display_name: "Mahogany", racing_name: "MAHOGANY (AUS)", photo_url: null }, trainer: { name: "Chris Waller" } },
+  { id: "p2", subject: "horse", byline: null, horse_id: "h3", type: "photo", status: "published", label: "Owner Update", title: "Track session — three furlongs strong", body: "Morning at Caulfield, going was good.", like_count: 89, published_at: "2026-07-11T00:10:00Z", scheduled_for: null, created_at: "2026-07-11T00:00:00Z", horse: { display_name: "Black Caviar", racing_name: "BLACK CAVIAR (AUS)", photo_url: null }, trainer: { name: "Peter Moody" } },
+  { id: "p3", subject: "horse", byline: null, horse_id: "h4", type: "video", status: "scheduled", label: "Race Preview", title: "Saturday preview — race morning walk", body: "Set to go live race morning, 6:00am.", like_count: 0, published_at: null, scheduled_for: "2026-07-18T20:00:00Z", created_at: "2026-07-10T22:00:00Z", horse: { display_name: "Northern Star", racing_name: null, photo_url: null }, trainer: { name: "Peter Moody" } },
+  { id: "p4", subject: "horse", byline: null, horse_id: "h2", type: "text", status: "published", label: null, title: "Routine day — barrier trial complete", body: "Pleased with the way he finished off.", like_count: 56, published_at: "2026-07-10T09:00:00Z", scheduled_for: null, created_at: "2026-07-10T09:00:00Z", horse: { display_name: "Verry Elleegant", racing_name: "VERRY ELLEEGANT (NZ)", photo_url: null }, trainer: { name: "Chris Waller" } },
+  { id: "p5", subject: "horse", byline: null, horse_id: "h6", type: "photo", status: "draft", label: null, title: null, body: "Draft, waiting on photo from Chris.", like_count: 0, published_at: null, scheduled_for: null, created_at: "2026-07-10T06:00:00Z", horse: { display_name: "Winx", racing_name: "WINX (AUS)", photo_url: null }, trainer: { name: "Chris Waller" } },
+  { id: "p6", subject: "horse", byline: null, horse_id: "h1", type: "video", status: "published", label: "Race Day \u00b7 Today", title: "Track gallop — pack work", body: "Group session from Rosehill.", like_count: 118, published_at: "2026-07-09T05:00:00Z", scheduled_for: null, created_at: "2026-07-09T05:00:00Z", horse: { display_name: "Mahogany", racing_name: "MAHOGANY (AUS)", photo_url: null }, trainer: { name: "Chris Waller" } },
+  { id: "p7", subject: "horse", byline: null, horse_id: "h1", type: "photo", status: "unpublished", label: "Stable Update", title: "Stable life — Mahogany on the walker", body: "Cool-down after morning work.", like_count: 34, published_at: "2026-07-08T05:00:00Z", scheduled_for: null, created_at: "2026-07-08T05:00:00Z", horse: { display_name: "Mahogany", racing_name: "MAHOGANY (AUS)", photo_url: null }, trainer: { name: "Chris Waller" } },
+  // ENG-1269 — a trainer post: no horse (B1 made post.horse_id nullable), and
+  // the horse embed resolves to null rather than being omitted, matching what
+  // a real `horse:horse_id(...)` embed returns for a null FK. `trainer` still
+  // carries the byline name so the "Posted as" column has a trainer to name.
+  { id: "p8", subject: "trainer", byline: null, horse_id: null, type: "video", status: "published", label: null, title: "Preparing for a big Saturday", body: "A word from the stable ahead of raceday.", like_count: 21, published_at: "2026-07-07T05:00:00Z", scheduled_for: null, created_at: "2026-07-07T05:00:00Z", horse: null, trainer: { name: "Peter Moody" } },
+  // A StablePass post: no horse and no trainer, named by its byline instead.
+  { id: "p9", subject: "stablepass", byline: "Racing TV", horse_id: null, type: "photo", status: "published", label: null, title: "Season wrap from the newsroom", body: "A look back at the week across every stable.", like_count: 8, published_at: "2026-07-06T05:00:00Z", scheduled_for: null, created_at: "2026-07-06T05:00:00Z", horse: null, trainer: null },
 ];
 
 const ADMIN_USER = {
@@ -156,7 +164,12 @@ const D = 24 * H;
 const ago = (ms) => new Date(Date.now() - ms).toISOString();
 
 const TRAINER_SEED = [
-  { id: "t1", name: "Chris Waller", stable_name: "Chris Waller Racing", location: "Rosehill, NSW", status: "active", horses: 12, email: "chris@wallerstable.com.au", lastPost: 2 * H, marketing_visible: true, website_url: "https://wallerracing.com.au" },
+  // ENG-1268 — `photo_url` only on t1, same "one row proves it seeds, every
+  // other trainer still proves the empty/initials-fallback case" pattern the
+  // `website_url` field above already uses. Bare storage path (never a signed
+  // URL) — `buildDb` maps it straight through, and `page.tsx` signs the whole
+  // trainer set the same way it signs horse photos.
+  { id: "t1", name: "Chris Waller", stable_name: "Chris Waller Racing", location: "Rosehill, NSW", status: "active", horses: 12, email: "chris@wallerstable.com.au", lastPost: 2 * H, marketing_visible: true, website_url: "https://wallerracing.com.au", photo_url: "trainer-photos/t1.jpg" },
   { id: "t2", name: "Peter Moody", stable_name: "Moody Racing", location: "Caulfield, VIC", status: "active", horses: 4, email: "peter@moody.com.au", lastPost: 6 * H },
   { id: "t3", name: "James Cummings", stable_name: "Godolphin Australia", location: "Agnes Banks, NSW", status: "active", horses: 3, email: "james@godolphin.com.au", lastPost: D, marketing_visible: true },
   { id: "t4", name: "Anthony & Sam Cummings", stable_name: "Leilani Lodge", location: "Randwick, NSW", status: "active", horses: 2, email: "team@leilanilodge.com.au", lastPost: 2 * D },
@@ -174,7 +187,9 @@ const TRAINER_SEED = [
 function buildDb(seed) {
   const trainers = seed.map((t) => ({
     id: t.id, name: t.name, display_name: t.name, slug: t.id,
-    stable_name: t.stable_name, location: t.location, bio: null, photo_url: null, status: t.status,
+    // ENG-1268 — `t.photo_url` additive: undefined on every row that predates
+    // it, so `?? null` keeps every other trainer at the initials fallback.
+    stable_name: t.stable_name, location: t.location, bio: null, photo_url: t.photo_url ?? null, status: t.status,
     // ENG-766: marketing-visibility flag + the public-bucket object path it
     // publishes to. Fresh fixtures always start with no copied photo.
     marketing_visible: t.marketing_visible === true, marketing_photo_path: null,
@@ -592,11 +607,18 @@ function sendTable(res, method, rows, total) {
 // Dashboard (ENG-174 / T4) fixtures. One published-post set feeds three reads:
 // the recently-published table, the quiet-horse recency check, and race-day
 // per-runner post recency. h1 posted this week (loud); h2/h3 are stale (quiet).
+// ENG-1269 — `subject`/`byline` on every row, and two HORSE-LESS rows (dp8,
+// dp9). They are the dashboard half of "renders with a horse-less post
+// present": dp8/dp9 must name themselves in "Posted as" AND must be skipped by
+// the quiet-horse / race-day recency maps that key this same set by
+// `horse_id` (a null key there would mark a horse as having posted).
 const DASH_POSTS = [
-  { id: "p1", horse_id: "h1", type: "video", title: "Last fast gallop before Saturday", like_count: 142, published_at: new Date(Date.now() - 2 * 36e5).toISOString(), horse: { display_name: "Mahogany", racing_name: "MAHOGANY (AUS)" }, trainer: { name: "Chris Waller" } },
-  { id: "p4", horse_id: "h1", type: "photo", title: "Morning trackwork in the fog", like_count: 73, published_at: new Date(Date.now() - 26 * 36e5).toISOString(), horse: { display_name: "Mahogany", racing_name: "MAHOGANY (AUS)" }, trainer: { name: "Chris Waller" } },
-  { id: "p2", horse_id: "h2", type: "photo", title: "Track session - three furlongs strong", like_count: 89, published_at: new Date(Date.now() - 9 * 864e5).toISOString(), horse: { display_name: "Black Caviar", racing_name: "BLACK CAVIAR (AUS)" }, trainer: { name: "Peter Moody" } },
-  { id: "p3", horse_id: "h3", type: "text", title: "Routine day - barrier trial complete", like_count: 56, published_at: new Date(Date.now() - 12 * 864e5).toISOString(), horse: { display_name: "Winx", racing_name: "WINX (AUS)" }, trainer: { name: "Chris Waller" } },
+  { id: "dp9", subject: "stablepass", byline: "Racing TV", horse_id: null, type: "photo", title: "Season wrap from the newsroom", like_count: 8, published_at: new Date(Date.now() - 0.5 * 36e5).toISOString(), horse: null, trainer: null },
+  { id: "dp8", subject: "trainer", byline: null, horse_id: null, type: "video", title: "Preparing for a big Saturday", like_count: 21, published_at: new Date(Date.now() - 1 * 36e5).toISOString(), horse: null, trainer: { name: "Peter Moody" } },
+  { id: "p1", subject: "horse", byline: null, horse_id: "h1", type: "video", title: "Last fast gallop before Saturday", like_count: 142, published_at: new Date(Date.now() - 2 * 36e5).toISOString(), horse: { display_name: "Mahogany", racing_name: "MAHOGANY (AUS)" }, trainer: { name: "Chris Waller" } },
+  { id: "p4", subject: "horse", byline: null, horse_id: "h1", type: "photo", title: "Morning trackwork in the fog", like_count: 73, published_at: new Date(Date.now() - 26 * 36e5).toISOString(), horse: { display_name: "Mahogany", racing_name: "MAHOGANY (AUS)" }, trainer: { name: "Chris Waller" } },
+  { id: "p2", subject: "horse", byline: null, horse_id: "h2", type: "photo", title: "Track session - three furlongs strong", like_count: 89, published_at: new Date(Date.now() - 9 * 864e5).toISOString(), horse: { display_name: "Black Caviar", racing_name: "BLACK CAVIAR (AUS)" }, trainer: { name: "Peter Moody" } },
+  { id: "p3", subject: "horse", byline: null, horse_id: "h3", type: "text", title: "Routine day - barrier trial complete", like_count: 56, published_at: new Date(Date.now() - 12 * 864e5).toISOString(), horse: { display_name: "Winx", racing_name: "WINX (AUS)" }, trainer: { name: "Chris Waller" } },
 ];
 
 // Upcoming races within 24h. h1 posted 2h ago (green "Posted"), h9 never
@@ -670,12 +692,57 @@ const POST_LABEL_FIXTURES = [
   // every builtin and alphabetically among themselves.
   { id: "pl-15", name: "Owner Update", is_builtin: false, sort_order: 0 },
   { id: "pl-16", name: "Float Trip", is_builtin: false, sort_order: 0 },
+  // ENG-1290 — a RETIRED admin-added label, the label-side twin of the
+  // byline fixture `pb-3` ("Old Wrap Show"). It exists so the
+  // `.is("retired_at", null)` filter `page.tsx` puts on the DIRECT
+  // `post_label` read has something to exclude: without it, deleting that
+  // filter passes the whole suite.
+  { id: "pl-17", name: "Old Barn Tour", is_builtin: false, sort_order: 0, retired_at: "2026-06-01T00:00:00Z" },
+];
+
+// ENG-1268 — `post_byline`, the StablePass subject's attribution vocabulary.
+// Same lookup-table shape as `post_label` above (admin-managed, no builtins —
+// `post_byline` has no `is_builtin` column at all), read by both the
+// StablePass byline picker (`GET /api/admin/post-bylines`, `.is("retired_at",
+// null)`) and `page.tsx`'s own direct read for the first paint.
+//
+// "Racing TV" is named explicitly because it is the byline the compose-subject
+// e2e spec's happy path picks. "Track Media Wrap" is a second LIVE row so the
+// picker's dropdown is provably a list, not a single hardcoded option. "Old
+// Wrap Show" is RETIRED (non-null `retired_at`) — the row every picker read
+// must exclude, and the one an edit-mode post carrying it must still show
+// (ComposeScreen's `bylineOptions` union, ENG-1267's gotcha).
+const POST_BYLINE_FIXTURES = [
+  { id: "pb-1", name: "Racing TV", sort_order: 1, retired_at: null },
+  { id: "pb-2", name: "Track Media Wrap", sort_order: 2, retired_at: null },
+  { id: "pb-3", name: "Old Wrap Show", sort_order: 3, retired_at: "2026-06-01T00:00:00Z" },
 ];
 
 const COMPOSE_EDIT_POSTS = [
-  { id: "ce1", type: "text", status: "draft", title: "Barrier trial complete", body: "Pleased with the way he finished off.", label: "Trial", source_trainer_id: "t1", scheduled_for: null, media_url: null, mux_playback_id: null, horse: HORSE_EMBED },
-  { id: "ce2", type: "text", status: "draft", title: "Quiet day in the box", body: "Nothing much to report today.", label: null, source_trainer_id: "t1", scheduled_for: null, media_url: null, mux_playback_id: null, horse: HORSE_EMBED },
+  // ENG-1268 — `subject`/`byline`/`source_trainer` are additive columns B1's
+  // migration backfills every pre-existing row to `subject: "horse"` /
+  // `byline: null`; these three predate the epic and are horse posts, so they
+  // carry exactly that backfilled shape. `source_trainer` stays null — a
+  // horse post's trainer comes from the embedded `horse.trainer`, never from
+  // this column (that embed is for a TRAINER-subject post only).
+  { id: "ce1", type: "text", status: "draft", title: "Barrier trial complete", body: "Pleased with the way he finished off.", label: "Trial", subject: "horse", byline: null, source_trainer_id: "t1", source_trainer: null, scheduled_for: null, media_url: null, mux_playback_id: null, horse: HORSE_EMBED },
+  { id: "ce2", type: "text", status: "draft", title: "Quiet day in the box", body: "Nothing much to report today.", label: null, subject: "horse", byline: null, source_trainer_id: "t1", source_trainer: null, scheduled_for: null, media_url: null, mux_playback_id: null, horse: HORSE_EMBED },
+  // ENG-1266 — a photo post with an already-saved multi-photo set, for the
+  // edit-mode strip load + reorder + save e2e. `media_url` mirrors row 0 of
+  // POST_MEDIA_FIXTURES.ce3, exactly as the real writer keeps them in step.
+  { id: "ce3", type: "photo", status: "draft", title: null, body: "Two from this morning's session.", label: null, subject: "horse", byline: null, source_trainer_id: "t1", source_trainer: null, scheduled_for: null, media_url: "ce3/original", mux_playback_id: null, horse: HORSE_EMBED },
 ];
+
+// ENG-1266 — `post_media` rows behind the compose EDIT loader's multi-photo
+// read (page.tsx: `.from("post_media").select("media_url,sort_order").eq(
+// "post_id", id).order("sort_order")`). Keyed by post id; shaped exactly as
+// the column names the loader selects.
+const POST_MEDIA_FIXTURES = {
+  ce3: [
+    { media_url: "ce3/original", sort_order: 0 },
+    { media_url: "ce3/photo-1", sort_order: 1 },
+  ],
+};
 
 // Active horses for the quiet-horse check. h1 posted this week (loud); h2/h3
 // stale; h5 never posted — so three quiet horses, one retired (matches mockup).
@@ -693,6 +760,79 @@ const DASH_HORSES = [
 // and every photo preview in the evidence would have been empty — which would
 // have made a crop screenshot prove nothing at all.
 const STORAGE = new Map();
+
+// ENG-1266 — a minimal solid-colour PNG encoder, so the compose EDIT screenshots
+// show real thumbnails instead of broken-image icons.
+//
+// The edit strip loads photos that were uploaded in some EARLIER session, so
+// nothing in the test run ever PUTs their bytes and `STORAGE` has no entry to
+// serve — every tile renders as a broken <img>, and a screenshot of two broken
+// icons cannot show that a reorder moved anything. Seeding the fixture objects
+// is the same reasoning the comment on STORAGE above already gives for keeping
+// uploaded bytes at all.
+//
+// Hand-rolled rather than a fixture file on disk: the repo deliberately ships no
+// binary image fixtures (compose.spec.ts synthesises its webm, and the
+// multi-photo spec draws its own canvases), and no real client imagery may end
+// up in a PR screenshot. Node's zlib is all a valid PNG needs.
+const CRC_TABLE = Array.from({ length: 256 }, (_, n) => {
+  let c = n;
+  for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+  return c >>> 0;
+});
+const crc32 = (buf) => {
+  let c = 0xffffffff;
+  for (const byte of buf) c = CRC_TABLE[(c ^ byte) & 0xff] ^ (c >>> 8);
+  return (c ^ 0xffffffff) >>> 0;
+};
+const pngChunk = (type, data) => {
+  const len = Buffer.alloc(4);
+  len.writeUInt32BE(data.length);
+  const body = Buffer.concat([Buffer.from(type, "ascii"), data]);
+  const crc = Buffer.alloc(4);
+  crc.writeUInt32BE(crc32(body));
+  return Buffer.concat([len, body, crc]);
+};
+/** A solid `[r,g,b]` PNG, with a contrasting band down its left edge. */
+function solidPng(width, height, [r, g, b], [br, bg, bb]) {
+  const raw = Buffer.alloc(height * (1 + width * 3));
+  for (let y = 0; y < height; y++) {
+    const row = y * (1 + width * 3);
+    raw[row] = 0; // filter: none
+    for (let x = 0; x < width; x++) {
+      const band = x < Math.floor(width / 6);
+      const i = row + 1 + x * 3;
+      raw[i] = band ? br : r;
+      raw[i + 1] = band ? bg : g;
+      raw[i + 2] = band ? bb : b;
+    }
+  }
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(width, 0);
+  ihdr.writeUInt32BE(height, 4);
+  ihdr[8] = 8; // bit depth
+  ihdr[9] = 2; // colour type: truecolour RGB
+  return Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    pngChunk("IHDR", ihdr),
+    pngChunk("IDAT", zlib.deflateSync(raw)),
+    pngChunk("IEND", Buffer.alloc(0)),
+  ]);
+}
+
+// The two objects POST_MEDIA_FIXTURES.ce3 points at. Distinct colours on
+// purpose: the reorder screenshot has to make it obvious which tile moved, and
+// two identical squares would prove nothing. Keyed exactly as the signed-object
+// GET below looks them up (`<bucket>/<path>`).
+for (const [path, colour] of [
+  ["post-media/ce3/original", [0x28, 0x5d, 0x50]],
+  ["post-media/ce3/photo-1", [0x8c, 0x5a, 0x2b]],
+]) {
+  STORAGE.set(path, {
+    body: solidPng(600, 375, colour, [0xfa, 0xf7, 0xf2]),
+    contentType: "image/png",
+  });
+}
 
 async function drainBinary(req) {
   return new Promise((resolve) => {
@@ -1294,6 +1434,29 @@ export function startMockSupabase() {
       sendJson(res, 200, accept.includes("pgrst.object") ? match : match ? [match] : []);
       return;
     }
+
+    // ENG-1266 — the compose EDIT loader's photo-set read, for a `type:
+    // "photo"` post: `.from("post_media").select("media_url,sort_order").eq(
+    // "post_id", id).order("sort_order")`.
+    //
+    // EXACT pathname match, not `startsWith` — `post_media` is Postgres's own
+    // table, distinct from `post`, but the string itself starts with
+    // "/rest/v1/post" and would otherwise fall into (or shadow) one of the
+    // `/rest/v1/post` branches above/below keyed on `startsWith`.
+    //
+    // Without this branch `post_media` is not a key of `DB`, so the read falls
+    // through every specific branch and the generic dispatcher's
+    // `hasOwnProperty` check, landing on the catch-all `sendJson(res, 200, {})`
+    // at the bottom — an OBJECT, not an array. page.tsx's loader then calls
+    // `.map()` on it and the edit page 500s.
+    if (req.method === "GET" && url.pathname === "/rest/v1/post_media") {
+      const postIdParam = url.searchParams.get("post_id");
+      const wanted = postIdParam && postIdParam.startsWith("eq.") ? postIdParam.slice(3) : null;
+      const rows = (wanted && POST_MEDIA_FIXTURES[wanted]) || [];
+      const sorted = [...rows].sort((a, b) => a.sort_order - b.sort_order);
+      sendJson(res, 200, sorted);
+      return;
+    }
     // Posts library (T7 / ENG-177). The list read selects `status` — which the
     // trainers' post read (source_trainer_id,published_at,created_at) does not —
     // so use that to serve the full post-library fixtures here, ahead of the
@@ -1335,7 +1498,16 @@ export function startMockSupabase() {
     if (url.pathname === "/rest/v1/post_label") {
       const fold = (n) => n.trim().replace(/\s+/g, " ").toLowerCase();
       if (req.method === "GET") {
-        sendJson(res, 200, POST_LABEL_FIXTURES);
+        // ENG-1290 — honour `retired_at=is.null`, exactly as the post_byline
+        // branch below does. Both readers of this table (`GET
+        // /api/admin/post-labels` and `page.tsx`'s own direct read) always
+        // send it; ignoring it here is what left the retired-label filter
+        // with no automated proof in any layer.
+        const wantsLiveOnly = decodeURIComponent(url.search).includes("retired_at=is.null");
+        const rows = wantsLiveOnly
+          ? POST_LABEL_FIXTURES.filter((l) => l.retired_at == null)
+          : POST_LABEL_FIXTURES;
+        sendJson(res, 200, rows);
         return;
       }
       if (req.method === "POST") {
@@ -1371,6 +1543,93 @@ export function startMockSupabase() {
         POST_LABEL_FIXTURES.push(created);
         const accept = req.headers["accept"] ?? "";
         sendJson(res, 201, accept.includes("pgrst.object") ? created : [created]);
+        return;
+      }
+    }
+
+    // /rest/v1/post_byline (ENG-1268) — mirrors the /rest/v1/post_label block
+    // immediately above, for the same reasons: its own branch ahead of the
+    // generic reader, because Add-new/retire have to WRITE here.
+    //
+    // Since ENG-1290 both this table's GET branch AND post_label's, just
+    // above, honour the `retired_at=is.null` filter: both readers of this
+    // table (`GET /api/admin/post-bylines` and `page.tsx`'s own read) always
+    // send it, and a post's own RETIRED byline unioning back into the picker
+    // (ComposeScreen's `bylineOptions`) is exactly the behaviour an e2e for
+    // this ticket exists to prove — which requires the retired fixture to be
+    // genuinely excluded from the unfiltered picker read first.
+    if (url.pathname === "/rest/v1/post_byline") {
+      const fold = (n) => n.trim().replace(/\s+/g, " ").toLowerCase();
+      const accept = req.headers["accept"] ?? "";
+      const idParam = url.searchParams.get("id");
+
+      if (req.method === "GET" && idParam && idParam.startsWith("eq.")) {
+        // By-id read: the retire route's `.eq("id", id).maybeSingle()`.
+        const wanted = idParam.slice(3);
+        const match = POST_BYLINE_FIXTURES.find((b) => b.id === wanted) ?? null;
+        sendJson(res, 200, accept.includes("pgrst.object") ? match : match ? [match] : []);
+        return;
+      }
+      if (req.method === "GET") {
+        const wantsLiveOnly = decodeURIComponent(url.search).includes("retired_at=is.null");
+        const rows = wantsLiveOnly
+          ? POST_BYLINE_FIXTURES.filter((b) => b.retired_at == null)
+          : POST_BYLINE_FIXTURES;
+        sendJson(res, 200, rows);
+        return;
+      }
+      if (req.method === "POST") {
+        let parsed = {};
+        try {
+          parsed = JSON.parse(rawBody || "{}");
+        } catch {
+          parsed = {};
+        }
+        const rows = Array.isArray(parsed) ? parsed : [parsed];
+        const name = String(rows[0]?.name ?? "");
+        const clash = POST_BYLINE_FIXTURES.find((b) => fold(b.name) === fold(name));
+        if (clash) {
+          if (clash.retired_at != null) {
+            // Re-adding a RETIRED byline restores the same row/id rather than
+            // minting a twin — the one contract difference from post_label's
+            // idempotent-by-name Add-new (A2 locked a LIVE duplicate to 409).
+            clash.retired_at = null;
+            sendJson(res, 200, accept.includes("pgrst.object") ? clash : [clash]);
+            return;
+          }
+          sendJson(res, 409, {
+            code: "23505",
+            message: 'duplicate key value violates unique constraint "post_byline_name_key"',
+          });
+          return;
+        }
+        const created = {
+          id: `pb-${POST_BYLINE_FIXTURES.length + 1}`,
+          name,
+          sort_order: 0,
+          retired_at: null,
+        };
+        POST_BYLINE_FIXTURES.push(created);
+        sendJson(res, 201, accept.includes("pgrst.object") ? created : [created]);
+        return;
+      }
+      if (req.method === "PATCH" && idParam && idParam.startsWith("eq.")) {
+        // Retire (`.update({retired_at}).eq("id", id)`) and Add-new's
+        // un-retire path both PATCH by id.
+        const wanted = idParam.slice(3);
+        const row = POST_BYLINE_FIXTURES.find((b) => b.id === wanted);
+        if (!row) {
+          sendJson(res, 200, []);
+          return;
+        }
+        let parsed = {};
+        try {
+          parsed = JSON.parse(rawBody || "{}");
+        } catch {
+          parsed = {};
+        }
+        Object.assign(row, parsed);
+        sendJson(res, 200, accept.includes("pgrst.object") ? row : [row]);
         return;
       }
     }

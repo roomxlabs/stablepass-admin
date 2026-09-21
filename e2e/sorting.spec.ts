@@ -30,7 +30,11 @@ test("posts — sortable headers, default (unsorted) state", async ({ page }) =>
   await expect(page.locator(".adm-table tbody tr").first()).toBeVisible({ timeout: 30000 });
 
   // Unsorted: every sortable header reports aria-sort="none".
-  for (const col of ["horse", "status", "published", "engagement"]) {
+  // ENG-1293 renamed the "Posted as" sort KEY horse → subject (the visible
+  // label is unchanged), and SortableTh derives its testid from the key, so
+  // this column is `th-subject`. The trainers-list `th-horses` further down is
+  // a different column (a roster count) and is untouched.
+  for (const col of ["subject", "status", "published", "engagement"]) {
     await expect(page.getByTestId(`th-${col}`)).toHaveAttribute("aria-sort", "none");
   }
   await page.screenshot({ path: "e2e/__screenshots__/15-posts-sortable-default.png", fullPage: true });

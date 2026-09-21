@@ -222,8 +222,12 @@ export default async function DashboardPage() {
               <thead>
                 <tr>
                   <th>Post</th>
-                  <th>Horse</th>
-                  <th>Trainer</th>
+                  {/* ENG-1269 — one "Posted as" column replaces the old
+                      Horse + Trainer pair. A trainer post has no horse and a
+                      StablePass post has neither, so the pair rendered "— / —"
+                      for two of the three subjects; the shared formatter names
+                      all three exactly as the posts library does. */}
+                  <th>Posted as</th>
                   <th>Published</th>
                   <th>Engagement</th>
                   <th />
@@ -241,8 +245,19 @@ export default async function DashboardPage() {
                         <div className="row-sub">{typeLabel(p.type)}</div>
                       </div>
                     </td>
-                    <td>{p.horse ?? "—"}</td>
-                    <td>{p.trainer ?? "—"}</td>
+                    <td>
+                      {/* `text` is the formatter's own one-line flattening —
+                          "Mahogany", "Sam Rice · Trainer", "stablepass ·
+                          Newsroom" — so this cell can never disagree with the
+                          posts library's two-line version of the same post.
+                          The sub-line is the horse's trainer, which only a
+                          horse post has (the other two already fold their
+                          qualifier into `text`). */}
+                      <div>{p.subject.text}</div>
+                      {p.subject.subject === "horse" && p.subject.detail && (
+                        <div className="row-sub">{p.subject.detail}</div>
+                      )}
+                    </td>
                     <td>{timeAgo(p.publishedAt)}</td>
                     <td>
                       <strong>{fmt(p.likeCount)}</strong> reactions

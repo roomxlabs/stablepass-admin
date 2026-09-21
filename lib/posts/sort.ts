@@ -13,7 +13,7 @@
 export type SortDir = "asc" | "desc";
 
 /** The `?sort=` values the Posts list accepts. "" = the default order. */
-export const POST_SORT_KEYS = ["published", "engagement", "status", "horse"] as const;
+export const POST_SORT_KEYS = ["published", "engagement", "status", "subject"] as const;
 export type PostSort = (typeof POST_SORT_KEYS)[number];
 
 /**
@@ -25,14 +25,29 @@ export const POST_SORT_DEFAULT_DIR: Record<PostSort, SortDir> = {
   published: "desc",
   engagement: "desc",
   status: "asc",
-  horse: "asc",
+  subject: "asc",
 };
+
+/** Pre-ENG-1293 `?sort=` values, kept parsing so bookmarked URLs keep meaning
+ * what they meant. `horse` was renamed `subject` when the sort stopped being
+ * horse-only; mapping it (rather than dropping it to the default order) is
+ * what makes an old bookmark show the sort the operator actually saved.
+ *
+ * A `Map`, deliberately, NOT an object literal: this is looked up with a
+ * user-controlled string, and `key in {…}` / `{…}[key]` walk the prototype
+ * chain, so `?sort=constructor` (or `toString`, `valueOf`, `__proto__`) would
+ * come back as a `Function` typed `PostSort`. `tsc` cannot see that — indexing
+ * a `Record<string, PostSort>` is typed `PostSort` whatever comes out — and the
+ * bogus value then reaches `ORDER_COLUMN[sort]` as `undefined`, which PostgREST
+ * 400s on. The allow-list this alias table sits behind exists precisely so no
+ * input can escape it; a `Map` keeps that true. */
+const LEGACY_SORT_ALIASES = new Map<string, PostSort>([["horse", "subject"]]);
 
 /** Coerce a raw `?sort=` param; anything unrecognised means "default order". */
 export function parsePostSort(v: unknown): PostSort | "" {
-  return typeof v === "string" && (POST_SORT_KEYS as readonly string[]).includes(v)
-    ? (v as PostSort)
-    : "";
+  if (typeof v !== "string") return "";
+  if ((POST_SORT_KEYS as readonly string[]).includes(v)) return v as PostSort;
+  return LEGACY_SORT_ALIASES.get(v) ?? "";
 }
 
 /** One `.order(column, options)` call. */
@@ -45,16 +60,18 @@ export type OrderSpec = {
 
 // Which DB column each sort key orders by.
 //
-// `horse` orders by the EMBEDDED horse name using PostgREST's
-// `embedded(column)` order syntax — the embed is aliased `horse:horse_id(...)`
-// in both callers' select strings, and `post.horse_id` is NOT NULL, so every
-// row participates. It is deliberately not `horse_id`: sorting by a uuid is
-// sorting by nothing an operator can see.
+// `subject` orders by the `subject_name` PostgREST computed column on `post`
+// (added by ENG-1292) — a post-level column, so it needs no embed and no
+// join, which is what makes the sort cover horse, trainer AND StablePass
+// posts. Note that the BE's horse arm is display-first with both sides
+// trimmed (`coalesce(nullif(btrim(display_name),''), nullif(btrim(racing_name),''))`)
+// so the list sorts by exactly the string `app/(dash)/posts/format.ts` renders
+// in the cell.
 const ORDER_COLUMN: Record<PostSort, string> = {
   published: "published_at",
   engagement: "like_count",
   status: "status",
-  horse: "horse(display_name)",
+  subject: "subject_name",
 };
 
 // Columns that can be NULL, so the order has to say where the NULLs go.
@@ -62,72 +79,45 @@ const ORDER_COLUMN: Record<PostSort, string> = {
 // engagement. In BOTH directions they sink: a draft is not "the oldest post",
 // and floating twenty of them to the top of an ascending sort hides the rows
 // the operator asked to see.
-// `horse` is included because `HorseEmbed.display_name` is typed `string | null`
-// (app/(dash)/posts/types.ts). Leaving it out was justified by `post.horse_id`
-// being NOT NULL, but that is FK nullability, not COLUMN nullability — a horse
-// with no display_name would float to the top of a descending sort, which is
-// the exact behaviour the two entries below exist to prevent.
+// `subject_name` is NULL when the name cannot be resolved (horse row hidden,
+// missing or unreadable), and those must sink too, for the same reason: a
+// post with no resolvable name is not "the first post alphabetically", and
+// floating it to the top of a descending sort hides the rows the operator
+// asked to see.
 const NULLABLE: Partial<Record<PostSort, true>> = {
   published: true,
   engagement: true,
-  horse: true,
+  subject: true,
 };
 
-/**
- * The posts select string, adjusted for the active sort.
- *
- * Ordering the PARENT rows by an embedded column requires the embed to be an
- * INNER join — `supabase-js` says so in its own `.order()` docs ("you can order
- * referenced tables, but it only affects the ordering of the parent table if
- * you use `!inner`"), and without it PostgREST is free to order nothing at all.
- * So the `horse` embed becomes `!inner` for exactly the one sort that needs it.
- *
- * No rows are lost by the inner join: `post.horse_id` is NOT NULL (every post
- * type, `text` included, requires a horse — see the create route), so every row
- * has a horse to join to.
- *
- * Every other sort gets the select string UNCHANGED, byte for byte, so the
- * default query is exactly the one that shipped before this ticket.
- */
-// The two REAL select strings, hoisted here from their callers so that
-// `postsSelect`'s rewrite can be tested against what actually ships rather than
-// against a hand-written literal in the test file. A test that builds its own
-// select string proves the helper and nothing about the wiring.
+// The two REAL select strings, hoisted here from their callers so a test can
+// pin what actually ships rather than a hand-written literal in the test
+// file. A test that builds its own select string proves nothing about the
+// wiring.
 //
 // The Posts SCREEN needs the media columns (thumbnails, poster, playback); the
-// BFF list does not. Both carry the `horse:horse_id(...)` embed the horse sort
-// rewrites, and both are asserted in lib/posts/sort.test.ts.
+// BFF list does not. Both are asserted in lib/posts/sort.test.ts.
 // `label` is LOAD-BEARING for the screen (ENG-979 / #86): `mapPostRow` names
 // every row by its label, so dropping it from this string makes every label
 // vanish from the list with a GREEN suite — format.test.ts tests the mapper,
 // not the select. lib/posts/sort.test.ts pins it here for that reason.
+// `subject` + `byline` are LOAD-BEARING the same way `label` is (ENG-1269):
+// `mapPostRow` names every row through `subjectLabel(...)`, so dropping either
+// from this string silently relabels every trainer/StablePass row as a horse
+// post with a GREEN suite — format.test.ts tests the mapper, not the select.
+// lib/posts/sort.test.ts pins them here for that reason.
+// `subject_name` (ENG-1292/ENG-1293) is the computed column the "Posted as"
+// sort orders by; it is fetched so the order target is part of the
+// projection, not merely a column Postgres can order without returning.
 export const POSTS_PAGE_SELECT =
-  "id,horse_id,type,status,title,label,body,media_url,mux_playback_id,poster_url,poster_time_s,like_count,published_at,scheduled_for,created_at," +
+  "id,subject,subject_name,horse_id,byline,type,status,title,label,body,media_url,mux_playback_id,poster_url,poster_time_s,like_count,published_at,scheduled_for,created_at," +
   "horse:horse_id(display_name,racing_name,photo_url),trainer:source_trainer_id(name)";
 
 // `label` (ENG-745) is selected so the posts library can render the category
 // chip; that rendering is a later slice, this only carries it.
 export const POSTS_API_SELECT =
-  "id,horse_id,type,status,title,body,label,like_count,published_at,scheduled_for,created_at," +
+  "id,subject,subject_name,horse_id,byline,type,status,title,body,label,like_count,published_at,scheduled_for,created_at," +
   "horse:horse_id(display_name,racing_name),trainer:source_trainer_id(name)";
-
-export const HORSE_EMBED = "horse:horse_id(";
-export const HORSE_EMBED_INNER = "horse:horse_id!inner(";
-
-export function postsSelect(select: string, sort: PostSort | ""): string {
-  if (sort !== "horse") return select;
-  // THROW rather than return the input unchanged. `String.replace` with a
-  // needle that does not match returns the original string silently, so a
-  // reformatted select ("horse:horse_id (" , a newline, a renamed alias) would
-  // degrade this sort to "orders nothing" while every test stayed green — the
-  // failure is invisible precisely because the query remains valid.
-  if (!select.includes(HORSE_EMBED))
-    throw new Error(
-      `postsSelect: no \`${HORSE_EMBED}\` embed in the select string, so the horse sort cannot be ordered. ` +
-        "Update HORSE_EMBED if the alias changed.",
-    );
-  return select.replace(HORSE_EMBED, HORSE_EMBED_INNER);
-}
 
 /**
  * The ordered list of `.order()` calls for a `?sort=`/`?dir=` pair.

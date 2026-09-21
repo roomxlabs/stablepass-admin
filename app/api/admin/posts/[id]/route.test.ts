@@ -65,7 +65,13 @@ describe("PATCH /api/admin/posts/:id — edit fields", () => {
 
   it("edits fields → 200", async () => {
     asAdmin();
-    state.tables.post = { mutate: { single: { id: "p1", title: "New" } } };
+    // ENG-1268 — a `sourceTrainerId` in the body makes the route pre-read
+    // `post.subject` (the trainer byline is horse-post-only), so this fixture
+    // now needs a `select` script alongside the update's `mutate` one.
+    state.tables.post = {
+      select: { single: { subject: "horse" } },
+      mutate: { single: { id: "p1", title: "New" } },
+    };
     const r = await PATCH(patchReq({ title: "New", sourceTrainerId: "t2" }), ctx("p1"));
     expect(r.status).toBe(200);
     const j = await r.json();
@@ -547,5 +553,87 @@ describe("ENG-748 · post_media set + media_url mirror", () => {
     const j = await r.json();
     expect(j.error.code).toBe("validation_failed");
     expect(j.error.message).toBe("No editable fields provided.");
+  });
+});
+
+describe("PATCH — subject & byline (ENG-1268)", () => {
+  // NOTE (.rx/gotchas.md — "supabase-fake's .single() reads the table script
+  // TWICE per call"): the route does up to TWO reads off `post` before the
+  // update — the subject pre-read (`.select("subject")...maybeSingle()`) and
+  // the final `.update(...).select("*").maybeSingle()`. These are TWO SEPARATE
+  // `sb.from("post")` builders, so the first reads `state.tables.post.select`
+  // (op stays "select" on that chain) and the second reads
+  // `state.tables.post.mutate` (op flips to "mutate" once `.update()` is
+  // called) — no getter/sequencing trick needed, just both sub-keys scripted
+  // on the one table entry. `post_byline` is scripted as its own table entry.
+
+  it("byline OK: a live post_byline name on a stablepass post → 200, update carries byline", async () => {
+    asAdmin();
+    state.tables.post = {
+      select: { single: { subject: "stablepass" } },
+      mutate: { single: { id: "p1", byline: "Racing TV" } },
+    };
+    state.tables.post_byline = { select: { single: { name: "Racing TV", retired_at: null } } };
+    const r = await PATCH(patchReq({ byline: "Racing TV" }), ctx("p1"));
+    expect(r.status).toBe(200);
+    const updateCall = state.calls.mutations.find((m) => m.table === "post" && m.op === "update");
+    expect(updateCall?.payload).toMatchObject({ byline: "Racing TV" });
+  });
+
+  it("byline naming a RETIRED post_byline row → 400 unknown_byline", async () => {
+    asAdmin();
+    state.tables.post = { select: { single: { subject: "stablepass" } } };
+    state.tables.post_byline = {
+      select: { single: { name: "Retired One", retired_at: "2026-09-01T00:00:00Z" } },
+    };
+    const r = await PATCH(patchReq({ byline: "Retired One" }), ctx("p1"));
+    expect(r.status).toBe(400);
+    const j = await r.json();
+    expect(j.error.code).toBe("unknown_byline");
+  });
+
+  it("byline on a HORSE post → 400 validation_failed (byline is stablepass-only)", async () => {
+    asAdmin();
+    state.tables.post = { select: { single: { subject: "horse" } } };
+    const r = await PATCH(patchReq({ byline: "Racing TV" }), ctx("p1"));
+    expect(r.status).toBe(400);
+    const j = await r.json();
+    expect(j.error.code).toBe("validation_failed");
+  });
+
+  it("subject in the body → 400 validation_failed (immutable), and NO update mutation was recorded", async () => {
+    asAdmin();
+    const r = await PATCH(patchReq({ subject: "horse" }), ctx("p1"));
+    expect(r.status).toBe(400);
+    const j = await r.json();
+    expect(j.error.code).toBe("validation_failed");
+    expect(state.calls.mutations.some((m) => m.table === "post" && m.op === "update")).toBe(false);
+  });
+
+  it("horseId in the body → 400 validation_failed (immutable)", async () => {
+    asAdmin();
+    const r = await PATCH(patchReq({ horseId: "h2" }), ctx("p1"));
+    expect(r.status).toBe(400);
+    const j = await r.json();
+    expect(j.error.code).toBe("validation_failed");
+  });
+
+  it("sourceTrainerId on a TRAINER post → 400 validation_failed (the trainer post's trainer is immutable)", async () => {
+    asAdmin();
+    state.tables.post = { select: { single: { subject: "trainer" } } };
+    const r = await PATCH(patchReq({ sourceTrainerId: "t9" }), ctx("p1"));
+    expect(r.status).toBe(400);
+    const j = await r.json();
+    expect(j.error.code).toBe("validation_failed");
+  });
+
+  it("sourceTrainerId on a HORSE post → 200 (the trainer byline is still editable)", async () => {
+    asAdmin();
+    state.tables.post = {
+      select: { single: { subject: "horse" } },
+      mutate: { single: { id: "p1", source_trainer_id: "t9" } },
+    };
+    const r = await PATCH(patchReq({ sourceTrainerId: "t9" }), ctx("p1"));
+    expect(r.status).toBe(200);
   });
 });

@@ -21,6 +21,13 @@ const api = vi.hoisted(() => ({
   discardDraft: vi.fn(),
   uploadVideoToMux: vi.fn(),
   uploadPhotoToStorage: vi.fn(),
+  // ENG-1266 — "Add more photos".
+  requestPhotoUploads: vi.fn(),
+  // ENG-1268 — the StablePass byline picker's Add-new / retire, and the
+  // titles picker's retire.
+  createByline: vi.fn(),
+  retireByline: vi.fn(),
+  retireLabel: vi.fn(),
 }));
 vi.mock("./api", () => api);
 
@@ -37,8 +44,8 @@ vi.mock("next/navigation", () => ({
 }));
 
 const TRAINERS: TrainerOption[] = [
-  { id: "t1", name: "Chris Waller" },
-  { id: "t2", name: "Peter Moody" },
+  { id: "t1", name: "Chris Waller", photoUrl: null, stableName: null, location: null },
+  { id: "t2", name: "Peter Moody", photoUrl: null, stableName: null, location: null },
 ];
 
 const HORSES: HorseOption[] = [
@@ -87,7 +94,12 @@ describe("ComposeScreen", () => {
   it("renders the compose flow", () => {
     renderScreen();
     expect(screen.getByRole("heading", { name: "Compose post" })).toBeTruthy();
-    expect(screen.getByText("Which horse is this for?")).toBeTruthy();
+    // ENG-1268 renamed Step 1's heading from "Which horse is this for?" — the
+    // step now picks a SUBJECT, not just a horse. ENG-1297 then settled the
+    // wording on "Posted as", the same words the Posts library column uses,
+    // under a "Step 1 · Subject" eyebrow so the screen never says it twice.
+    expect(screen.getByText("Posted as")).toBeTruthy();
+    expect(screen.getByText("Step 1 · Subject")).toBeTruthy();
     expect(screen.getByText("Add the content.")).toBeTruthy();
     expect(screen.getByText("Write the caption.")).toBeTruthy();
   });
@@ -102,9 +114,16 @@ describe("ComposeScreen", () => {
       title: "Old title",
       caption: "Old caption",
       bylineId: "t1",
+      subject: "horse",
+      byline: null,
+      trainer: null,
       label: null,
       scheduledFor: null,
       horse: HORSES[0],
+      // ENG-1266 — non-empty, so this edit save keeps a saveable set (an
+      // empty set now disables Save, which would fail this test for the
+      // wrong reason).
+      photos: [{ path: "post-9/original", url: "https://signed.example/photo.jpg" }],
     };
     render(<ComposeScreen horses={HORSES} trainers={TRAINERS} initial={initial} />);
 
@@ -132,6 +151,9 @@ describe("ComposeScreen", () => {
       expect(api.patchPost).toHaveBeenCalledWith("post-9", {
         body: "New caption",
         sourceTrainerId: "t2",
+        // ENG-1266 — edit mode now goes through the same photo-set path as
+        // create, so a save carries the (unchanged) set too.
+        media: ["post-9/original"],
       }),
     );
     // Editing a published post never touches the create/publish endpoints —
@@ -152,9 +174,13 @@ describe("ComposeScreen", () => {
       title: "",
       caption: "Almost ready",
       bylineId: "t1",
+      subject: "horse",
+      byline: null,
+      trainer: null,
       label: null,
       scheduledFor: null,
       horse: HORSES[0],
+      photos: [{ path: "post-7/original", url: "https://signed.example/photo.jpg" }],
     };
     render(<ComposeScreen horses={HORSES} trainers={TRAINERS} initial={initial} />);
 
@@ -169,6 +195,7 @@ describe("ComposeScreen", () => {
     expect(api.patchPost).toHaveBeenCalledWith("post-7", {
       body: "Almost ready",
       sourceTrainerId: "t1",
+      media: ["post-7/original"],
     });
     expect(api.createDraft).not.toHaveBeenCalled();
   });
@@ -530,8 +557,12 @@ describe("ComposeScreen", () => {
       title: "T",
       caption: "C",
       bylineId: "t1",
+      subject: "horse" as const,
+      byline: null,
+      trainer: null,
       label: null,
       horse: HORSES[0],
+      photos: [{ path: "base/original", url: "https://signed.example/photo.jpg" }],
     };
 
     const draft = render(
@@ -568,9 +599,13 @@ describe("ComposeScreen", () => {
       title: "Race day",
       caption: "Big race Saturday",
       bylineId: "t1",
+      subject: "horse",
+      byline: null,
+      trainer: null,
       label: null,
       scheduledFor: "2099-06-20T09:30:00.000Z",
       horse: HORSES[0],
+      photos: [{ path: "post-5/original", url: "https://signed.example/photo.jpg" }],
     };
     render(<ComposeScreen horses={HORSES} trainers={TRAINERS} initial={initial} />);
 
@@ -587,6 +622,7 @@ describe("ComposeScreen", () => {
     expect(api.patchPost).toHaveBeenCalledWith("post-5", {
       body: "Big race Saturday",
       sourceTrainerId: "t1",
+      media: ["post-5/original"],
     });
     expect(api.patchPost.mock.invocationCallOrder[0]).toBeLessThan(
       api.schedulePost.mock.invocationCallOrder[0],
@@ -602,9 +638,13 @@ describe("ComposeScreen", () => {
       title: "T",
       caption: "C",
       bylineId: "t1",
+      subject: "horse",
+      byline: null,
+      trainer: null,
       label: null,
       scheduledFor: null,
       horse: HORSES[0],
+      photos: [{ path: "post-3/original", url: "https://signed.example/photo.jpg" }],
     };
     render(<ComposeScreen horses={HORSES} trainers={TRAINERS} initial={initial} />);
 
@@ -634,9 +674,13 @@ describe("ComposeScreen", () => {
       title: "T",
       caption: "C",
       bylineId: "t1",
+      subject: "horse",
+      byline: null,
+      trainer: null,
       label: null,
       scheduledFor: "2099-06-20T09:30:00.000Z",
       horse: HORSES[0],
+      photos: [{ path: "post-8/original", url: "https://signed.example/photo.jpg" }],
     };
     render(<ComposeScreen horses={HORSES} trainers={TRAINERS} initial={initial} />);
 
@@ -667,9 +711,13 @@ describe("ComposeScreen", () => {
       title: "T",
       caption: "C",
       bylineId: "t1",
+      subject: "horse",
+      byline: null,
+      trainer: null,
       label: null,
       scheduledFor: null,
       horse: HORSES[0],
+      photos: [{ path: "post-6/original", url: "https://signed.example/photo.jpg" }],
     };
     render(<ComposeScreen horses={HORSES} trainers={TRAINERS} initial={initial} />);
 
@@ -821,9 +869,13 @@ describe("ComposeScreen — preview measurement", () => {
       title: "T",
       caption: "C",
       bylineId: "t1",
+      subject: "horse",
+      byline: null,
+      trainer: null,
       label: null,
       scheduledFor: null,
       horse: HORSES[0],
+      photos: [],
     };
     render(<ComposeScreen horses={HORSES} trainers={TRAINERS} initial={initial} />);
 
@@ -868,9 +920,13 @@ function editInitial(label: string | null): EditInitial {
     title: "Old title",
     caption: "Old caption",
     bylineId: "t1",
+    subject: "horse",
+    byline: null,
+    trainer: null,
     label,
     scheduledFor: null,
     horse: HORSES[0],
+    photos: [{ path: "post-745/original", url: "https://signed.example/photo.jpg" }],
   };
 }
 
@@ -1393,7 +1449,14 @@ describe("ENG-748 · multi-photo compose", () => {
       expect((screen.getByTestId("media-input") as HTMLInputElement).multiple).toBe(false);
     });
 
-    it("does NOT set it in edit mode, where media is read-only", () => {
+    it("ENG-1266: DOES set it in edit mode too — media is no longer read-only there", () => {
+      // This test used to pin the OLD behaviour (`multiple` false in edit
+      // mode), back when editing a photo post showed a read-only frame.
+      // ENG-1266 made edit-mode media editable through the same set path as
+      // create, so a photo post's file input offers multi-select in EITHER
+      // mode now — inverted here rather than deleted, so the photo-only gate
+      // itself (never true for video/voice, still asserted above) stays
+      // pinned against a regression in the other direction.
       const initial: EditInitial = {
         id: "post-9",
         status: "published",
@@ -1402,12 +1465,16 @@ describe("ENG-748 · multi-photo compose", () => {
         title: "T",
         caption: "C",
         bylineId: "t1",
+        subject: "horse",
+        byline: null,
+        trainer: null,
         label: null,
         scheduledFor: null,
         horse: HORSES[0],
+        photos: [{ path: "post-9/original", url: "https://signed.example/photo.jpg" }],
       };
       render(<ComposeScreen horses={HORSES} trainers={TRAINERS} initial={initial} />);
-      expect((screen.getByTestId("media-input") as HTMLInputElement).multiple).toBe(false);
+      expect((screen.getByTestId("media-input") as HTMLInputElement).multiple).toBe(true);
     });
   });
 
@@ -2054,5 +2121,925 @@ describe("ENG-748 · multi-photo compose", () => {
       );
       expect(patch?.[1]).not.toHaveProperty("poster_time_s");
     });
+  });
+
+  // --- ENG-1266: "Add more photos" (append) ----------------------------------
+
+  describe("Add more photos (append)", () => {
+    it("CREATE: pick 1, then Add more → 2 more; the strip is 3 in PICK order, and requestPhotoUploads is asked once for (draftId, 2)", async () => {
+      // THE HEADLINE REGRESSION. Before this ticket the only pick REPLACED the
+      // set, so picking photos one at a time ended with a one-photo post —
+      // this is the test that catches that bug coming back.
+      await pickPhotos(1);
+      expect(screen.getAllByTestId(/^photo-tile-\d+$/)).toHaveLength(1);
+      const firstPath = stripOrder()[0];
+
+      api.requestPhotoUploads.mockResolvedValueOnce([
+        {
+          sortOrder: 1,
+          path: "p1/photo-1",
+          token: "tok-1",
+          uploadUrl: "https://storage.local/post-media/p1/photo-1",
+          bucket: "post-media",
+        },
+        {
+          sortOrder: 2,
+          path: "p1/photo-2",
+          token: "tok-2",
+          uploadUrl: "https://storage.local/post-media/p1/photo-2",
+          bucket: "post-media",
+        },
+      ]);
+
+      fireEvent.click(screen.getByTestId("photo-add-more"));
+      fireEvent.change(screen.getByTestId("media-input"), { target: { files: photoFiles(2) } });
+
+      await waitFor(() => expect(api.uploadPhotoToStorage).toHaveBeenCalledTimes(3));
+      expect(screen.getAllByTestId(/^photo-tile-\d+$/)).toHaveLength(3);
+      expect(api.requestPhotoUploads).toHaveBeenCalledTimes(1);
+      // ENG-1266/F1 regression guard: the hint object is the whole point of
+      // this call. `afterSlot: 0` is the ordinal the ONE existing tile
+      // (`p1/original`, slot 0) already holds; `keeping: 1` is the strip's
+      // current length. A missing/wrong hint here is exactly the bug that let
+      // a second append re-mint a live slot and overwrite a photo.
+      expect(api.requestPhotoUploads).toHaveBeenCalledWith("p1", 2, { afterSlot: 0, keeping: 1 });
+      // Pick order preserved — the first photo is untouched by the append.
+      expect(stripOrder()).toEqual([firstPath, "p1/photo-1", "p1/photo-2"]);
+    });
+
+    it("the cap: 9 already in the strip + 2 more → photo-error names it, and NOTHING is uploaded", async () => {
+      await pickPhotos(9);
+      expect(screen.getAllByTestId(/^photo-tile-\d+$/)).toHaveLength(9);
+      api.uploadPhotoToStorage.mockClear();
+
+      fireEvent.click(screen.getByTestId("photo-add-more"));
+      fireEvent.change(screen.getByTestId("media-input"), { target: { files: photoFiles(2) } });
+
+      const err = await screen.findByTestId("photo-error");
+      expect(err.textContent).toBe(
+        "You can add up to 10 photos to a post — this would make 11. Nothing was uploaded.",
+      );
+      expect(api.requestPhotoUploads).not.toHaveBeenCalled();
+      expect(api.uploadPhotoToStorage).not.toHaveBeenCalled();
+      expect(screen.getAllByTestId(/^photo-tile-\d+$/)).toHaveLength(9);
+    });
+
+    // A photo post already saved with a multi-photo set — edit mode goes
+    // through the SAME set path as create (ENG-1266's other half).
+    function editPhotosInitial(): EditInitial {
+      return {
+        id: "edit-p1",
+        status: "published",
+        mediaType: "photo",
+        mediaUrl: "https://signed.example/a.jpg",
+        title: "",
+        caption: "Two already saved",
+        bylineId: "t1",
+        subject: "horse",
+        byline: null,
+        trainer: null,
+        label: null,
+        scheduledFor: null,
+        horse: HORSES[0],
+        photos: [
+          { path: "edit-p1/original", url: "https://signed.example/a.jpg" },
+          { path: "edit-p1/photo-1", url: "https://signed.example/b.jpg" },
+        ],
+      };
+    }
+
+    describe("EDIT mode", () => {
+      it("renders the seeded set, offers Add more, and a save sends the ordered paths", async () => {
+        api.patchPost.mockResolvedValue(undefined);
+        render(<ComposeScreen horses={HORSES} trainers={TRAINERS} initial={editPhotosInitial()} />);
+
+        expect(screen.getAllByTestId(/^photo-tile-\d+$/)).toHaveLength(2);
+        expect(stripOrder()).toEqual(["edit-p1/original", "edit-p1/photo-1"]);
+        expect(screen.getByTestId("photo-add-more")).toBeTruthy();
+
+        fireEvent.click(screen.getByTestId("primary-action"));
+        await waitFor(() => expect(api.patchPost).toHaveBeenCalled());
+        expect(api.patchPost.mock.calls[0][1].media).toEqual([
+          "edit-p1/original",
+          "edit-p1/photo-1",
+        ]);
+      });
+
+      it("reorder: move tile 1 up, then save sends the new order", async () => {
+        api.patchPost.mockResolvedValue(undefined);
+        render(<ComposeScreen horses={HORSES} trainers={TRAINERS} initial={editPhotosInitial()} />);
+
+        fireEvent.click(screen.getByTestId("photo-up-1"));
+        expect(stripOrder()).toEqual(["edit-p1/photo-1", "edit-p1/original"]);
+
+        fireEvent.click(screen.getByTestId("primary-action"));
+        await waitFor(() => expect(api.patchPost).toHaveBeenCalled());
+        expect(api.patchPost.mock.calls[0][1].media).toEqual([
+          "edit-p1/photo-1",
+          "edit-p1/original",
+        ]);
+      });
+
+      it("remove-to-zero: photo-none shows the required message and primary-action is disabled", () => {
+        render(<ComposeScreen horses={HORSES} trainers={TRAINERS} initial={editPhotosInitial()} />);
+        fireEvent.click(screen.getByTestId("photo-remove-0"));
+        fireEvent.click(screen.getByTestId("photo-remove-0"));
+        // Edit mode always renders the strip container (it is not hidden when
+        // empty, unlike create mode) — the tiles are what must be gone.
+        expect(screen.queryAllByTestId(/^photo-tile-\d+$/)).toHaveLength(0);
+        expect(screen.getByTestId("photo-none").textContent).toBe(
+          "A photo post needs at least one photo.",
+        );
+        expect((screen.getByTestId("primary-action") as HTMLButtonElement).disabled).toBe(true);
+      });
+    });
+  });
+
+  // --- F2 regression: a failed post_media read must not become data loss ----
+  describe("photosUnavailable — the data-loss guard when post_media's read failed (F2)", () => {
+    function unavailableInitial(): EditInitial {
+      return {
+        id: "edit-bad",
+        status: "published",
+        mediaType: "photo",
+        mediaUrl: "https://signed.example/a.jpg",
+        title: "",
+        caption: "Existing caption",
+        bylineId: "t1",
+        subject: "horse",
+        byline: null,
+        trainer: null,
+        label: null,
+        scheduledFor: null,
+        horse: HORSES[0],
+        photos: [],
+        photosUnavailable: true,
+      };
+    }
+
+    it("renders no strip, no Add-more, a non-multiple input, and the couldn't-be-loaded sentence — primary-action stays enabled", () => {
+      render(<ComposeScreen horses={HORSES} trainers={TRAINERS} initial={unavailableInitial()} />);
+      expect(screen.queryByTestId("photo-strip")).toBeNull();
+      expect(screen.queryByTestId("photo-add-more")).toBeNull();
+      expect((screen.getByTestId("media-input") as HTMLInputElement).multiple).toBe(false);
+      expect(screen.getByTestId("media-existing").textContent).toContain(
+        "This post’s photos couldn’t be loaded, so they can’t be edited right now. Reload to try again — your other changes still save.",
+      );
+      // Unlike editPhotoEmpty (a genuinely empty SAVEABLE set is refused),
+      // an unreadable set must not block the caption/byline/label edit that is
+      // the whole point of this degrade.
+      expect((screen.getByTestId("primary-action") as HTMLButtonElement).disabled).toBe(false);
+    });
+
+    it("a caption save sends NO media key at all — this is the data-loss regression guard", async () => {
+      api.patchPost.mockResolvedValue(undefined);
+      render(<ComposeScreen horses={HORSES} trainers={TRAINERS} initial={unavailableInitial()} />);
+
+      fireEvent.change(screen.getByTestId("caption"), { target: { value: "Fixed the typo only" } });
+      fireEvent.click(screen.getByTestId("primary-action"));
+
+      await waitFor(() => expect(api.patchPost).toHaveBeenCalled());
+      const payload = api.patchPost.mock.calls[0][1];
+      expect(payload).not.toHaveProperty("media");
+      expect(payload).toEqual(
+        expect.not.objectContaining({ media: expect.anything() }),
+      );
+      expect(payload).toEqual({ body: "Fixed the typo only", sourceTrainerId: "t1" });
+    });
+  });
+
+  // --- F3 regression: a cancelled Add-more dialog must not leak into Replace -
+  describe("pickMode does not leak across a cancelled Add-more dialog (F3)", () => {
+    it("Add-more armed, then the dialog is cancelled (no change fires), then Replace is clicked: the NEXT pick replaces, it does not append", async () => {
+      await pickPhotos(1);
+      api.createDraft.mockClear();
+      api.requestPhotoUploads.mockClear();
+      api.discardDraft.mockClear();
+
+      // Arm "append" and open the (native) dialog — then the operator cancels
+      // it, so no `change` event ever fires. This is the exact sequence the
+      // bug needed: the ref is left on "append" with nothing to disarm it.
+      fireEvent.click(screen.getByTestId("photo-add-more"));
+
+      // Now Replace is clicked instead. Per the fix, this click site ARMS
+      // "replace" itself rather than trusting the change handler to have
+      // disarmed the previous click.
+      fireEvent.click(screen.getByRole("button", { name: "Replace" }));
+
+      // The dialog "completes" now, from whichever click opened it last.
+      fireEvent.change(screen.getByTestId("media-input"), { target: { files: photoFiles(1) } });
+
+      await waitFor(() => expect(api.createDraft).toHaveBeenCalledTimes(1));
+      expect(api.requestPhotoUploads).not.toHaveBeenCalled();
+      // The old draft is discarded — something ONLY a replacing pick does
+      // (`onAppendPhotos` never calls `discardDraft`). This is the real
+      // differentiator, since the fake's `createDraft` always resolves to the
+      // same fixed id/path regardless of what triggered the pick.
+      await waitFor(() => expect(api.discardDraft).toHaveBeenCalledWith("p1"));
+    });
+  });
+
+  // --- F1 client half: a FAILED tile still reserves its ordinal -------------
+  describe("afterSlot includes a FAILED tile's ordinal, not just done ones (F1 client half)", () => {
+    it("original done + photo-1 FAILED → an append sends afterSlot: 1, not 0", async () => {
+      api.createDraft.mockResolvedValue(draftWithSlots(2));
+      api.uploadPhotoToStorage
+        .mockResolvedValueOnce(undefined)
+        .mockRejectedValueOnce(new Error("network died"));
+
+      renderScreen();
+      pickHorse("horse-opt-h1");
+      selectType("photo");
+      fireEvent.change(screen.getByTestId("media-input"), { target: { files: photoFiles(2) } });
+      // Wait for the failure to land — photo-1 is FAILED, not uploading.
+      await screen.findByTestId("photo-retry-1");
+      expect(screen.getAllByTestId(/^photo-tile-\d+$/)).toHaveLength(2);
+
+      api.requestPhotoUploads.mockResolvedValueOnce([
+        {
+          sortOrder: 2,
+          path: "p1/photo-2",
+          token: "tok-2",
+          uploadUrl: "https://storage.local/post-media/p1/photo-2",
+          bucket: "post-media",
+        },
+      ]);
+      api.uploadPhotoToStorage.mockResolvedValueOnce(undefined);
+
+      fireEvent.click(screen.getByTestId("photo-add-more"));
+      fireEvent.change(screen.getByTestId("media-input"), { target: { files: photoFiles(1) } });
+
+      await waitFor(() => expect(api.requestPhotoUploads).toHaveBeenCalledTimes(1));
+      // The failed tile at slot 1 still reserves its ordinal: afterSlot must
+      // be 1 (the highest HELD ordinal), not 0 (which only `original` would
+      // give). keeping is the whole strip length, 2, including the failure.
+      expect(api.requestPhotoUploads).toHaveBeenCalledWith("p1", 1, {
+        afterSlot: 1,
+        keeping: 2,
+      });
+    });
+  });
+
+  // --- ENG-1266 review: `editPhotoUnsettled` blocks a save mid-upload ------
+  //
+  // Before this fix, edit mode had NO equivalent of create mode's
+  // `photosSettled` gate: `Save changes` stayed live while an appended photo
+  // was still uploading, and a save then sent `mediaSetPayload(photos)` — the
+  // DONE tiles only — which `PATCH /posts/:id` implements by deleting every
+  // `post_media` row above the set it is given. So saving mid-upload silently
+  // dropped the in-flight photo AND trimmed the rows behind it.
+  describe("editPhotoUnsettled — an edit save is blocked while a photo is uploading (ENG-1266 review)", () => {
+    // The literal PHOTO_UPLOADING sentence from ComposeScreen.tsx, duplicated
+    // here rather than imported — the constant is not exported, same as
+    // PHOTO_REQUIRED, and the two sentences living side by side in the source
+    // is what a reviewer actually compares against.
+    const PHOTO_UPLOADING = "A photo is still uploading. Wait for it to finish, or remove it.";
+
+    function oneSavedPhotoInitial(id: string, status: "draft" | "published" = "draft"): EditInitial {
+      return {
+        id,
+        status,
+        mediaType: "photo",
+        mediaUrl: "https://signed.example/a.jpg",
+        title: "",
+        caption: "One saved photo",
+        bylineId: "t1",
+        subject: "horse",
+        byline: null,
+        trainer: null,
+        label: null,
+        scheduledFor: null,
+        horse: HORSES[0],
+        photos: [{ path: `${id}/original`, url: "https://signed.example/a.jpg" }],
+      };
+    }
+
+    /** The header's own "Save changes" button — distinct from the bottom
+     *  `primary-action` button, which shows the SAME label in edit mode.
+     *  It carries no testid, so it is found by scoping to `.admin-topbar`
+     *  (a plain, non-module class name used only for that bar). */
+    function headerSaveButton(): HTMLButtonElement {
+      const topbar = document.querySelector(".admin-topbar") as HTMLElement;
+      return within(topbar).getByRole("button", { name: /save changes/i }) as HTMLButtonElement;
+    }
+
+    it("Add more photos mid-upload disables Save changes / primary-action / Publish now / Schedule and shows photo-uploading; resolving re-enables them, and NO patch went out meanwhile", async () => {
+      api.patchPost.mockResolvedValue(undefined);
+      render(
+        <ComposeScreen horses={HORSES} trainers={TRAINERS} initial={oneSavedPhotoInitial("u1")} />,
+      );
+
+      // A future schedule pick, so `canSchedule` is true independently of the
+      // upload guard — otherwise `schedule-action` would already read
+      // disabled for an unrelated reason and the test would prove nothing
+      // about `editPhotoUnsettled` specifically.
+      fireEvent.change(screen.getByTestId("schedule-date"), { target: { value: "2099-07-01" } });
+      fireEvent.change(screen.getByTestId("schedule-time"), { target: { value: "18:45" } });
+
+      api.requestPhotoUploads.mockResolvedValueOnce([
+        {
+          sortOrder: 1,
+          path: "u1/photo-1",
+          token: "tok-1",
+          uploadUrl: "https://storage.local/post-media/u1/photo-1",
+          bucket: "post-media",
+        },
+      ]);
+      let resolveUpload!: () => void;
+      api.uploadPhotoToStorage.mockReturnValueOnce(
+        new Promise<void>((resolve) => {
+          resolveUpload = resolve;
+        }),
+      );
+
+      fireEvent.click(screen.getByTestId("photo-add-more"));
+      fireEvent.change(screen.getByTestId("media-input"), { target: { files: photoFiles(1) } });
+
+      // The tile is now genuinely UPLOADING — the PUT is deliberately held.
+      await waitFor(() => expect(api.uploadPhotoToStorage).toHaveBeenCalledTimes(1));
+
+      expect(headerSaveButton().disabled).toBe(true);
+      expect((screen.getByTestId("primary-action") as HTMLButtonElement).disabled).toBe(true);
+      expect((screen.getByTestId("publish-draft") as HTMLButtonElement).disabled).toBe(true);
+      expect((screen.getByTestId("schedule-action") as HTMLButtonElement).disabled).toBe(true);
+      expect(screen.getByTestId("photo-uploading").textContent).toBe(PHOTO_UPLOADING);
+
+      // Nothing was saved while the upload was in flight.
+      expect(api.patchPost).not.toHaveBeenCalled();
+
+      resolveUpload();
+      await waitFor(() => expect(screen.queryByTestId("photo-uploading")).toBeNull());
+
+      expect(headerSaveButton().disabled).toBe(false);
+      expect((screen.getByTestId("primary-action") as HTMLButtonElement).disabled).toBe(false);
+      expect((screen.getByTestId("publish-draft") as HTMLButtonElement).disabled).toBe(false);
+      expect((screen.getByTestId("schedule-action") as HTMLButtonElement).disabled).toBe(false);
+    });
+
+    it("REGRESSION: a 3-photo saved post + a 4th still uploading must not save the 3", async () => {
+      api.patchPost.mockResolvedValue(undefined);
+      const initial: EditInitial = {
+        id: "u2",
+        status: "published",
+        mediaType: "photo",
+        mediaUrl: "https://signed.example/a.jpg",
+        title: "",
+        caption: "Three saved",
+        bylineId: "t1",
+        subject: "horse",
+        byline: null,
+        trainer: null,
+        label: null,
+        scheduledFor: null,
+        horse: HORSES[0],
+        photos: [
+          { path: "u2/original", url: "https://signed.example/a.jpg" },
+          { path: "u2/photo-1", url: "https://signed.example/b.jpg" },
+          { path: "u2/photo-2", url: "https://signed.example/c.jpg" },
+        ],
+      };
+      render(<ComposeScreen horses={HORSES} trainers={TRAINERS} initial={initial} />);
+
+      api.requestPhotoUploads.mockResolvedValueOnce([
+        {
+          sortOrder: 3,
+          path: "u2/photo-3",
+          token: "tok-3",
+          uploadUrl: "https://storage.local/post-media/u2/photo-3",
+          bucket: "post-media",
+        },
+      ]);
+      // Never resolves in this test — the 4th tile stays uploading throughout.
+      api.uploadPhotoToStorage.mockReturnValueOnce(new Promise<void>(() => {}));
+
+      fireEvent.click(screen.getByTestId("photo-add-more"));
+      fireEvent.change(screen.getByTestId("media-input"), { target: { files: photoFiles(1) } });
+      await waitFor(() => expect(api.uploadPhotoToStorage).toHaveBeenCalledTimes(1));
+
+      const btn = screen.getByTestId("primary-action") as HTMLButtonElement;
+      expect(btn.disabled).toBe(true);
+
+      // `disabled` is the whole mechanism from the operator's side: jsdom,
+      // like a browser, never dispatches "click" on a disabled <button>, so
+      // clicking it is a no-op and there is nothing more to drive. Pinned the
+      // same way the sibling `editPhotoEmpty` guard is pinned above
+      // ("remove-to-zero: photo-none shows the required message and
+      // primary-action is disabled") — the early return inside `saveEdit` is
+      // belt-and-braces behind it, and reaching it from a component test
+      // would mean calling the handler off React's internal fiber props,
+      // which pins React's internals rather than this screen's behaviour.
+      fireEvent.click(btn);
+
+      expect(screen.getByTestId("photo-uploading").textContent).toBe(PHOTO_UPLOADING);
+      // The whole regression: never `media: ["u2/original", "u2/photo-1", "u2/photo-2"]`.
+      expect(api.patchPost).not.toHaveBeenCalled();
+    });
+
+    it("afterSlot high-water mark: append, remove the uploading tile, then append again — mints past the abandoned slot, not from the survivors", async () => {
+      api.patchPost.mockResolvedValue(undefined);
+      render(
+        <ComposeScreen horses={HORSES} trainers={TRAINERS} initial={oneSavedPhotoInitial("hw1")} />,
+      );
+
+      // First append mints photo-1 and holds it uploading.
+      api.requestPhotoUploads.mockResolvedValueOnce([
+        {
+          sortOrder: 1,
+          path: "hw1/photo-1",
+          token: "tok-1",
+          uploadUrl: "https://storage.local/post-media/hw1/photo-1",
+          bucket: "post-media",
+        },
+      ]);
+      api.uploadPhotoToStorage.mockReturnValueOnce(new Promise<void>(() => {}));
+
+      fireEvent.click(screen.getByTestId("photo-add-more"));
+      fireEvent.change(screen.getByTestId("media-input"), { target: { files: photoFiles(1) } });
+      await waitFor(() => expect(api.uploadPhotoToStorage).toHaveBeenCalledTimes(1));
+      expect(screen.getAllByTestId(/^photo-tile-\d+$/)).toHaveLength(2);
+      expect(api.requestPhotoUploads).toHaveBeenNthCalledWith(1, "hw1", 1, {
+        afterSlot: 0,
+        keeping: 1,
+      });
+
+      // Remove the still-uploading tile (position 1) — its PUT is abandoned,
+      // not cancelled, so slot 1 is still live.
+      fireEvent.click(screen.getByTestId("photo-remove-1"));
+      expect(screen.getAllByTestId(/^photo-tile-\d+$/)).toHaveLength(1);
+
+      // Append again. Before this fix, `afterSlot` was derived from `photos`
+      // (the survivors), which by now is `[hw1/original]` alone — that would
+      // answer `afterSlot: 0` and re-mint photo-1 straight onto the abandoned
+      // upload. The high-water-mark ref must still answer 1.
+      api.requestPhotoUploads.mockResolvedValueOnce([
+        {
+          sortOrder: 2,
+          path: "hw1/photo-2",
+          token: "tok-2",
+          uploadUrl: "https://storage.local/post-media/hw1/photo-2",
+          bucket: "post-media",
+        },
+      ]);
+      api.uploadPhotoToStorage.mockResolvedValueOnce(undefined);
+
+      fireEvent.click(screen.getByTestId("photo-add-more"));
+      fireEvent.change(screen.getByTestId("media-input"), { target: { files: photoFiles(1) } });
+
+      await waitFor(() => expect(api.requestPhotoUploads).toHaveBeenCalledTimes(2));
+      // `afterSlot: 1`, NOT 0 — the regression this pins. `keeping: 1` still
+      // reflects the surviving strip (the original photo only).
+      expect(api.requestPhotoUploads).toHaveBeenNthCalledWith(2, "hw1", 1, {
+        afterSlot: 1,
+        keeping: 1,
+      });
+    });
+
+    it("a FAILED tile does NOT block the save — documented behaviour: keep what landed, offer a retry", async () => {
+      api.patchPost.mockResolvedValue(undefined);
+      render(
+        <ComposeScreen horses={HORSES} trainers={TRAINERS} initial={oneSavedPhotoInitial("hw2")} />,
+      );
+      fireEvent.change(screen.getByTestId("schedule-date"), { target: { value: "2099-07-01" } });
+      fireEvent.change(screen.getByTestId("schedule-time"), { target: { value: "18:45" } });
+
+      api.requestPhotoUploads.mockResolvedValueOnce([
+        {
+          sortOrder: 1,
+          path: "hw2/photo-1",
+          token: "tok-1",
+          uploadUrl: "https://storage.local/post-media/hw2/photo-1",
+          bucket: "post-media",
+        },
+      ]);
+      api.uploadPhotoToStorage.mockRejectedValueOnce(new Error("network died"));
+
+      fireEvent.click(screen.getByTestId("photo-add-more"));
+      fireEvent.change(screen.getByTestId("media-input"), { target: { files: photoFiles(1) } });
+
+      // Wait for the tile to land in the FAILED state, not uploading.
+      await screen.findByTestId("photo-retry-1");
+
+      // FAILED is not UPLOADING: `photosSettled` (and so `editPhotoUnsettled`)
+      // does not treat it as in-flight — the strip keeps what landed and
+      // offers a retry, exactly as the reorder/remove-mid-upload tests
+      // elsewhere in this file already document for create mode.
+      expect(screen.queryByTestId("photo-uploading")).toBeNull();
+      expect(headerSaveButton().disabled).toBe(false);
+      expect((screen.getByTestId("primary-action") as HTMLButtonElement).disabled).toBe(false);
+      expect((screen.getByTestId("publish-draft") as HTMLButtonElement).disabled).toBe(false);
+      expect((screen.getByTestId("schedule-action") as HTMLButtonElement).disabled).toBe(false);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ENG-1268 — subject switching, the per-subject type tiles, and the two
+// pickers (byline / trainer) it introduces.
+// ---------------------------------------------------------------------------
+describe("Posting as (ENG-1268)", () => {
+  function chooseSubjectOption(subject: "horse" | "trainer" | "stablepass") {
+    fireEvent.click(within(screen.getByTestId(`subject-option-${subject}`)).getByRole("radio"));
+  }
+
+  it("selecting StablePass hides the Voice and Text tiles, keeps Photo and Video", () => {
+    renderScreen();
+    chooseSubjectOption("stablepass");
+    expect(screen.queryByTestId("type-option-voice")).toBeNull();
+    expect(screen.queryByTestId("type-option-text")).toBeNull();
+    expect(screen.getByTestId("type-option-photo")).toBeTruthy();
+    expect(screen.getByTestId("type-option-video")).toBeTruthy();
+  });
+
+  it("selecting Trainer shows all four type tiles again", () => {
+    renderScreen();
+    chooseSubjectOption("stablepass");
+    chooseSubjectOption("trainer");
+    for (const type of ["video", "photo", "voice", "text"]) {
+      expect(screen.getByTestId(`type-option-${type}`)).toBeTruthy();
+    }
+  });
+
+  // "Attempting the primary action" here means attempting the thing Step 1
+  // gates: adding media. The `primary-action` (Publish/Save) button is
+  // provably disabled the whole time the subject is unready — `canAct`
+  // requires a draft (which `onPickFile` refuses to mint without a ready
+  // subject), so clicking it is a no-op (see the sibling "primary-action is
+  // disabled and createDraft is never called" idiom above). The guard's own
+  // message therefore surfaces where the guard itself lives: the inline
+  // upload error next to the file picker.
+  it("trainer, no trainer chosen: picking media surfaces 'Pick a trainer first.'", () => {
+    renderScreen();
+    chooseSubjectOption("trainer");
+    const file = new File([new Uint8Array([1, 2, 3])], "clip.mp4", { type: "video/mp4" });
+    fireEvent.change(screen.getByTestId("media-input"), { target: { files: [file] } });
+    expect(screen.getByTestId("media-error").textContent).toBe("Pick a trainer first.");
+    expect(api.createDraft).not.toHaveBeenCalled();
+  });
+
+  it("stablepass, no byline chosen: picking media surfaces 'Choose a byline first.'", () => {
+    renderScreen();
+    chooseSubjectOption("stablepass");
+    const file = new File([new Uint8Array([1, 2, 3])], "clip.mp4", { type: "video/mp4" });
+    fireEvent.change(screen.getByTestId("media-input"), { target: { files: [file] } });
+    expect(screen.getByTestId("media-error").textContent).toBe("Choose a byline first.");
+    expect(api.createDraft).not.toHaveBeenCalled();
+  });
+
+  it("edit mode with subject 'trainer' renders subject-fixed, never the picker", () => {
+    const initial: EditInitial = {
+      id: "post-1268a",
+      status: "draft",
+      subject: "trainer",
+      byline: null,
+      trainer: { id: "t1", name: "Chris Waller", photoUrl: null, stableName: null, location: null },
+      mediaType: "video",
+      mediaUrl: "https://signed.example/video.m3u8",
+      title: "",
+      caption: "Weekend preview",
+      bylineId: "",
+      label: null,
+      scheduledFor: null,
+      horse: null,
+      photos: [],
+    };
+    render(<ComposeScreen horses={HORSES} trainers={TRAINERS} initial={initial} />);
+    expect(screen.getByTestId("subject-fixed")).toBeTruthy();
+    expect(screen.queryByTestId("subject-picker")).toBeNull();
+  });
+
+  // THE RETIRED-BYLINE EDIT PATH — the most important test in this block.
+  // `.rx/gotchas.md` names this exact hazard (the ENG-1267 one, the live
+  // byline-picker instance of it): a <select> handed a value with no matching
+  // <option> silently falls back to index 0 and blanks the post on save,
+  // with no error and no way to notice by re-picking (it already shows the
+  // wrong thing). "Retired One" is deliberately NOT in `bylines` below — the
+  // picker must union the post's own value back in and SELECT it.
+  it("a post's own RETIRED byline is unioned back into the picker and selected", () => {
+    const initial: EditInitial = {
+      id: "post-1268b",
+      status: "published",
+      subject: "stablepass",
+      byline: "Retired One",
+      trainer: null,
+      mediaType: "photo",
+      mediaUrl: "https://signed.example/a.jpg",
+      title: "",
+      caption: "Some caption",
+      bylineId: "",
+      label: null,
+      scheduledFor: null,
+      horse: null,
+      photos: [{ path: "post-1268b/original", url: "https://signed.example/a.jpg" }],
+    };
+    render(
+      <ComposeScreen
+        horses={HORSES}
+        trainers={TRAINERS}
+        initial={initial}
+        bylines={[{ id: "b1", name: "Racing TV" }]}
+      />,
+    );
+    const select = screen.getByTestId("byline-name-select") as HTMLSelectElement;
+    expect(select.value).toBe("Retired One");
+    expect(Array.from(select.options).some((o) => o.value === "Retired One")).toBe(true);
+  });
+
+  it("builtin titles show no × in the manage list; a non-builtin one does", () => {
+    render(
+      <ComposeScreen
+        horses={HORSES}
+        trainers={TRAINERS}
+        labelActions={[
+          { id: "l1", name: "Trackwork", isBuiltin: true },
+          { id: "l2", name: "Mine", isBuiltin: false },
+        ]}
+      />,
+    );
+    fireEvent.click(screen.getByTestId("manage-title-toggle"));
+    expect(screen.getByTestId("manage-title-remove-l2")).toBeTruthy();
+    expect(screen.queryByTestId("manage-title-remove-l1")).toBeNull();
+  });
+
+  // BELT 2 of the retired-value fix, and the belt that actually prevents the
+  // user-visible failure.
+  //
+  // The union above keeps the CONTROL honest. This keeps the SAVE honest: a
+  // caption-only edit of a stablepass post whose byline has since been
+  // retired must send no `byline` key at all. If it sent the displayed value,
+  // the route would refuse it (`unknown_byline`, by design — a retired byline
+  // is withdrawn from NEW use) and the operator could never save the post
+  // again, not even to fix a typo in the caption.
+  it("a caption-only save on a post carrying a RETIRED byline sends no byline key", async () => {
+    api.patchPost.mockResolvedValue(undefined);
+    const initial: EditInitial = {
+      id: "post-1268c",
+      status: "published",
+      subject: "stablepass",
+      byline: "Retired One",
+      trainer: null,
+      mediaType: "photo",
+      mediaUrl: "https://signed.example/a.jpg",
+      title: "",
+      caption: "Old caption",
+      bylineId: "",
+      label: null,
+      scheduledFor: null,
+      horse: null,
+      photos: [{ path: "post-1268c/original", url: "https://signed.example/a.jpg" }],
+    };
+    render(
+      <ComposeScreen
+        horses={HORSES}
+        trainers={TRAINERS}
+        initial={initial}
+        bylines={[{ id: "b1", name: "Racing TV" }]}
+      />,
+    );
+
+    fireEvent.change(screen.getByTestId("caption"), { target: { value: "New caption" } });
+    fireEvent.click(screen.getByTestId("primary-action"));
+
+    await waitFor(() => expect(api.patchPost).toHaveBeenCalled());
+    const [, patch] = api.patchPost.mock.calls[0] as [string, Record<string, unknown>];
+    expect(patch.body).toBe("New caption");
+    // The whole point: ABSENT, not null and not the displayed value.
+    expect("byline" in patch).toBe(false);
+    // And a stablepass post has no trainer byline to send either.
+    expect("sourceTrainerId" in patch).toBe(false);
+  });
+
+  // The same hazard, one control over. `retiredLabelNames` drops a title
+  // retired during this session from the picker — but it must never drop the
+  // title the post being edited actually carries, or retiring a title would
+  // blank it on the very post in front of you.
+  it("retiring the title the edited post carries leaves it selected in the picker", async () => {
+    api.retireLabel.mockResolvedValue(undefined);
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    const initial: EditInitial = {
+      id: "post-1268d",
+      status: "published",
+      subject: "horse",
+      byline: null,
+      trainer: null,
+      mediaType: "photo",
+      mediaUrl: "https://signed.example/a.jpg",
+      title: "",
+      caption: "Old caption",
+      bylineId: "t1",
+      label: "Mine",
+      scheduledFor: null,
+      horse: HORSES[0],
+      photos: [{ path: "post-1268d/original", url: "https://signed.example/a.jpg" }],
+    };
+    render(
+      <ComposeScreen
+        horses={HORSES}
+        trainers={TRAINERS}
+        initial={initial}
+        labels={["Trackwork", "Mine"]}
+        labelActions={[{ id: "l2", name: "Mine", isBuiltin: false }]}
+      />,
+    );
+
+    const select = screen.getByTestId("label-select") as HTMLSelectElement;
+    expect(select.value).toBe("Mine");
+
+    fireEvent.click(screen.getByTestId("manage-title-toggle"));
+    fireEvent.click(screen.getByTestId("manage-title-remove-l2"));
+    await waitFor(() => expect(api.retireLabel).toHaveBeenCalledWith("l2"));
+
+    // Retired for NEW posts, still the value of THIS one.
+    expect(Array.from(select.options).some((o) => o.value === "Mine")).toBe(true);
+    expect(select.value).toBe("Mine");
+  });
+
+  // ENG-1290 — the CREATE-mode gap in the fix above. There is no
+  // `initialByline` here for `bylineOptions` to union back in after the
+  // retired-id filter, so the <select> loses its matching <option> the
+  // instant you retire the byline you just picked. Left alone, `byline`
+  // state would still hold the name, `subjectReady` would stay true, and the
+  // first save would 400 with `unknown_byline` against a picker that looks
+  // empty. `onRetire` now clears the selection explicitly instead.
+  it("ENG-1290: retiring the byline you have selected clears it (create mode)", async () => {
+    api.retireByline.mockResolvedValue(undefined);
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    render(
+      <ComposeScreen
+        horses={HORSES}
+        trainers={TRAINERS}
+        bylines={[{ id: "b1", name: "Racing TV" }]}
+      />,
+    );
+    chooseSubjectOption("stablepass");
+
+    const select = screen.getByTestId("byline-name-select") as HTMLSelectElement;
+    fireEvent.change(select, { target: { value: "Racing TV" } });
+    expect(select.value).toBe("Racing TV");
+
+    fireEvent.click(screen.getByTestId("manage-byline-toggle"));
+    fireEvent.click(screen.getByTestId("manage-byline-remove-b1"));
+    await waitFor(() => expect(api.retireByline).toHaveBeenCalledWith("b1"));
+
+    // The STATE proof, asserted first and on its own: `subjectReady` is false
+    // again, so picking media surfaces the same "no byline yet" gate the
+    // sibling "stablepass, no byline chosen" test above proves for a picker
+    // that was never filled in the first place. Without the clear in
+    // `onRetire` this is the 400 `unknown_byline` path instead.
+    //
+    // `select.value` alone would NOT prove this: with the retired <option>
+    // gone the DOM select reports a fallback value whether or not React state
+    // was cleared, so the readiness gate is what the mutation run moves.
+    const file = new File([new Uint8Array([1, 2, 3])], "clip.mp4", { type: "video/mp4" });
+    fireEvent.change(screen.getByTestId("media-input"), { target: { files: [file] } });
+    expect(screen.getByTestId("media-error").textContent).toBe("Choose a byline first.");
+    expect(api.createDraft).not.toHaveBeenCalled();
+
+    // And the picker the operator is looking at agrees with that state.
+    expect(select.value).toBe("");
+    expect(Array.from(select.options).some((o) => o.value === "Racing TV")).toBe(false);
+  });
+
+  // ENG-1290 — the title picker's half of the same create-mode gap. Builtins
+  // cannot be retired at all (`retirableLabels` filters `isBuiltin`), so this
+  // reuses the non-builtin "Mine" fixture from the edit-mode test above.
+  it("ENG-1290: retiring the title you have selected clears it (create mode)", async () => {
+    api.retireLabel.mockResolvedValue(undefined);
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    render(
+      <ComposeScreen
+        horses={HORSES}
+        trainers={TRAINERS}
+        labels={["Trackwork", "Mine"]}
+        labelActions={[{ id: "l2", name: "Mine", isBuiltin: false }]}
+      />,
+    );
+
+    const select = screen.getByTestId("label-select") as HTMLSelectElement;
+    fireEvent.change(select, { target: { value: "Mine" } });
+    expect(select.value).toBe("Mine");
+
+    // The preview pill is the STATE readout: `PostPreview` renders it straight
+    // from `label`, so it shows the stale value when `onRetire` forgets to
+    // clear it — unlike `select.value`, which reads "" either way once the
+    // retired <option> is gone. This is the assertion the mutation run moves.
+    expect(screen.getByTestId("preview-label").textContent).toBe("Mine");
+
+    fireEvent.click(screen.getByTestId("manage-title-toggle"));
+    fireEvent.click(screen.getByTestId("manage-title-remove-l2"));
+    await waitFor(() => expect(api.retireLabel).toHaveBeenCalledWith("l2"));
+
+    expect(screen.queryByTestId("preview-label")).toBeNull();
+    expect(select.value).toBe("");
+    expect(Array.from(select.options).some((o) => o.value === "Mine")).toBe(false);
+  });
+
+  // ENG-1290 — the byline twin of "retiring the title the edited post
+  // carries leaves it selected in the picker" above. The existing byline
+  // union test only proves the case where the value ARRIVES already retired
+  // on first render; this proves the union belt also holds when the retire
+  // happens DURING the edit session.
+  it("ENG-1290: edit mode keeps a retired byline selected (union belt)", async () => {
+    api.retireByline.mockResolvedValue(undefined);
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    const initial: EditInitial = {
+      id: "post-1290a",
+      status: "published",
+      subject: "stablepass",
+      byline: "Racing TV",
+      trainer: null,
+      mediaType: "photo",
+      mediaUrl: "https://signed.example/a.jpg",
+      title: "",
+      caption: "Old caption",
+      bylineId: "",
+      label: null,
+      scheduledFor: null,
+      horse: null,
+      photos: [{ path: "post-1290a/original", url: "https://signed.example/a.jpg" }],
+    };
+    render(
+      <ComposeScreen
+        horses={HORSES}
+        trainers={TRAINERS}
+        initial={initial}
+        bylines={[{ id: "b1", name: "Racing TV" }]}
+      />,
+    );
+
+    const select = screen.getByTestId("byline-name-select") as HTMLSelectElement;
+    expect(select.value).toBe("Racing TV");
+
+    fireEvent.click(screen.getByTestId("manage-byline-toggle"));
+    fireEvent.click(screen.getByTestId("manage-byline-remove-b1"));
+    await waitFor(() => expect(api.retireByline).toHaveBeenCalledWith("b1"));
+
+    // Retired for NEW posts, still the value of THIS one — asserted on the
+    // preview subline (the `byline` state readout) as well as the picker,
+    // since a bare `select.value` check cannot tell a live selection from
+    // jsdom's fallback once an <option> disappears.
+    expect(Array.from(select.options).some((o) => o.value === "Racing TV")).toBe(true);
+    expect(select.value).toBe("Racing TV");
+    expect(screen.getByTestId("preview-head-subline").textContent).toBe("Racing TV");
+  });
+
+  // ENG-1290 — the case that separates the shipped guard from the tempting
+  // `!isEdit` one. An EDIT-mode operator who moves the picker OFF the post's
+  // own byline and then retires the row they moved TO has no union-back
+  // either: `bylineOptions` re-appends `initialByline` and nothing else. Under
+  // `!isEdit` no clear would fire and they would land on the same blank-picker
+  // dead end create mode had. Without this test the whole suite stays green
+  // with the wrong guard, so it is the one that pins the design decision.
+  it("ENG-1290: edit mode still clears a retired row that is NOT the post's own", async () => {
+    api.retireByline.mockResolvedValue(undefined);
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    const initial: EditInitial = {
+      id: "post-1290b",
+      status: "published",
+      subject: "stablepass",
+      byline: "Racing TV",
+      trainer: null,
+      mediaType: "photo",
+      mediaUrl: "https://signed.example/b.jpg",
+      title: "",
+      caption: "Old caption",
+      bylineId: "",
+      label: null,
+      scheduledFor: null,
+      horse: null,
+      photos: [{ path: "post-1290b/original", url: "https://signed.example/b.jpg" }],
+    };
+    render(
+      <ComposeScreen
+        horses={HORSES}
+        trainers={TRAINERS}
+        initial={initial}
+        bylines={[
+          { id: "b1", name: "Racing TV" },
+          { id: "b2", name: "Track Media Wrap" },
+        ]}
+      />,
+    );
+
+    const select = screen.getByTestId("byline-name-select") as HTMLSelectElement;
+    fireEvent.change(select, { target: { value: "Track Media Wrap" } });
+    expect(select.value).toBe("Track Media Wrap");
+
+    fireEvent.click(screen.getByTestId("manage-byline-toggle"));
+    fireEvent.click(screen.getByTestId("manage-byline-remove-b2"));
+    await waitFor(() => expect(api.retireByline).toHaveBeenCalledWith("b2"));
+
+    // Snapped back to the post's OWN byline, which the union belt keeps
+    // selectable — not parked on the row that no longer exists, and not
+    // blanked into a state a save would write as a change the operator never
+    // asked for.
+    //
+    // The preview subline is the STATE readout and is what makes this test
+    // bite: `select.value` reads "Racing TV" here even when nothing was
+    // cleared, because the retired <option> is gone and jsdom falls back to
+    // the first one. Asserting only that would leave BOTH the no-clear and
+    // the `!isEdit` variants green.
+    expect(screen.getByTestId("preview-head-subline").textContent).toBe("Racing TV");
+    expect(select.value).toBe("Racing TV");
+    expect(Array.from(select.options).some((o) => o.value === "Track Media Wrap")).toBe(false);
   });
 });

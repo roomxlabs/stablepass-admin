@@ -299,8 +299,14 @@ export default function AnalyticsScreen({ view }: { view: AnalyticsView }) {
                             {p.title || "Untitled post"}
                           </Link>
                         </div>
+                        {/* ENG-1269 — `horseName` is null for a trainer or
+                            StablePass post (B1 made `post.horse_id`
+                            nullable), and interpolating it raw printed
+                            "null · Photo" under the title. Joining the
+                            present parts leaves just the type for a post
+                            with no horse to name. */}
                         <div className="row-sub">
-                          {p.horseName} · {typeLabel(p.type)}
+                          {[p.horseName, typeLabel(p.type)].filter(Boolean).join(" · ")}
                         </div>
                       </td>
                       <td className="num">{formatNumber(p.opens)}</td>

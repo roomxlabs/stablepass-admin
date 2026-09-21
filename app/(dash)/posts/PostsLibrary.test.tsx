@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import PostsLibrary from "./PostsLibrary";
 import type { PostView, StatusCounts } from "./types";
+import { subjectLabel } from "@/lib/posts/subject";
 
 // next/link → plain anchor; next/navigation + the network layer are stubbed so
 // PostActions renders inertly (we only assert which affordances appear).
@@ -54,8 +55,7 @@ function view(over: Partial<PostView>): PostView {
     editHref: `/compose?id=${over.id ?? "p"}`,
     title: "Track gallop",
     excerpt: "Morning at Caulfield.",
-    horseName: "Mahogany",
-    trainerName: "Chris Waller",
+    subject: subjectLabel({ subject: "horse", horseName: "Mahogany", trainerName: "Chris Waller" }),
     thumbUrl: null,
     type: "video",
     typeLabel: "Video",
@@ -107,7 +107,8 @@ describe("PostsLibrary", () => {
       expect(screen.getAllByText(label).length).toBeGreaterThan(0);
     }
     expect(screen.getByLabelText("Search posts")).toBeTruthy();
-    expect(screen.getByLabelText("Filter posts by horse or trainer")).toBeTruthy();
+    // ENG-1269 — the filter now covers the StablePass byline too.
+    expect(screen.getByLabelText("Filter posts by horse, trainer or byline")).toBeTruthy();
   });
 
   it("shows Discard only on drafts", () => {
@@ -285,5 +286,52 @@ describe("ENG-979 · the mapped row name reaches the screen", () => {
     // is a screen-reader change as well as a visual one.
     renderOne({ id: "lab", title: "Trackwork" });
     expect(screen.getByLabelText("Open Trackwork")).toBeTruthy();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ENG-1269 — the "Posted as" column renders all three subjects side by side.
+// ---------------------------------------------------------------------------
+describe("ENG-1269 · the subject cell renders horse / trainer / stablepass", () => {
+  it("shows the horse name, the trainer name tagged 'Trainer', and stablepass with its byline", () => {
+    const mixed: PostView[] = [
+      view({
+        id: "horse-post",
+        subject: subjectLabel({ subject: "horse", horseName: "Mahogany", trainerName: "Chris Waller" }),
+      }),
+      view({
+        id: "trainer-post",
+        subject: subjectLabel({ subject: "trainer", trainerName: "Chris Waller" }),
+      }),
+      view({
+        id: "stablepass-post",
+        subject: subjectLabel({ subject: "stablepass", byline: "Racing TV" }),
+      }),
+    ];
+    render(
+      <PostsLibrary
+        posts={mixed}
+        status="all"
+        counts={{ all: 3, published: 3, scheduled: 0, draft: 0, unpublished: 0 }}
+        q=""
+        total={3}
+        offset={0}
+        limit={20}
+        hasMore={false}
+      />,
+    );
+
+    const cells = screen.getAllByTestId("post-subject");
+    expect(cells).toHaveLength(3);
+
+    const [horseCell, trainerCell, stablepassCell] = cells;
+    expect(horseCell.textContent).toContain("Mahogany");
+    expect(horseCell.textContent).toContain("Chris Waller");
+
+    expect(trainerCell.textContent).toContain("Chris Waller");
+    expect(trainerCell.querySelector(".subject-tag")?.textContent).toBe("Trainer");
+
+    expect(stablepassCell.textContent).toContain("stablepass");
+    expect(stablepassCell.textContent).toContain("Racing TV");
   });
 });

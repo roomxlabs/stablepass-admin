@@ -13,6 +13,7 @@
 // full rationale.
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { getAdminUserIds, memberRows, countMemberRows } from "./admin-exclusion";
+import { subjectLabel, type SubjectLabel } from "@/lib/posts/subject";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -59,7 +60,12 @@ type HorseEngagementRow = {
 type TopPostRow = {
   post_id: string;
   title: string;
-  horse_name: string;
+  /**
+   * ENG-1269 — null for a trainer/StablePass post: `admin_top_posts` joins the
+   * horse, which B1 made nullable. Typed honestly so the screen has to handle
+   * it; rendering it raw printed the string "null" under the post title.
+   */
+  horse_name: string | null;
   type: string;
   opens: number | string;
   reactions: number | string;
@@ -101,7 +107,8 @@ export type HorseEngagement = {
 export type TopPost = {
   postId: string;
   title: string;
-  horseName: string;
+  /** Null when the post is not about a horse (ENG-1269). */
+  horseName: string | null;
   type: string;
   opens: number;
   reactions: number;
@@ -136,6 +143,14 @@ export type PostAnalytics = {
   post: {
     id: string;
     title: string | null;
+    /**
+     * ENG-1269 — who the post is posted as, from the ONE formatter. The two
+     * fields below stay because the horse/trainer names are still the honest
+     * answer for a horse post, but the HEADER reads `subject` so that a
+     * trainer post is marked as one and a StablePass post names its byline
+     * instead of rendering no attribution at all.
+     */
+    subject: SubjectLabel;
     horseName: string;
     trainerName: string;
     type: string;
@@ -347,7 +362,7 @@ export async function getEngagement(sb: SupabaseClient, since: string | null): P
       return {
         postId: r.post_id,
         title: r.title,
-        horseName: r.horse_name,
+        horseName: r.horse_name ?? null,
         type: r.type,
         opens: t.opens,
         reactions: t.reactions,
@@ -466,6 +481,8 @@ type PostHorseEmbed = { display_name: string | null; racing_name: string | null 
 type PostTrainerEmbed = { name: string | null; display_name: string | null };
 type PostRow = {
   id: string;
+  subject: string | null;
+  byline: string | null;
   title: string | null;
   type: string;
   published_at: string | null;
@@ -478,7 +495,7 @@ export async function getPostAnalytics(sb: SupabaseClient, postId: string): Prom
   const postRes = await sb
     .from("post")
     .select(
-      "id,title,type,published_at,horse_id,horse:horse_id(display_name,racing_name),trainer:source_trainer_id(name,display_name)",
+      "id,subject,byline,title,type,published_at,horse_id,horse:horse_id(display_name,racing_name),trainer:source_trainer_id(name,display_name)",
     )
     .eq("id", postId)
     .maybeSingle();
@@ -528,6 +545,12 @@ export async function getPostAnalytics(sb: SupabaseClient, postId: string): Prom
     post: {
       id: row.id,
       title: row.title,
+      subject: subjectLabel({
+        subject: row.subject,
+        horseName: horse?.racing_name ?? horse?.display_name,
+        trainerName: trainer?.display_name ?? trainer?.name,
+        byline: row.byline,
+      }),
       horseName: horse?.racing_name ?? horse?.display_name ?? "",
       trainerName: trainer?.display_name ?? trainer?.name ?? "",
       type: row.type,

@@ -125,6 +125,39 @@ describe("GET /api/admin/post-labels — the picker's live list", () => {
     expect(r.status).toBe(400);
     const j = await r.json();
     expect(j.error.code).toBe("query_failed");
+    // The ticket's contract: no Postgres error.message reaches a response body.
+    expect(JSON.stringify(j)).not.toContain("permission denied");
+  });
+});
+
+describe("POST /api/admin/post-labels — Postgres errors stay out of the body", () => {
+  it("does not leak the Postgres message of a failed INSERT into the response", async () => {
+    asAdmin();
+    state.tables.post_label = {
+      select: { rows: [] },
+      mutate: { error: { code: "42501", message: "permission denied for table post_label" } },
+    };
+    const r = await POST(postReq({ name: "Owner Update" }));
+    expect(r.status).toBe(400);
+    const j = await r.json();
+    expect(j.error.code).toBe("insert_failed");
+    expect(JSON.stringify(j)).not.toContain("permission denied");
+  });
+
+  it("does not leak the Postgres message of a failed duplicate-check READ", async () => {
+    // The third site: the existence read that runs BEFORE the insert. Scripting
+    // an error here (rather than rows) stops the route short of the insert
+    // branch, so this is the only case that exercises it.
+    asAdmin();
+    state.tables.post_label = {
+      select: { error: { code: "42501", message: "permission denied for table post_label" } },
+    };
+    const r = await POST(postReq({ name: "Owner Update" }));
+    expect(r.status).toBe(400);
+    const j = await r.json();
+    expect(j.error.code).toBe("query_failed");
+    expect(JSON.stringify(j)).not.toContain("permission denied");
+    expect(state.calls.mutations).toHaveLength(0);
   });
 });
 
@@ -175,6 +208,29 @@ describe("POST /api/admin/post-labels — Add-new", () => {
     // value `post.label`'s foreign key will accept.
     expect(j.data.name).toBe("Trackwork");
     expect(j.data.id).toBe("l-existing");
+    expect(state.calls.mutations).toHaveLength(0);
+  });
+
+  // ENG-1267 — the duplicate lookup now reads `retired_at` (it has to, to tell
+  // a retired row from a live one), and that column must NOT reach the
+  // response body: compose's picker renders these rows verbatim. Asserted as a
+  // WHOLE object on purpose — the field-by-field assertions above stay green
+  // with an extra key leaking through, which is exactly how a shape regression
+  // ships unnoticed.
+  it("a LIVE duplicate's body carries no retired_at, though the lookup read selects it", async () => {
+    asAdmin();
+    state.tables.post_label = {
+      select: {
+        rows: [
+          { id: "l-existing", name: "Trackwork", is_builtin: true, sort_order: 3, retired_at: null },
+        ],
+      },
+    };
+    const r = await POST(postReq({ name: "trackwork" }));
+    expect(r.status).toBe(200);
+    expect(await r.json()).toEqual({
+      data: { id: "l-existing", name: "Trackwork", is_builtin: true, sort_order: 3 },
+    });
     expect(state.calls.mutations).toHaveLength(0);
   });
 
@@ -337,5 +393,105 @@ describe("POST /api/admin/post-labels — Add-new", () => {
     const r = await POST(postReq({ name: "x".repeat(41) }));
     expect(r.status).toBe(400);
     expect(state.calls.mutations).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Retire (ENG-1267) — un-retire on re-add. The GET-side exclusion of retired
+// rows is asserted separately in route-retired.test.ts, which wraps the fake
+// client in the call recorder; that wrapper is not applied to this file's
+// existing mock so the pre-existing assertions above are undisturbed.
+// ---------------------------------------------------------------------------
+describe("POST /api/admin/post-labels — un-retire on re-add", () => {
+  it("a duplicate whose only existing row is RETIRED is un-retired and returned as 200, not 201", async () => {
+    asAdmin();
+    const retired = row("Trackwork", { id: "l-existing", sort_order: 3 });
+    (retired as { retired_at?: string | null }).retired_at = "2026-09-01T00:00:00.000Z";
+    state.tables.post_label = {
+      select: { rows: [retired] },
+      mutate: { single: row("Trackwork", { id: "l-existing", sort_order: 3 }) },
+    };
+    const r = await POST(postReq({ name: "trackwork" }));
+    expect(r.status).toBe(200);
+    const j = await r.json();
+    expect(j.data.id).toBe("l-existing");
+    expect(j.data.name).toBe("Trackwork");
+
+    expect(state.calls.mutations).toHaveLength(1);
+    const m = state.calls.mutations[0];
+    expect(m).toMatchObject({ table: "post_label", op: "update" });
+    expect(m.payload).toEqual({ retired_at: null });
+    expect(m.filters).toEqual([{ column: "id", value: "l-existing" }]);
+  });
+
+  it("losing a race whose winner is RETIRED un-retires it and returns 200", async () => {
+    asAdmin();
+    let reads = 0;
+    Object.defineProperty(state.tables, "post_label", {
+      configurable: true,
+      get() {
+        reads += 1;
+        // The fake's `.single()` reads the script TWICE per call (once for
+        // `.single`, once for `.error`), so this route's retired-winner-race
+        // path fires the getter 6 times: 1 (existence, awaited plain) + 2
+        // (the failed insert's `.single()`) + 1 (the re-read, awaited plain)
+        // + 2 (the un-retire update's `.single()`).
+        if (reads === 1) return { select: { rows: [] } };
+        if (reads === 2 || reads === 3)
+          return { mutate: { error: { code: "23505", message: "duplicate key value violates unique constraint" } } };
+        if (reads === 4) {
+          const retired = row("Owner Update", { id: "l-winner" });
+          (retired as { retired_at?: string | null }).retired_at = "2026-09-01T00:00:00.000Z";
+          return { select: { rows: [retired] } };
+        }
+        return { mutate: { single: row("Owner Update", { id: "l-winner" }) } };
+      },
+    });
+    const r = await POST(postReq({ name: "Owner Update" }));
+    expect(r.status).toBe(200);
+    const j = await r.json();
+    expect(j.data.id).toBe("l-winner");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Acceptance: add -> list -> re-add restores the same id.
+//
+// Deliberately NOT the retire safety net. This file drives GET/POST against a
+// scripted fake that does no filtering, so a "list omits the retired row" step
+// here would only assert what the script was told to return and would stay
+// green with `.is("retired_at", null)` deleted. The retire exclusion is proven
+// where it can be: the filter is asserted on the real call shape in
+// `route-retired.test.ts`, and the retire mutation itself in
+// `app/api/admin/post-labels/[id]/route.test.ts`.
+// ---------------------------------------------------------------------------
+describe("acceptance — add, list, re-add restores the same id", () => {
+  it("walks add -> list -> re-add", async () => {
+    asAdmin();
+
+    // 1. Add.
+    state.tables.post_label = {
+      select: { rows: [] },
+      mutate: { single: row("Owner Update", { id: "l-1" }) },
+    };
+    const createRes = await POST(postReq({ name: "Owner Update" }));
+    expect(createRes.status).toBe(201);
+    expect((await createRes.json()).data.id).toBe("l-1");
+
+    // 2. List includes it.
+    labels([row("Owner Update", { id: "l-1" })]);
+    const listRes = await GET();
+    expect((await listRes.json()).data.map((r: { id: string }) => r.id)).toContain("l-1");
+
+    // 3. Re-add a retired row restores the SAME id (no twin is minted).
+    const retired = row("Owner Update", { id: "l-1" });
+    (retired as { retired_at?: string | null }).retired_at = "2026-09-20T00:00:00.000Z";
+    state.tables.post_label = {
+      select: { rows: [retired] },
+      mutate: { single: row("Owner Update", { id: "l-1" }) },
+    };
+    const readdRes = await POST(postReq({ name: "Owner Update" }));
+    expect(readdRes.status).toBe(200);
+    expect((await readdRes.json()).data.id).toBe("l-1");
   });
 });

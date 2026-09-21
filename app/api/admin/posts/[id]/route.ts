@@ -20,6 +20,13 @@ const FIELD_MAP: Record<string, string> = {
   // is on the row untouched — which is what keeps an old unlabelled post
   // unlabelled when the operator saves an edit without opening the picker.
   label: "label",
+  /**
+   * ENG-1268 — the StablePass byline. Listed here so a byline-only save counts
+   * as "the caller asked for something" below; the value it puts in the patch
+   * is then REPLACED by the validated, trimmed name further down, and a
+   * `byline` on a non-stablepass post never gets that far (400).
+   */
+  byline: "byline",
   // ENG-824 — poster frame time (seconds). Same snake_case on the wire as the
   // column. Absent leaves the row alone; a number sets it.
   poster_time_s: "poster_time_s",
@@ -32,6 +39,25 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
   const { sb } = g;
   const { id } = await params;
   const b = await req.json().catch(() => ({}));
+
+  /**
+   * IMMUTABLE FIELDS (ENG-1268) — refused loudly, never silently ignored.
+   *
+   * `subject` is fixed at creation: a published trainer post cannot become a
+   * horse post, because the asset, the byline and every member surface were
+   * built around who it is from. `horseId` is the same fact by another name.
+   * They are NOT in FIELD_MAP, so without this they would simply be dropped —
+   * and a caller that sent `subject: "horse"` would get a cheerful 200 back
+   * for a change that never happened. A 400 says what actually occurred.
+   */
+  for (const field of ["subject", "horseId", "horse_id"]) {
+    if (field in b)
+      return fail(
+        "validation_failed",
+        "Who a post is from can’t be changed after it is created.",
+        400,
+      );
+  }
 
   const patch: Record<string, unknown> = {};
   for (const [field, column] of Object.entries(FIELD_MAP)) if (field in b) patch[column] = b[field];
@@ -47,6 +73,68 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
     if (labelValue === undefined)
       return fail("validation_failed", LABEL_ERROR_MESSAGE, 400);
     patch.label = labelValue;
+  }
+
+  /**
+   * ENG-1268 — `byline` and `sourceTrainerId` are both SUBJECT-DEPENDENT, so
+   * this is the one place that has to read the post before deciding.
+   *
+   * Only fetched when one of the two is actually being set: a caption-only
+   * save must not pay for a round-trip it does not need, and — more to the
+   * point — must not be able to fail on one.
+   *
+   * The rules:
+   *  - `byline`   → stablepass posts only, and the name must be a LIVE
+   *                 `post_byline` row. A retired one is refused for the same
+   *                 reason the create route refuses it: retiring withdraws a
+   *                 name from NEW use while leaving it on every post that
+   *                 already carries it (including this one, which is why the
+   *                 picker shows it and why an unchanged save never sends it).
+   *  - `sourceTrainerId` → horse posts only. A trainer post's trainer IS its
+   *                 subject and is immutable; a stablepass post has none.
+   */
+  const wantsByline = "byline" in b;
+  const wantsTrainer = "sourceTrainerId" in b;
+  if (wantsByline || wantsTrainer) {
+    const { data: existing, error: readErr } = await sb
+      .from("post")
+      .select("subject")
+      .eq("id", id)
+      .maybeSingle();
+    if (readErr) {
+      console.error("post query_failed", readErr.code);
+      return fail("query_failed", "Could not load the post.", 400);
+    }
+    if (!existing) return fail("not_found", "Post not found.", 404);
+    // A row predating B1's backfill reads as a horse post, which is what it is.
+    const subject = existing.subject ?? "horse";
+
+    if (wantsTrainer && subject !== "horse")
+      return fail(
+        "validation_failed",
+        "The trainer byline can only be changed on a horse post.",
+        400,
+      );
+
+    if (wantsByline) {
+      if (subject !== "stablepass")
+        return fail("validation_failed", "byline is only accepted for a stablepass post.", 400);
+      if (typeof b.byline !== "string" || b.byline.trim() === "")
+        return fail("validation_failed", "byline must be a non-empty name.", 400);
+      const name = b.byline.trim();
+      const { data: row, error: bylineErr } = await sb
+        .from("post_byline")
+        .select("name,retired_at")
+        .eq("name", name)
+        .maybeSingle();
+      if (bylineErr) {
+        console.error("post_byline query_failed", bylineErr.code);
+        return fail("query_failed", "Could not check the byline.", 400);
+      }
+      if (!row || row.retired_at != null)
+        return fail("unknown_byline", "That byline is not available. Pick another.", 400);
+      patch.byline = name;
+    }
   }
 
   // ENG-824 — reject non-finite / negative poster times (same rule as POST).

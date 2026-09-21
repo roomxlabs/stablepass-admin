@@ -33,7 +33,8 @@
 // routes have to agree on them byte for byte — a second copy is how the browser
 // uploads bytes to one path while the server records another. Same reason
 // `lib/posts/labels.ts` is shared by the routes and this screen (ENG-745).
-export { MAX_PHOTOS, uploadSlotPath } from "@/lib/posts/media";
+import { MAX_PHOTOS } from "@/lib/posts/media";
+export { MAX_PHOTOS, nextPhotoSlot, uploadSlotPath } from "@/lib/posts/media";
 
 /** One photo in the compose strip, in DISPLAY order within the list. */
 export type ComposePhoto = {
@@ -159,4 +160,45 @@ export function mediaSetPayload(
   list: readonly ComposePhoto[],
 ): { sortOrder: number; mediaUrl: string }[] {
   return uploadedPhotos(list).map((p, i) => ({ sortOrder: i, mediaUrl: p.path }));
+}
+
+/**
+ * ENG-1266 — APPEND, the operation this screen was missing.
+ *
+ * Until now the only way to get photos into the strip was a pick that REPLACED
+ * the whole set (`onPickPhotos`), which is precisely why an operator who picked
+ * their photos one at a time ended up with a one-photo post: every pick threw
+ * away the last one. Appending is a separate verb, not a flag on the old one.
+ *
+ * Existing entries are returned UNTOUCHED and in the SAME ORDER, by identity —
+ * not rebuilt — so a reorder the operator already made survives an append, and
+ * React keeps every existing tile mounted (no thumbnail re-decode, no flash).
+ * New photos land at the end, which is also what keeps the cover stable: the
+ * operator's position 0, and therefore `post.media_url`, cannot move because
+ * they added a photo.
+ */
+export function appendPhotos(
+  list: readonly ComposePhoto[],
+  additions: readonly ComposePhoto[],
+): ComposePhoto[] {
+  if (additions.length === 0) return list as ComposePhoto[];
+  return [...list, ...additions];
+}
+
+/**
+ * The operator-facing reason an append is refused, or null when it fits.
+ *
+ * Checked BEFORE anything is minted or uploaded — the sentence names the total
+ * the append would reach ("this would make 12") rather than just the cap,
+ * because the operator is looking at a strip and a file dialog and needs to
+ * know how many to drop, and it ends by saying nothing was uploaded so they
+ * are not left wondering whether some of the set landed anyway.
+ *
+ * Counts the WHOLE list, including tiles still uploading or failed: those hold
+ * slots that exist in Storage, so letting them slip past the cap would be a
+ * request the route then rejects after the operator has already waited.
+ */
+export function appendCapError(current: number, adding: number): string | null {
+  if (current + adding <= MAX_PHOTOS) return null;
+  return `You can add up to ${MAX_PHOTOS} photos to a post — this would make ${current + adding}. Nothing was uploaded.`;
 }

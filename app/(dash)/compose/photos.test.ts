@@ -9,6 +9,8 @@
 import { describe, expect, it } from "vitest";
 import {
   MAX_PHOTOS,
+  appendCapError,
+  appendPhotos,
   mediaSetPayload,
   mirrorPath,
   movePhoto,
@@ -253,5 +255,68 @@ describe("mediaSetPayload — contiguity and row 0, which no CHECK can express",
     expect(rows).toHaveLength(10);
     expect(rows.at(-1)!.sortOrder).toBe(9);
     expect(rows.every((r) => r.sortOrder >= 0 && r.sortOrder <= 9)).toBe(true);
+  });
+});
+
+describe("appendPhotos — ENG-1266's fix for the throw-away-the-last-one bug", () => {
+  it("keeps every existing entry, BY IDENTITY, in the same order", () => {
+    const list = [photo(0), photo(1), photo(2)];
+    const additions = [photo(3)];
+    const out = appendPhotos(list, additions);
+    // Same objects, not rebuilt copies — a rebuild would remount every tile
+    // and re-decode thumbnails that had nothing to do with this append.
+    expect(out[0]).toBe(list[0]);
+    expect(out[1]).toBe(list[1]);
+    expect(out[2]).toBe(list[2]);
+    expect(slots(out)).toEqual(["original", "photo-1", "photo-2", "photo-3"]);
+  });
+
+  it("lands new photos at the END, never disturbing display position 0", () => {
+    const list = [photo(5)];
+    const out = appendPhotos(list, [photo(1), photo(2)]);
+    expect(slots(out)).toEqual(["photo-5", "photo-1", "photo-2"]);
+    // The cover — position 0 — is exactly what it was before the append.
+    expect(out[0]).toBe(list[0]);
+  });
+
+  it("returns the SAME reference for an empty addition — a no-op append", () => {
+    const list = [photo(0), photo(1)];
+    expect(appendPhotos(list, [])).toBe(list);
+  });
+
+  it("never mutates the list it was given", () => {
+    const list = [photo(0), photo(1)];
+    const before = slots(list);
+    appendPhotos(list, [photo(2)]);
+    expect(slots(list)).toEqual(before);
+    expect(list).toHaveLength(2);
+  });
+
+  it("appending to an empty list is just the additions, in pick order", () => {
+    const additions = [photo(0), photo(1)];
+    expect(appendPhotos([], additions)).toEqual(additions);
+  });
+});
+
+describe("appendCapError — the operator-facing cap on an append", () => {
+  it("names the TOTAL the append would reach, and says nothing was uploaded", () => {
+    // 9 already in the strip + 2 more = 11: over by one.
+    expect(appendCapError(9, 2)).toBe(
+      "You can add up to 10 photos to a post — this would make 11. Nothing was uploaded.",
+    );
+  });
+
+  it("is null when the append lands exactly on the cap", () => {
+    // 8 + 2 = 10, exactly MAX_PHOTOS — fits.
+    expect(appendCapError(8, 2)).toBeNull();
+  });
+
+  it("is null comfortably under the cap", () => {
+    expect(appendCapError(1, 1)).toBeNull();
+  });
+
+  it("refuses even a single-photo append once the strip is already at the cap", () => {
+    expect(appendCapError(10, 1)).not.toBeNull();
+    expect(appendCapError(10, 1)).toContain("this would make 11");
   });
 });

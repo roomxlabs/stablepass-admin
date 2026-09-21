@@ -37,9 +37,14 @@ function savesDelta(saves: number, opens: number): string {
 export default function PostAnalytics({ data }: { data: PostAnalyticsData }) {
   const { post } = data;
   const totalReactions = data.reactionsByEmoji.reduce((sum, r) => sum + r.count, 0);
-  const meta = [post.horseName, post.trainerName, typeLabel(post.type)]
-    .filter(Boolean)
-    .join(" · ");
+  // ENG-1269 — `subject.text` replaces the horse+trainer pair here. For a
+  // horse post it is the horse name and the trainer still follows it, so the
+  // header is unchanged; for a trainer post it carries the "Trainer" marker,
+  // and for a StablePass post it names the byline instead of collapsing to
+  // just the type label (which is what the old pair did, both halves empty).
+  const attribution =
+    post.subject.subject === "horse" ? [post.subject.text, post.trainerName] : [post.subject.text];
+  const meta = [...attribution, typeLabel(post.type)].filter(Boolean).join(" · ");
 
   return (
     <>

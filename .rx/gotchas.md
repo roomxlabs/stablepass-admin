@@ -1698,3 +1698,284 @@ loaded:42,total:100})` on `xhr.upload` for URLs containing `mock-upload` and nev
 **photo** — `page.route("**/storage/v1/**", () => new Promise(() => {}))` so the Storage PUT never
 settles (pct stays 0, tiles stay `uploading…`). Screenshot `page.locator('[class*="progressTrack"]').locator("..")`
 for the zone + footer.
+
+## The mockup path moved AGAIN — `06-stage1-design/` is gone, `dev-handover/` is back (ENG-1266, 20 Sep 2026)
+Two entries above (and `.rx/mockups.md`) insist that `dev-handover/` "has never existed anywhere in
+the workspace" and that the real root is `06-stage1-design/mockups/web/admin/screens/`. **Both of
+those statements are now false.** Verified from this worktree on 20 Sep 2026:
+
+```sh
+ls "$(git rev-parse --git-common-dir)/../../../06-stage1-design/mockups/web/admin/screens/"
+# ls: cannot access '.git/../../../06-stage1-design/...': No such file or directory
+ls /home/reno-fathoni/Documents/rx/stable/dev-handover/StablePass-mockups/mockups/web/admin/screens/
+# 01-signin.html 02-dashboard.html 03-compose.html 04-posts.html 05-horses.html …
+```
+
+So the live design source is **`<workspace>/dev-handover/StablePass-mockups/mockups/web/`** —
+`admin/screens/*.html` plus the shared `style.css`. The workspace root is the parent of the repo
+(`/home/reno-fathoni/Documents/rx/stable`), NOT three levels above `.git`.
+
+**Do not "correct" this back.** The lesson the older entries got right is the one that keeps being
+ignored: *run the `ls` and paste its output before editing any mockup path in this repo.* The path
+has moved twice; the only reliable procedure is to look. `.rx/mockups.md` still names the dead
+`06-stage1-design` root and is the next thing to fix (it was outside ENG-1266's surface).
+
+## `post_media` is written at SAVE, not at upload — so "next free photo slot" cannot come from it alone (ENG-1266)
+Symptom: an "Add more photos" append on an unpublished draft mints `<postId>/photo-1` a second time
+and PUTs over a photo the operator already uploaded.
+Cause: Compose uploads bytes as soon as a photo is picked but only writes `post_media` rows in the
+save PATCH, so mid-compose the table is EMPTY for a draft that already owns `original`, `photo-1`,
+`photo-2`. Deriving "the next slot" from `post_media` therefore answers `1`.
+Do this: derive it from the UNION of `post_media.media_url`, `post.media_url` and the Storage object
+listing for the post's prefix (`sb.storage.from("post-media").list(postId)`) — see
+`nextPhotoSlot()` in `lib/posts/media.ts` and `app/api/admin/posts/[id]/photo-uploads/route.ts`.
+Slots are monotonic on purpose: a removed photo's ordinal is never handed out again, so a gap
+(`original, photo-1, photo-4` → next `photo-5`) is correct, not a bug to compact.
+
+## `lib/testing/supabase-fake.ts` had no `storage.list()` (ENG-1266)
+Any route that lists a bucket prefix is untestable until one is added. It is additive — add the
+method and a `state.storage.list` slot rather than reaching for a bespoke mock in the route test.
+
+## Widening `EditInitial` breaks ~11 existing ComposeScreen tests at once
+`EditInitial` is built inline in a dozen fixtures across `ComposeScreen.test.tsx`. Adding a REQUIRED
+field is a compile error in every one of them, and (ENG-1266) a field that also gates the Save
+button turns them red for a reason unrelated to what they test. Budget for the churn, and give photo
+fixtures a non-empty `photos` array rather than `[]`.
+
+## A removed tile does not release its upload slot (ENG-1266)
+Symptom: remove a photo while it is still uploading, add another, and the post ends up showing the
+file you discarded instead of the one you picked.
+Cause: `dropPhoto` only edits React state — the Storage PUT is never aborted. So a client hint
+derived from the SURVIVING tiles (`nextPhotoSlot(photos.map(p => p.path)) - 1`) falls back to a slot
+whose bytes are still in flight, and the route cannot floor it back: its own derivation reads
+`post_media` + the mirror + the Storage listing, and an in-flight object is in none of those yet.
+The append is minted onto the live slot and the abandoned PUT lands on top of it afterwards.
+Do this: keep a HIGH-WATER MARK ref (`highestSlotEverHeld` in `ComposeScreen.tsx`), bumped on every
+mint and lowered only where the POST itself changes (`resetMedia`, a replacing pick) — never by a
+remove. Send that as `afterSlot`.
+
+## An edit-mode save must be gated on uploads settling (ENG-1266)
+Symptom: "Changes saved." while a photo is still uploading — and the photo is gone, along with the
+`post_media` rows behind it.
+Cause: `mediaSetPayload()` is the DONE tiles only, and `PATCH /posts/:id` deletes every row above the
+set it is given. Create mode has always gated on `photosSettled`; edit mode's actions were only
+gated on `busy || editPhotoEmpty`, so a mid-upload save shipped a SHORTER set and the route trimmed
+to it. Whenever you add an action that sends `media`, gate it on `editPhotoUnsettled` too — a
+partial set is not a partial save here, it is a delete.
+
+## Supabase Storage `list()` defaults to 100 objects, sorted LEXICOGRAPHICALLY (ENG-1266)
+`photo-1, photo-10, photo-100, …, photo-2`. Removed photos' objects are never cleaned up (epic
+decision 5), so a long-lived post's prefix can exceed 100 between its real set and its orphans —
+past which the listing truncates and any slot floor derived from it can REGRESS onto live bytes.
+Pass an explicit `{ limit: 1000 }`; sizing it to `MAX_PHOTOS` would be wrong, because the listing
+counts every orphan ever left behind, not just the persisted set.
+## A `.select()` fields constant must be a STRING LITERAL, not a concatenation
+`const LABEL_LOOKUP_FIELDS = LABEL_FIELDS + ",retired_at";` widens to plain `string`, which
+collapses supabase-js's `.select()` overload to `GenericStringError[]` — `tsc --noEmit` then fails
+on every field access of the returned rows, with an error that names neither the concatenation nor
+the column. Write the second projection out in full as its own literal (ENG-1267).
+
+## `supabase-fake`'s `.single()` reads the table script TWICE per call
+`single()`/`maybeSingle()` call `pick()` once for `.single` and once for `.error`. A test that
+scripts a MULTI-STEP sequence with `Object.defineProperty(state.tables, t, { get() {…} })` — the
+idiom for an insert-fails-then-re-read-then-update race — must therefore budget **2 getter fires per
+`.single()` step**, not 1. Get it wrong and the mis-aligned step returns `{data:null,error:null}`,
+which reads as a FALSE SUCCESS (a 201 where you expected a 200, or a crash on `null.id`) rather than
+an obvious failure. Cost real debugging time on ENG-1267's un-retire-race tests.
+
+## A lookup route's filter does NOT cover the SSR page that reads the table directly
+`app/(dash)/compose/page.tsx` reads `post_label` straight off Supabase rather than through
+`GET /api/admin/post-labels`, so the `.is("retired_at", null)` exclusion added to the ROUTE
+(ENG-1267) does not apply to the picker's first server-rendered paint. Any filter added to one of
+these lookup routes has to be mirrored in the compose loader (A3's surface) or the feature only
+half-ships. Check both readers whenever you change a lookup's visibility rule.
+**CLOSED for the two lookups that exist today (ENG-1268 / A3).** `page.tsx` now carries
+`.is("retired_at", null)` on BOTH reads — `post_label` and the new `post_byline` — so the loader and
+the routes agree. The rule above still stands for the NEXT lookup table somebody adds: the mirror is
+not automatic, and nothing fails if you forget it.
+
+## Filtering retired rows out of a picker BREAKS the edit path — unless the picker unions the post's own value back in
+The other half of the mirroring hazard above. Once `retired_at` rows are excluded from a lookup
+(ENG-1267), the picker's option set no longer contains a retired name — but an EXISTING post can
+still carry exactly that name, legitimately: retiring stamps `post_label.retired_at` / 
+`post_byline.retired_at` and never touches `post`, which stores the NAME. Hand a `<select>` a current
+value with no matching `<option>` and it falls back to index 0: the control reads "No label" while
+state holds the real value, and it cannot be corrected by re-picking, because that is already what
+it displays, so no change event fires.
+The LABEL picker already solves this, and has since ENG-979 — copy it rather than inventing
+something: `app/(dash)/compose/ComposeScreen.tsx:263-273` unions `initialLabel` into `options`
+(deduped, as an ordinary selectable option — NOT a read-only one), and `:296-298` makes `labelPatch`
+absent unless `label !== initialLabel`, so a save that touches only the caption provably writes
+nothing to the column. Two belts, both needed: the union keeps the control honest, the absent-unless-
+changed patch keeps a mis-rendered control from writing.
+**The byline picker now has both belts too (ENG-1268 / A3) — this entry is a pattern to COPY, not an
+open hazard.** `ComposeScreen.tsx`'s `bylineOptions` unions `initialByline` back in AFTER the
+retired filter (with `id: null`, which also keeps it out of the retire list — you cannot retire a
+row whose id you never read), and `bylinePatch` is absent unless the value actually changed. Both
+are pinned: "a post's own RETIRED byline is unioned back into the picker and selected" and "a
+caption-only save on a post carrying a RETIRED byline sends no byline key".
+A3 also found a THIRD instance of the same shape and closed it: a title retired *during the current
+session* is filtered out of the picker optimistically, so the filter must run BEFORE `initialLabel`
+is appended, or retiring a title would blank it on the very post being edited. Pinned by "retiring
+the title the edited post carries leaves it selected in the picker".
+**The rule, for the next picker:** filter retired rows, then union the edited row's own value back
+in, then make the patch absent-unless-changed — in that order. Any picker that reads a lookup with a
+`retired_at` needs all three.
+
+## A generic `23514 → 400` mapping must be scoped by CONSTRAINT NAME, and must sit AFTER the named ones
+ENG-1268 asked for "a DB 23514 also mapped to 400, generic message" on `POST /api/admin/posts`. The
+obvious reading — `error.code === "23514"` — is wrong twice over: `post` CHECKs `type`, `status`,
+`aspect_ratio` AND `post_label_preset`, so a bare match captures all of them, and putting that
+branch above `isLabelCheckViolation` makes it capture the label one first. The first draft did
+exactly this; two PRE-EXISTING label tests caught it (`route.test.ts` "insert violating the label
+CHECK … not insert_failed" and "a 23514 from a DIFFERENT constraint keeps its own message"). Match on
+the constraint name the way `isLabelCheckViolation` does, and put the generic branch LAST. Both
+directions are now pinned for the subject constraint too.
+Corollary worth keeping: when you add a coarse error mapping, go looking for the existing FINE ones
+it could swallow — and if there are none, that is the moment to ask why the fine ones were never
+written.
+
+## `export type { X } from "…"` does NOT bring X into scope
+`app/(dash)/compose/types.ts` re-exports `Subject` from `lib/posts/subject.ts` and also annotates
+`EditInitial.subject` with it. The re-export forwards the name to importers but does not bind it
+locally, so `tsc` fails with a bare `TS2304: Cannot find name 'Subject'` pointing at the annotation
+rather than at the export line. Import it as well as re-exporting it.
+
+## A shared `Subject`/lookup module belongs in `lib/posts/`, not in the screen's `types.ts`
+The BFF routes and the compose screen both need the three subject values and the per-subject type
+rules, and a route cannot import from `app/(dash)/compose/`. `lib/posts/subject.ts` is the split
+(the same one `lib/posts/labels.ts` made under ENG-745); `compose/types.ts` re-exports it rather than
+restating it, so the picker cannot offer a combination the route rejects. Expect any future
+"screen and route must agree on a vocabulary" ticket to need the same new file — it is an ALLOWED
+surface widening, not scope creep, but say so on the ticket.
+
+## The S-mark asset ships at 8000×8000; downscale it before committing
+`dev-handover/StablePass-mockups/mockups/assets/S-2.png` is 325 KB at 8000×8000 for what renders in a
+44 px avatar. Downscaled to 256×256 it is 6.6 KB. It is also already the mark ON `--brand-green`
+(#285D50 exactly, verified at the corner pixel), so the avatar fills the circle with it rather than
+tinting a background behind it — padding or a green background would double the green. Also `chmod
+644`: the mockups tree is mode 700 and `cp` carries that across.
+
+## Squash-merging a parent PR with `--delete-branch` CLOSES its stacked child, it does not retarget it
+Landing a stack with `gh pr merge <parent> --squash --delete-branch` looks clean and silently kills
+the child PR stacked on top of it. GitHub's auto-retarget (base → the parent's base) does NOT fire
+for a squash merge that deletes the head ref: the child's base ref simply disappears, GitHub closes
+the child, and a closed PR whose base ref is missing can be neither reopened nor retargeted — the
+API rejects both until the ref exists again. The child's commits are not lost, but the PR (its
+review threads, its `Closes ENG-NNN` link, its CI history) is only recoverable while the head SHA is
+still retrievable: restore the base ref, reopen, retarget, then `git rebase --onto` the squashed tip.
+Once the SHA is unreachable there is nothing to reopen.
+**Do this instead, in this order:** retarget every stacked child PR to the integration branch FIRST
+(`gh pr edit <child> --base feature/<epic>-v1`), THEN merge the parent — or merge the parent WITHOUT
+`--delete-branch` and clean the branch up after the children are safely rebased. The integrate loop
+hit this on the post-subject-v1 stack; it is a property of `--delete-branch`, not of any one epic.
+
+## The Posts library's subject sort is an INNER join, so it lists horse posts only
+**CLOSED — ENG-1293 (21 Sep 2026).** No longer true of the code: `postsSelect`, `HORSE_EMBED` and
+`HORSE_EMBED_INNER` are deleted, and the sort now orders by the `subject_name` PostgREST computed
+column added by ENG-1292 — a post-level column, so no embed, no join, no filtering. Both call sites
+pass the select constant through unchanged. The history below is kept because the SHAPE of the bug
+is the transferable lesson (see "A `!inner` added for an ORDER is a filter the type system cannot
+see" at the end of this file); the prescription in its last sentence is what ENG-1293 followed —
+a post-level sort key, not a bare `!inner` removal.
+
+`lib/posts/sort.ts#postsSelect` rewrites `horse:horse_id(` to `horse:horse_id!inner(` when
+`?sort=horse`, because PostgREST will not order parent rows by an embedded column without it. Once
+B1 made `post.horse_id` nullable (ENG-1269) that inner join also became a FILTER: click the
+"Posted as" header and every trainer / StablePass post silently drops out of the list. Nothing
+errors and no count disagrees loudly, so it reads as "my post is gone".
+Every other view — the default `created_at desc` and the status / published / engagement sorts —
+lists all three subjects. A4 left the inner join in place and documented it at the call site rather
+than widening its surface into the query shape; if a ticket ever needs the subject sort to cover all
+three, it needs a different ordering strategy (a post-level sort key), not a `!inner` removal, or
+the sort silently orders nothing.
+
+## `select.value === ""` proves nothing about React state once the `<option>` is gone
+ENG-1290's first cut asserted the picker was empty after retiring the selected row. In jsdom a
+`<select>` whose current value has no matching `<option>` reports a fallback (`""` for the label
+picker, the Add-new sentinel for the byline one) **whether or not the component cleared its state** —
+so the label half of the test passed against the deliberately-reverted fix. The mutation run is what
+caught it; the assertion had been written, run green, and would have shipped as proof of nothing.
+Assert a STATE readout instead: the `preview-label` pill (rendered straight from `label`), or a gate
+the state feeds (`media-error` "Choose a byline first." for `subjectReady`). Rule of thumb: when a
+test asserts that a control is empty, ask what the DOM would report if the state were still full —
+if the answer is "the same thing", the test is not testing the fix.
+
+## Clearing a selection on retire must key on the UNION BELT, not on `isEdit`
+The obvious guard for ENG-1290 (`if (byline === row.name) setByline("")`) blanks edit mode too and
+breaks the pre-existing "retiring the title the edited post carries leaves it selected" test. The
+obvious *fix* for that (`!isEdit && …`) is also wrong: an edit-mode operator who picks a DIFFERENT
+row and then retires it has no union-back either, and gets the same dead end. The condition that
+actually matches `options` / `bylineOptions` is `row.name !== initialLabel` / `!== initialByline` —
+the exact single value those belts re-append. Mirror the belt, don't approximate it with a mode flag.
+
+## A mock that ignores a filter silently disarms every test that depends on it
+`e2e/mock-supabase.mjs`'s `/rest/v1/post_label` GET returned all rows regardless of
+`retired_at=is.null`, so `page.tsx`'s `.is("retired_at", null)` on the direct `post_label` read could
+be deleted with the whole suite still green. The `post_byline` branch next to it already honoured the
+filter and even carried a comment boasting that it was "UNLIKE post_label" — the mock documented its
+own blind spot for a whole ticket and nobody read it as a bug. When a mock branch says it ignores a
+filter, that sentence is a missing test, not a design note.
+
+## `e2e/mock-supabase.mjs` has no PATCH branch for `/rest/v1/post_label`
+`post_byline` has one (retire + Add-new's un-retire both PATCH by id); `post_label` has only GET and
+POST. Nothing hit it until ENG-1290 added a retired label fixture, and nothing hits it now — but the
+first e2e that exercises label retire, or Add-new of a name that is retired (the real route un-retires
+the row rather than inserting), will fall through to the generic handler and fail confusingly rather
+than saying "the mock cannot do this yet". Add the branch when you write that spec, not after.
+
+## A `!inner` added for an ORDER is a filter the type system cannot see — order by a post-level column
+ENG-1291 / ENG-1293, closing the entry above. PostgREST will not order PARENT rows by an embedded
+column unless the embed is `!inner`, so the obvious fix for "sort by a related name" is to rewrite
+the embed for that one sort. That rewrite is a JOIN, and a join is a FILTER: every parent row whose
+FK is null drops out of the rows AND out of `count:"exact"`, with no error and no count that
+disagrees. It is invisible to `tsc` (a `.select()` is just a string) and invisible to a mocked test
+(the supabase fake returns whatever is seeded regardless of the select string — which is exactly why
+this shipped green for a whole ticket). Measured cost here: 36 rows instead of 50.
+**Do this instead:** put the sortable name on the parent as a PostgREST **computed column**
+(`subject_name(post)`, ENG-1292) and `.order()` on it. No embed, no join, nothing to filter, and the
+projection stops depending on which sort is active. Make the computed column resolve the name the
+SAME way the cell renders it (`format.ts` renders display-first with both sides trimmed, so the SQL
+is `coalesce(nullif(btrim(display_name),''), nullif(btrim(racing_name),''))`) — if the two diverge,
+the list sorts by a string the operator cannot see, which is its own class of bug.
+**And test it as a result set, not as a string:** the test that would have caught this seeds one row
+per subject and asserts all three come back sorted, with the fake taught to honour `!inner` join
+semantics. Asserting only "the select contains `!inner`" is what the old suite did, and it passed.
+
+## Deleting a helper does not delete the pattern — guard the CALL SITES, not just the module
+ENG-1293's first cut asserted `expect(readFileSync("lib/posts/sort.ts")).not.toContain("!inner")`
+after deleting `postsSelect`. Reintroducing the exact ENG-1291 bug inline at
+`app/(dash)/posts/page.tsx` — `.select(sort === "subject" ? SELECT.replace("horse:horse_id(",
+"horse:horse_id!inner(") : SELECT)` — left the whole suite GREEN (97 files / 1750 tests). Nothing
+could see it: the source-text guard read the module only, the constants it asserts are bypassed by
+an inline `.replace`, no unit test imports a Server Component, and the e2e mock implements no join
+semantics. The screen is the surface the bug was REPORTED against; the API was the secondary
+consumer. Do-this: a source-text guard names every call site (`it.each` over the file paths), and
+the mutation drill runs at each one, not just the convenient one.
+
+## Mutation-test an UNCOMMITTED tree with a file copy, never `git checkout --`
+`git checkout -- <file>` restores from the INDEX, so on a dirty worktree it silently discards the
+uncommitted ticket change you were mutating, not just the mutation. It surfaces one run later as a
+confusing failure (`TypeError: postsSelect is not a function`) and the work has to be retyped from
+the diff. Use `cp <file> /tmp/x.bak` … `cp /tmp/x.bak <file>`, or `git stash`. Costs nothing, and
+the revert is provably exact.
+
+## A `||` fallback is only tested by the WHITESPACE case, never by `null`
+ENG-1295, pinning what ENG-1293 shipped untested. `format.ts` resolves the horse cell as
+`horse?.display_name?.trim() || horse?.racing_name` so it matches the BE's `subject_name`
+(`coalesce(nullif(btrim(display_name),''), nullif(btrim(racing_name),''))`). The existing test fed
+`display_name: null` — which falls through the `||` with OR without the `.trim()`, so it proved
+nothing: the whole 97-file / 1754-test suite stayed GREEN under a revert to
+`horse?.display_name || horse?.racing_name`. Only `"   "` separates the two: it is truthy, it
+short-circuits the fallback, and `subjectLabel`'s `clean()` then renders "Unassigned" while the row
+sorts under the racing name.
+**Do this:** whenever a `||`/`??` chain exists because one side is *trimmed or coalesced*, the
+test case must be the whitespace-only string, not the null — and mutation-verify by deleting the
+`.trim()`, not by deleting the whole expression. Same rule wherever admin renders a name the BE
+also sorts by.
+
+## Run the admin suite from a checkout that sits BESIDE stablepass-mobile
+`app/(dash)/compose/reel-chrome-parity.test.ts` locates stablepass-mobile's `post-card.tsx` by
+walking up from `process.cwd()`. From a worktree under `stablepass-admin/.claude/worktrees/` it
+resolves fine (the walk reaches `rx/stable/`). From a clone anywhere else, all 15 of its tests fail
+with `THE GUARD HAS GONE BLIND` — which reads as a regression and is not one.

@@ -10,18 +10,35 @@ import PosterScrubber from "./PosterScrubber";
 import PreviewModal from "./PreviewModal";
 import PostPreview, { type PostPreviewData } from "./PostPreview";
 import {
+  createByline,
   createDraft,
   createPostLabel,
   discardDraft,
   patchPost,
   publishPost,
+  requestPhotoUploads,
+  retireByline,
+  retireLabel,
   schedulePost,
   uploadPhotoToStorage,
   uploadVideoToMux,
 } from "./api";
-import { ACCEPT_BY_TYPE, isUploadType, TYPE_LABEL, uploadTypeForFile } from "./types";
+import {
+  ACCEPT_BY_TYPE,
+  isUploadType,
+  STABLEPASS_HANDLE,
+  SUBJECT_LABEL,
+  SUBJECTS,
+  trainerSubline,
+  TYPE_LABEL,
+  TYPES_BY_SUBJECT,
+  uploadTypeForFile,
+} from "./types";
 import {
   MAX_PHOTOS,
+  appendCapError,
+  appendPhotos,
+  nextPhotoSlot,
   mediaSetPayload,
   mirrorPath,
   movePhoto,
@@ -36,11 +53,14 @@ import type {
   MeasureState,
   MediaDimensions,
   MediaType,
+  PhotoUploadTarget,
   PosterTimePatch,
+  Subject,
   TrainerOption,
 } from "./types";
 import styles from "./compose.module.css";
 import { MAX_LABEL_LENGTH, POST_LABEL_PRESETS } from "@/lib/posts/labels";
+import { MAX_BYLINE_LENGTH } from "@/lib/posts/bylines";
 
 /**
  * The picker's "+ Add new…" sentinel.
@@ -53,6 +73,17 @@ import { MAX_LABEL_LENGTH, POST_LABEL_PRESETS } from "@/lib/posts/labels";
  * early on it so it can never reach `label` state or a save payload.
  */
 const ADD_NEW_VALUE = "__stablepass_add_new_label__";
+
+/**
+ * The byline picker's "+ Add new…" sentinel (ENG-1268).
+ *
+ * Its OWN constant, not a shared one: the two pickers sit on the same screen
+ * and a shared sentinel would make a stray handler swap silently work. Same
+ * shape and the same rule as the label sentinel — it is an ACTION and must
+ * never reach `byline` state, or a save would try to write it to `post.byline`
+ * and trip the `post_byline_name_fk`.
+ */
+const ADD_NEW_BYLINE_VALUE = "__stablepass_add_new_byline__";
 
 /**
  * Fallback option list when the server hands none down. Hoisted to a module
@@ -98,6 +129,57 @@ function revokePhotoUrls(list: readonly ComposePhoto[]): void {
   if (typeof URL === "undefined" || !URL.revokeObjectURL) return;
   for (const p of list) if (p.previewUrl?.startsWith("blob:")) URL.revokeObjectURL(p.previewUrl);
 }
+
+/**
+ * ENG-1266 — the strip's starting state when Compose opens on an existing post.
+ *
+ * Every entry is `done` by definition: these objects are already in Storage,
+ * which is what makes them removable, reorderable and saveable straight away.
+ * `previewUrl` is the loader's short-lived SIGNED url (never a blob), so
+ * `revokePhotoUrls` leaves it alone — it only revokes `blob:` urls.
+ *
+ * `file` / `token` / `bucket` are deliberately absent: there is nothing to
+ * re-upload for a photo that is already there, and a retry button on it would
+ * have no target to PUT to.
+ *
+ * Non-photo posts (and create mode) start empty.
+ */
+function initialPhotos(initial: EditInitial | undefined): ComposePhoto[] {
+  if (!initial || initial.mediaType !== "photo") return [];
+  return (initial.photos ?? []).map((photo, i) => ({
+    id: `existing-${i}-${photo.path}`,
+    path: photo.path,
+    previewUrl: photo.url,
+    // The object path's last segment is the only name an existing photo has —
+    // the operator's original filename was never stored.
+    name: photo.path.split("/").pop() ?? photo.path,
+    size: 0,
+    state: "done",
+  }));
+}
+
+/** ENG-1266 — the one sentence for "you removed them all". */
+/**
+ * ENG-1268 — the confirm shown when switching subject would throw work away.
+ *
+ * A subject switch discards the draft for the same reason switching horse
+ * does: the draft row carries `subject` from the insert and PATCH will not
+ * move it, so the post in flight cannot become the post they now want.
+ */
+const DISCARD_ON_SUBJECT_SWITCH =
+  "Changing who this post is from will discard the draft and the media you have uploaded. Continue?";
+
+const PHOTO_REQUIRED = "A photo post needs at least one photo.";
+/**
+ * ENG-1266 — the same sentence for "you saved before the bytes landed".
+ *
+ * An edit save sends `mediaSetPayload(photos)`, which is the DONE tiles only,
+ * and `PATCH /posts/:id` deletes every `post_media` row above the set it is
+ * given. So saving mid-upload does not "save the photo later" — it drops the
+ * in-flight photo AND trims the rows, under a cheerful "Changes saved.".
+ * Create mode has always gated on `photosSettled`; this is edit mode's half.
+ */
+const PHOTO_UPLOADING = "A photo is still uploading. Wait for it to finish, or remove it.";
 
 function humanSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -154,10 +236,33 @@ export default function ComposeScreen({
   trainers,
   initial,
   labels = DEFAULT_LABELS,
+  labelActions = [],
+  bylines = [],
 }: {
   horses: HorseOption[];
   trainers: TrainerOption[];
   initial?: EditInitial;
+  /**
+   * ENG-1268 — the title/label rows that may be RETIRED, with the id the
+   * route needs and the `isBuiltin` flag that decides whether the × is offered
+   * at all.
+   *
+   * Separate from `labels` on purpose. `labels` is the value list and has a
+   * guaranteed floor (the 14 builtins) for when the server read comes back
+   * empty; this list must NOT have one, because offering a retire button for a
+   * row we never read would call `DELETE /post-labels/:id` with an invented
+   * id. Empty here means "no retire actions", which is the safe failure.
+   */
+  labelActions?: { id: string; name: string; isBuiltin: boolean }[];
+  /**
+   * ENG-1268 — the non-retired `post_byline` rows, for the StablePass
+   * subject's byline dropdown. Read server-side by page.tsx for the same
+   * first-paint reason the labels are.
+   *
+   * Every row here is retirable: `post_byline` has no `is_builtin` column —
+   * the whole vocabulary is admin-managed.
+   */
+  bylines?: { id: string; name: string }[];
   /**
    * ENG-979 — the live category list, read server-side from `post_label` and
    * handed down by page.tsx. The picker renders THIS, not the compile-time
@@ -174,10 +279,60 @@ export default function ComposeScreen({
   labels?: string[];
 }) {
   const isEdit = !!initial;
-  const [search, setSearch] = useState(initial?.horse.name ?? "");
+  /**
+   * ENG-1266 — the post's `post_media` read failed, so we do NOT know its photo
+   * set. Everything photo-editing is switched off for this session: no strip,
+   * no Add-more, and — the important one — `media` is never sent, because a
+   * save built on a set we could not read would delete the rows we never saw.
+   * See page.tsx's loader.
+   */
+  const photosUnavailable = !!initial?.photosUnavailable;
+  /**
+   * ENG-1268 — WHO this post is posted as.
+   *
+   * IMMUTABLE once the post exists: `PATCH /posts/:id` rejects a `subject`
+   * key, so edit mode seeds this from the row and shows it read-only, exactly
+   * as the post type has been shown since ENG-611. Create mode opens on
+   * `horse`, which is what every post was before this ticket.
+   */
+  const [subject, setSubject] = useState<Subject>(initial?.subject ?? "horse");
+  const [search, setSearch] = useState(initial?.horse?.name ?? "");
   const [showResults, setShowResults] = useState(false);
   const [horse, setHorse] = useState<HorseOption | null>(initial?.horse ?? null);
   const [bylineId, setBylineId] = useState<string>(initial?.bylineId ?? "");
+
+  // --- Trainer subject (ENG-1268) ------------------------------------------
+  /**
+   * The trainer this post is BY, for the `trainer` subject. Distinct from
+   * `bylineId`, which is the horse subject's byline trainer: a horse post is
+   * attributed to a trainer, a trainer post IS the trainer, and collapsing the
+   * two would make "change the byline" silently change who the post is from.
+   */
+  const [trainer, setTrainer] = useState<TrainerOption | null>(initial?.trainer ?? null);
+  const [trainerSearch, setTrainerSearch] = useState(initial?.trainer?.name ?? "");
+  const [showTrainerResults, setShowTrainerResults] = useState(false);
+
+  // --- StablePass subject (ENG-1268) ---------------------------------------
+  /**
+   * The chosen `post_byline` NAME (never an id) — what `post.byline` stores.
+   * "" is "nothing chosen yet", which the server rejects.
+   */
+  const [byline, setByline] = useState<string>(initial?.byline ?? "");
+  const initialByline = initial?.byline ?? "";
+  /** Bylines added through Add-new during THIS session — same idiom as `addedLabels`. */
+  const [addedBylines, setAddedBylines] = useState<{ id: string; name: string }[]>([]);
+  const [addingByline, setAddingByline] = useState(false);
+  const [newByline, setNewByline] = useState("");
+  const [bylineAddBusy, setBylineAddBusy] = useState(false);
+  const [bylineAddError, setBylineAddError] = useState<string | null>(null);
+  /** Rows retired in THIS session, so the picker drops them without a reload. */
+  const [retiredBylineIds, setRetiredBylineIds] = useState<string[]>([]);
+  const [retiredLabelNames, setRetiredLabelNames] = useState<string[]>([]);
+  /** The manage disclosures, and the row currently mid-retire. */
+  const [manageLabels, setManageLabels] = useState(false);
+  const [manageBylines, setManageBylines] = useState(false);
+  const [retiringId, setRetiringId] = useState<string | null>(null);
+  const [retireError, setRetireError] = useState<string | null>(null);
   const [caption, setCaption] = useState(initial?.caption ?? "");
   // "" is the "No label" option; it is sent to the BFF as an explicit null.
   // Seeded from the post being edited, so an old unlabelled post opens on
@@ -209,14 +364,81 @@ export default function ComposeScreen({
   const options = useMemo(() => {
     const seen = new Set<string>();
     const out: string[] = [];
-    for (const name of [...labels, ...addedLabels, ...(initialLabel ? [initialLabel] : [])]) {
+    for (const name of [
+      // ENG-1268 — a title retired in THIS session leaves the picker without a
+      // reload. The post's OWN value is appended after this filter, so
+      // retiring the title you are currently using still cannot blank it.
+      ...labels.filter((n) => !retiredLabelNames.includes(n)),
+      ...addedLabels,
+      ...(initialLabel ? [initialLabel] : []),
+    ]) {
       if (name && !seen.has(name)) {
         seen.add(name);
         out.push(name);
       }
     }
     return out;
-  }, [labels, addedLabels, initialLabel]);
+  }, [labels, addedLabels, initialLabel, retiredLabelNames]);
+
+  /**
+   * THE BYLINE PICKER'S OPTIONS — and the belt that keeps the edit path honest.
+   *
+   * `bylines` is already filtered to NON-RETIRED rows (A2 put that filter on
+   * the route and page.tsx mirrors it). But a post can carry a retired byline
+   * perfectly legitimately: `post.byline` stores the NAME, and retiring only
+   * stamps `post_byline.retired_at` — it never touches `post`. Hand a <select>
+   * a current value with no matching <option> and it falls back to index 0:
+   * the control reads "Choose a byline" while state holds the real one, and it
+   * cannot be corrected by re-picking, because that is already what it shows,
+   * so no change event fires. The post's own attribution is then blanked or
+   * rewritten on the next save, with no error anywhere.
+   *
+   * So the post's own value is unioned back in — the same fix the LABEL picker
+   * has carried since ENG-979 (`options` above), copied rather than reinvented.
+   * `.rx/gotchas.md` names this byline picker as the live hazard.
+   *
+   * It is an ORDINARY SELECTABLE OPTION, not a disabled one: the operator must
+   * be able to move off a retired byline, and a disabled option they cannot
+   * leave is a worse trap than the one it fixes. `retiredBylineIds` drops rows
+   * retired in this session, but never the post's own value — retiring the
+   * byline you are currently using must not blank the post in front of you.
+   */
+  const bylineOptions = useMemo(() => {
+    const seen = new Set<string>();
+    const out: { id: string | null; name: string }[] = [];
+    for (const row of [
+      ...bylines.filter((b) => !retiredBylineIds.includes(b.id)),
+      ...addedBylines,
+    ]) {
+      if (row.name && !seen.has(row.name)) {
+        seen.add(row.name);
+        out.push({ id: row.id, name: row.name });
+      }
+    }
+    // The post's own stored byline, if this render did not otherwise produce
+    // it. `id: null` because we may genuinely not know its row id (it was
+    // filtered out before it reached us) — and a null id is also what stops
+    // the manage list offering to retire a row it cannot address.
+    if (initialByline && !seen.has(initialByline)) out.push({ id: null, name: initialByline });
+    return out;
+  }, [bylines, addedBylines, retiredBylineIds, initialByline]);
+
+  /**
+   * The byline fragment every save spreads in — ABSENT unless the operator
+   * actually moved the picker, exactly like `labelPatch`.
+   *
+   * The second belt of the same fix. Even if the control were mis-rendered,
+   * not writing what nobody touched means a caption-only edit provably cannot
+   * rewrite `post.byline`. Only a `stablepass` post ever sends it; the route
+   * 400s the key for any other subject.
+   */
+  const bylinePatch: { byline?: string } =
+    subject === "stablepass" && byline !== initialByline && byline.trim() !== ""
+      ? // Trimmed, matching what `subjectFields` sends on create. Both routes
+        // trim server-side, so this is cosmetic — but two call sites sending
+        // the same value two different ways is how a real divergence hides.
+        { byline: byline.trim() }
+      : {};
 
   // Add-new form state. `adding` opens the inline field; it is an inline
   // control rather than a `window.prompt` so it can be styled, validated in
@@ -265,7 +487,40 @@ export default function ComposeScreen({
    * single-photo post behaves exactly as it did before this ticket. This list is
    * the source of truth for ORDER and for what gets persisted.
    */
-  const [photos, setPhotos] = useState<ComposePhoto[]>([]);
+  const [photos, setPhotos] = useState<ComposePhoto[]>(() => initialPhotos(initial));
+  /**
+   * ENG-1266 — the highest upload ordinal this SESSION has ever held for the
+   * current post, which is what `afterSlot` must report.
+   *
+   * Derived from `photos` it would be wrong: removing a tile that is still
+   * uploading drops its path from the array but does NOT abort its PUT, so the
+   * hint would fall back to a slot whose bytes are still on their way. The
+   * route floors the answer at its own derivation, but its floor comes from
+   * `post_media` + the mirror + the Storage listing — and an in-flight object
+   * is in none of those yet. The next append would then be minted straight
+   * onto the live slot and the abandoned PUT would land on top of it: the
+   * operator sees the tile they picked and the post shows the one they threw
+   * away.
+   *
+   * So it only ever goes UP, for the life of one post. `-1` means "holding
+   * nothing" — NOT `nextPhotoSlot([]) - 1`, which is 0, because `photo-0` is a
+   * real ordinal a post can hold and "none" has to be distinguishable from it.
+   * (The send site floors at 0 either way; the distinction is for reading the
+   * ref, not for the wire.) It is reset only where the POST itself changes
+   * (`resetMedia`, a replacing pick) — never by a remove.
+   *
+   * Seeded from `initial.photos` rather than `initialPhotos(initial)`: a
+   * `useRef` initialiser is NOT lazy the way the `useState` one above is, so
+   * it re-runs on every render and only the first value is ever kept. The raw
+   * paths are all this needs, so there is no reason to rebuild the tiles.
+   */
+  const highestSlotEverHeld = useRef(
+    initial?.photos?.length ? nextPhotoSlot(initial.photos.map((p) => p.path)) - 1 : -1,
+  );
+  /** Record slots just minted. Monotonic by construction — see the ref. */
+  function holdSlots(paths: string[]) {
+    highestSlotEverHeld.current = Math.max(highestSlotEverHeld.current, nextPhotoSlot(paths) - 1);
+  }
   /** Cap breach and per-set upload problems — shown above the strip. */
   const [photoError, setPhotoError] = useState<string | null>(null);
   /**
@@ -331,6 +586,23 @@ export default function ComposeScreen({
    * discards its own result if it has moved.
    */
   const pickGeneration = useRef(0);
+  /**
+   * ENG-1266 — what the NEXT file-dialog result means.
+   *
+   * One hidden <input type=file> serves three buttons ("Select file",
+   * "Replace all", "Add more photos"), and the dialog result arrives with no
+   * memory of which one opened it. A ref rather than state on purpose: it is
+   * read inside the change handler in the same tick the click set it, and a
+   * state update would not have landed yet.
+   */
+  const pickMode = useRef<"replace" | "append">("replace");
+
+  /**
+   * The post that appended slots are minted against: the draft in create mode,
+   * the post being edited otherwise. Null before the first pick has created a
+   * draft — there is nothing to append to yet.
+   */
+  const uploadPostId = draft?.id ?? initial?.id ?? null;
 
   const trainerName = useMemo(
     () => trainers.find((t) => t.id === bylineId)?.name ?? null,
@@ -354,12 +626,102 @@ export default function ComposeScreen({
     return horses.filter((h) => h.name.toLowerCase().includes(q));
   }, [horses, search]);
 
+  /**
+   * ENG-1268 — the trainer search, over the FULL trainer list.
+   *
+   * Same rule as the horse search it is modelled on (and reuses the classes
+   * of): every match, never a slice — the list is scrollable and the roster is
+   * small. Matches on the stable name too, because an operator looking for
+   * "the Randwick one" is a real way to find a trainer.
+   */
+  const trainerMatches = useMemo(() => {
+    const q = trainerSearch.trim().toLowerCase();
+    if (!q) return trainers;
+    return trainers.filter(
+      (t) =>
+        t.name.toLowerCase().includes(q) || (t.stableName ?? "").toLowerCase().includes(q),
+    );
+  }, [trainers, trainerSearch]);
+
+  /**
+   * The type tiles this subject may author (epic decision 2) — StablePass gets
+   * Photo and Video, the other two get all four.
+   *
+   * HIDDEN, not disabled: a disabled Voice tile invites the operator to work
+   * out why, and there is no answer they can act on. The server rejects
+   * voice/text for a StablePass post regardless, so this is the affordance and
+   * never the enforcement.
+   */
+  const visibleTypes = useMemo(
+    () => POST_TYPES.filter((p) => TYPES_BY_SUBJECT[subject].includes(p.type)),
+    [subject],
+  );
+
+  /**
+   * IS THE SUBJECT SATISFIED? — the generalisation of "Pick a horse first."
+   *
+   * Keyed on the chosen subject's REQUIRED field, which is the whole point of
+   * this ticket: the old guard asked for a horse on every post, so a trainer's
+   * weekend preview could not attach media at all. The message names the thing
+   * that is actually missing, per subject, rather than the horse.
+   */
+  const subjectReady =
+    subject === "horse"
+      ? !!horse && !!bylineId
+      : subject === "trainer"
+        ? !!trainer
+        : byline.trim() !== "";
+  const SUBJECT_PROMPT: Record<Subject, string> = {
+    horse: "Pick a horse first.",
+    trainer: "Pick a trainer first.",
+    stablepass: "Choose a byline first.",
+  };
+  const subjectPrompt = SUBJECT_PROMPT[subject];
+
+  /**
+   * The create payload's subject fields, in ONE place.
+   *
+   * Four call sites mint a draft (single pick, multi-photo pick, text, and the
+   * create-on-publish path), and each used to spell `horseId` + `sourceTrainerId`
+   * out by hand. Three copies of a per-subject rule is how one of them ends up
+   * sending a horse id on a trainer post — which the route 400s, but only
+   * after the operator has picked their file.
+   *
+   * A horse post sends NO `subject` key at all, so its request stays
+   * byte-identical to the one this endpoint received before this ticket.
+   */
+  const subjectFields: { subject?: Subject; horseId?: string; sourceTrainerId?: string; byline?: string } =
+    subject === "horse"
+      ? { horseId: horse?.id, sourceTrainerId: bylineId }
+      : subject === "trainer"
+        ? { subject: "trainer", sourceTrainerId: trainer?.id }
+        : { subject: "stablepass", byline: byline.trim() };
+
+  /**
+   * ENG-1268 — the titles that may be retired: non-builtin, not already
+   * retired this session. Builtins are absent, which is what "builtin labels
+   * show no ×" means for a list-shaped control.
+   */
+  const retirableLabels = labelActions.filter(
+    (l) => !l.isBuiltin && !retiredLabelNames.includes(l.name),
+  );
+  /** The bylines that may be retired — every row we know an id for. */
+  const retirableBylines = bylineOptions.filter(
+    (b): b is { id: string; name: string } => b.id !== null,
+  );
+
   const isText = postType === "text";
   /**
    * A photo post outside edit mode always goes through the multi-photo set
    * path — for readiness AND for what gets persisted.
    */
-  const usesPhotoSet = postType === "photo" && !isEdit;
+  // ENG-1266 — edit mode now goes through the SAME set path as create. It used
+  // to be `&& !isEdit` because editing rendered media read-only, which is half
+  // the bug this ticket exists to fix: an operator could not fix a wrong photo
+  // on a post that was already created. The consequence of widening it is that
+  // an edit save now carries `media`, so the strip is what `post_media` and the
+  // `post.media_url` mirror are rewritten from.
+  const usesPhotoSet = postType === "photo" && !photosUnavailable;
   /** The photos that actually landed in Storage, in display order. */
   const readyPhotos = uploadedPhotos(photos);
   /**
@@ -398,8 +760,10 @@ export default function ComposeScreen({
    * `post.media_url`.
    */
   const mediaPatch: { media?: string[] } =
-    // `usesPhotoSet`, not `postType === "photo"`: edit mode has no media
-    // editing, so it must never send a set either. Note this gate is currently
+    // `usesPhotoSet`, not `postType === "photo"`: since ENG-1266 edit mode DOES
+    // send a set, but a session whose `post_media` read failed must not — that
+    // set would delete the rows it never saw (`photosUnavailable`). The length
+    // check below is
     // belt-and-braces — `resetMedia()` runs before `setPostType`, so `photos`
     // is already empty for any other type — which is exactly why it is worth
     // stating rather than relying on the ordering of two calls elsewhere.
@@ -433,7 +797,38 @@ export default function ComposeScreen({
    * body. The body requirement is enforced server-side too — the BFF is not
    * the only caller of POST /api/admin/posts.
    */
-  const textReady = !!horse && !!bylineId && caption.trim().length > 0;
+  // ENG-1268 — `subjectReady`, not `horse && bylineId`: a text post is a
+  // trainer's or the brand's to write too. (StablePass never reaches here —
+  // Text is not one of its tiles — but the readiness rule must not depend on
+  // that, it must depend on the subject being satisfied.)
+  const textReady = subjectReady && caption.trim().length > 0;
+  /**
+   * ENG-1266 — an edit save that would leave a photo post with NO photos.
+   *
+   * `readyPhotos`, not `photos`: a tile still uploading or failed has no object
+   * behind it, so saving with only those would write a `post_media` row (and a
+   * mirror) pointing at nothing. Save is disabled rather than the removal being
+   * refused, because removing the last photo on the way to replacing it is a
+   * legitimate thing to be halfway through.
+   */
+  const editPhotoEmpty = isEdit && usesPhotoSet && readyPhotos.length === 0;
+  /**
+   * ENG-1266 — an edit save taken while a photo is still in flight.
+   *
+   * Create mode gates every action on `photosSettled`; edit mode had no
+   * equivalent, so `Save changes` stayed live mid-upload and shipped the DONE
+   * tiles only — which `PATCH /posts/:id` implements by deleting the rows
+   * above them. The photo the operator is watching upload is dropped and the
+   * trailing `post_media` rows go with it, silently.
+   *
+   * Same rule as `photosSettled`, so the two halves of the screen agree: an
+   * UPLOADING tile blocks the save; a FAILED one does not — the documented
+   * behaviour is that the post keeps what landed and the strip offers a retry.
+   * `editPhotoEmpty` is the stronger statement of the `photos.length === 0`
+   * half and is always checked first, so this sentence only ever appears for a
+   * strip that genuinely has something in flight.
+   */
+  const editPhotoUnsettled = isEdit && usesPhotoSet && !photosSettled;
   const canAct = isText ? textReady : draftReady;
   const busy = action.kind === "working";
   // Both halves of the pick are required before the schedule action is allowed.
@@ -448,6 +843,66 @@ export default function ComposeScreen({
     setShowResults(false);
     // Byline pre-fills from the horse's stable trainer; still editable below.
     setBylineId(h.trainerId ?? "");
+  }
+
+  /**
+   * ENG-1268 — switch the subject.
+   *
+   * Everything downstream belongs to the old subject: the draft row was minted
+   * with `subject` already set (the route writes it at insert, and PATCH
+   * rejects the key), the picked file was uploaded against that draft, and the
+   * chosen type may not even exist under the new subject. So this reuses the
+   * SAME clear path `chooseType` and the replace-a-file flow use, rather than
+   * inventing a second one — and confirms first when there is work to lose,
+   * exactly as switching horse does today.
+   */
+  function chooseSubject(next: Subject) {
+    if (next === subject) return;
+    // Only ask when there is something to discard. A subject switch before any
+    // file is picked is free, and a confirm on it is noise the operator learns
+    // to click through — which is how a real confirm stops being read.
+    const hasWork = !!draft || photos.length > 0 || !!file;
+    if (hasWork && typeof window !== "undefined" && !window.confirm(DISCARD_ON_SUBJECT_SWITCH)) {
+      return;
+    }
+    if (draft) void discardDraft(draft.id).catch(() => {});
+    resetMedia();
+    // Clear the OTHER subjects' identity fields too. Leaving them set would
+    // let a stale horse leak a "Race day" badge onto a trainer post's preview,
+    // and would put a horse id in the next create payload the moment the
+    // operator switched back and forth.
+    setHorse(null);
+    setSearch("");
+    setShowResults(false);
+    setBylineId("");
+    setTrainer(null);
+    setTrainerSearch("");
+    setShowTrainerResults(false);
+    setByline("");
+    // The type may not exist under the new subject (Voice/Text are not
+    // StablePass tiles). Fall back to that subject's FIRST tile rather than
+    // leaving a selection no tile shows — an invisible selected type is how a
+    // post gets created as something the operator never picked.
+    const allowed = TYPES_BY_SUBJECT[next];
+    if (!allowed.includes(postType)) setPostType(allowed[0]);
+    setSubject(next);
+  }
+
+  /** ENG-1268 — the Trainer subject's pick. Mirrors `selectHorse`. */
+  function selectTrainer(t: TrainerOption) {
+    setTrainer(t);
+    setTrainerSearch(t.name);
+    setShowTrainerResults(false);
+  }
+
+  function changeTrainer() {
+    // The draft (if any) was minted against the old trainer — drop it too,
+    // exactly as `changeHorse` does.
+    if (draft) void discardDraft(draft.id).catch(() => {});
+    resetMedia();
+    setTrainer(null);
+    setTrainerSearch("");
+    setShowTrainerResults(true);
   }
 
   function changeHorse() {
@@ -469,6 +924,10 @@ export default function ComposeScreen({
     // operator can re-pick a ten-photo set as often as they like.
     revokePhotoUrls(photos);
     setPhotos([]);
+    // The DRAFT is discarded below, so the next photo belongs to a different
+    // post id and no slot of this one is held any more. This is the only kind
+    // of place the high-water mark may go down.
+    highestSlotEverHeld.current = -1;
     setPhotoError(null);
     setFile(null);
     setMediaUrl(null);
@@ -523,8 +982,11 @@ export default function ComposeScreen({
   }
 
   async function onPickFile(picked: File) {
-    if (!horse || !bylineId) {
-      setUpload({ state: "error", pct: 0, error: "Pick a horse first." });
+    // ENG-1268 — keyed on the CHOSEN subject's required field, not on a horse.
+    // "Pick a horse first." on a trainer's weekend-preview video is the exact
+    // block this ticket exists to remove.
+    if (!subjectReady) {
+      setUpload({ state: "error", pct: 0, error: subjectPrompt });
       return;
     }
     // A text post has no media step at all, so it can never reach here.
@@ -573,9 +1035,9 @@ export default function ComposeScreen({
 
     try {
       const created = await createDraft({
-        horseId: horse.id,
+        // ENG-1268 — the per-subject fields, derived once (see subjectFields).
+        ...subjectFields,
         type: kind,
-        sourceTrainerId: bylineId,
       });
       if (stale()) {
         // The operator moved on mid-flight. This draft belongs to a post they
@@ -625,8 +1087,11 @@ export default function ComposeScreen({
    * count.
    */
   async function onPickPhotos(picked: File[]) {
-    if (!horse || !bylineId) {
-      setUpload({ state: "error", pct: 0, error: "Pick a horse first." });
+    // ENG-1268 — keyed on the CHOSEN subject's required field, not on a horse.
+    // "Pick a horse first." on a trainer's weekend-preview video is the exact
+    // block this ticket exists to remove.
+    if (!subjectReady) {
+      setUpload({ state: "error", pct: 0, error: subjectPrompt });
       return;
     }
     if (picked.length === 0) return;
@@ -672,15 +1137,17 @@ export default function ComposeScreen({
     setMeasure("measuring");
     setUpload({ state: "creating", pct: 0 });
     setPhotos([]);
+    // A replacing pick mints a BRAND NEW draft below, so nothing of the old
+    // post is held. Same exception as `resetMedia`.
+    highestSlotEverHeld.current = -1;
 
     const generation = ++pickGeneration.current;
     const stale = () => pickGeneration.current !== generation;
 
     try {
       const created = await createDraft({
-        horseId: horse.id,
+        ...subjectFields,
         type: "photo",
-        sourceTrainerId: bylineId,
         // ONLY for a genuine multi-pick. `photoCount: 1` and an absent
         // `photoCount` are identical server-side, so omitting it means a
         // single-photo post sends the byte-identical request this endpoint has
@@ -730,6 +1197,7 @@ export default function ComposeScreen({
         token: targets[slot].token,
       }));
       setPhotos(seeded);
+      holdSlots(seeded.map((p) => p.path));
 
       // Sequential, not Promise.all: ten parallel Storage PUTs from one browser
       // is what makes the slowest of them time out, and the strip is more
@@ -762,6 +1230,130 @@ export default function ComposeScreen({
     } catch (e) {
       if (stale()) return;
       setUpload({ state: "error", pct: 0, error: (e as Error).message });
+    }
+  }
+
+  /**
+   * ENG-1266 — "Add more photos": a pick that APPENDS to the set.
+   *
+   * The bug this closes: `onPickPhotos` REPLACES, so an operator adding photos
+   * one at a time kept throwing the previous one away and ended with a
+   * one-photo post (Justin, 19 Sep). Appending needed its own path, and its own
+   * upload targets — `createDraft` minted every slot up front from
+   * `photoCount`, so there was no way to get another one after the fact.
+   *
+   * THE GENERATION COUNTER IS READ, NEVER BUMPED. Bumping it is what
+   * `resetMedia` / `chooseType` / a replacing pick do to say "everything in
+   * flight is void"; an append voids nothing — the tiles already uploading are
+   * still wanted, and discarding them is the exact behaviour this ticket is
+   * removing. We capture the current value so that a genuine reset DURING an
+   * append still stops our own late writes.
+   */
+  async function onAppendPhotos(picked: File[]) {
+    if (picked.length === 0) return;
+    const postId = uploadPostId;
+    if (!postId) {
+      setPhotoError("Add the first photo before adding more.");
+      return;
+    }
+
+    // The cap, before anything is minted or uploaded — the whole strip counts,
+    // including tiles still uploading, because each already holds a slot.
+    const capError = appendCapError(photos.length, picked.length);
+    if (capError) {
+      setPhotoError(capError);
+      if (fileInputRef.current) fileInputRef.current.value = "";
+      return;
+    }
+
+    // Same MIME rule as a replacing pick: never a silent reclassification.
+    const wrong = picked.find((f) => uploadTypeForFile(f) !== "photo");
+    if (wrong) {
+      const kind = uploadTypeForFile(wrong);
+      setTypeError(
+        `You chose Photo, but “${wrong.name}” is ${kind ? `a ${TYPE_LABEL[kind]}` : wrong.type || "an unrecognised file"}. ` +
+          `Pick photo files only, or change the post type above.`,
+      );
+      if (fileInputRef.current) fileInputRef.current.value = "";
+      return;
+    }
+    setTypeError(null);
+    setPhotoError(null);
+
+    const generation = pickGeneration.current;
+    const stale = () => pickGeneration.current !== generation;
+
+    let targets: PhotoUploadTarget[];
+    try {
+      targets = await requestPhotoUploads(postId, picked.length, {
+        // What the server cannot see: slots this strip already holds whose
+        // bytes have not landed (still uploading, or failed and awaiting a
+        // retry). Without this the route would re-issue one of them and the
+        // new upload would overwrite a photo the operator is still waiting on.
+        //
+        // The HIGH-WATER MARK, not `photos` — a tile removed mid-upload is
+        // gone from the array but its PUT is still in flight, so deriving the
+        // hint from the survivors would hand back a live slot. See the ref.
+        afterSlot: Math.max(0, highestSlotEverHeld.current),
+        // What the operator will keep. The server would otherwise count the
+        // orphaned objects of photos they removed (left in Storage by design)
+        // and refuse a legitimate append.
+        keeping: photos.length,
+      });
+    } catch (e) {
+      if (stale()) return;
+      setPhotoError((e as Error).message);
+      return;
+    }
+    if (stale()) return;
+    // Partial sets are refused outright: uploading 2 of 3 would leave the
+    // operator looking at a strip that quietly lost a file they picked.
+    if (targets.length < picked.length) {
+      setPhotoError("Storage did not return enough upload slots. Nothing was uploaded.");
+      return;
+    }
+
+    const added: ComposePhoto[] = picked.map((f, i) => ({
+      // Keyed by the slot PATH, which the route guarantees is new — an index
+      // key would collide with the tiles already in the strip.
+      id: `${postId}-${targets[i].path}`,
+      path: targets[i].path,
+      previewUrl: objectUrl(f),
+      name: f.name,
+      size: f.size,
+      state: "uploading",
+      file: f,
+      bucket: targets[i].bucket,
+      token: targets[i].token,
+    }));
+    setPhotos((prev) => appendPhotos(prev, added));
+    holdSlots(added.map((p) => p.path));
+
+    // Sequential, matching the create path: ten parallel PUTs from one browser
+    // is what makes the slowest time out. Each tile settles on its own, so one
+    // failure leaves the rest of the append — and the whole existing set —
+    // untouched.
+    for (let i = 0; i < picked.length; i++) {
+      const target = targets[i];
+      try {
+        await uploadPhotoToStorage({
+          bucket: target.bucket,
+          path: target.path,
+          token: target.token,
+          file: picked[i],
+        });
+        if (stale()) return;
+        setPhotos((prev) =>
+          prev.map((p) => (p.path === target.path ? { ...p, state: "done" } : p)),
+        );
+      } catch (e) {
+        if (stale()) return;
+        setPhotos((prev) =>
+          prev.map((p) =>
+            p.path === target.path ? { ...p, state: "error", error: (e as Error).message } : p,
+          ),
+        );
+      }
     }
   }
 
@@ -816,8 +1408,8 @@ export default function ComposeScreen({
     if (isText) {
       // The body IS the post for a text type, so an empty one is blocked here
       // as well as server-side.
-      if (!horse || !bylineId) {
-        setAction({ kind: "error", message: "Pick a horse first." });
+      if (!subjectReady) {
+        setAction({ kind: "error", message: subjectPrompt });
         return;
       }
       if (!caption.trim()) {
@@ -852,9 +1444,8 @@ export default function ComposeScreen({
       let current = draft;
       if (!current) {
         current = await createDraft({
-          horseId: horse!.id,
+          ...subjectFields,
           type: postType,
-          sourceTrainerId: bylineId,
           body: caption,
           ...labelPatch,
           ...posterTimePatch,
@@ -868,7 +1459,12 @@ export default function ComposeScreen({
       // posts written before this ticket.
       await patchPost(current.id, {
         body: caption,
-        sourceTrainerId: bylineId,
+        // ENG-1268 — the editable byline, and ONLY for a horse post. A
+        // trainer post's trainer IS its subject and is immutable (the route
+        // 400s it); a StablePass post has no trainer at all and carries
+        // `bylinePatch` instead.
+        ...(subject === "horse" ? { sourceTrainerId: bylineId } : {}),
+        ...bylinePatch,
         ...labelPatch,
         ...mediaPatch,
         ...posterTimePatch,
@@ -958,16 +1554,160 @@ export default function ComposeScreen({
     }
   }
 
+  /**
+   * ENG-1268 — Add-new for the StablePass byline. Mirrors `submitNewLabel`.
+   *
+   * ONE CONTRACT DIFFERENCE, and it matters here: A2 made a live duplicate a
+   * 409 rather than idempotent, while a duplicate whose only row is RETIRED is
+   * un-retired and returned with its ORIGINAL id. So we take the id back off
+   * the response instead of assuming a new row, and we clear that id from
+   * `retiredBylineIds` — otherwise a byline the operator retired and
+   * immediately re-added this session would be filtered straight back out of
+   * the picker they just added it to.
+   */
+  async function submitNewByline() {
+    const name = newByline.trim().replace(/\s+/g, " ");
+    if (name === "") {
+      setBylineAddError("Give the byline a name.");
+      return;
+    }
+    if (name.length > MAX_BYLINE_LENGTH) {
+      setBylineAddError(`Keep it to ${MAX_BYLINE_LENGTH} characters or fewer.`);
+      return;
+    }
+    setBylineAddBusy(true);
+    setBylineAddError(null);
+    try {
+      const createdByline = await createByline(name);
+      setRetiredBylineIds((prev) => prev.filter((id) => id !== createdByline.id));
+      setAddedBylines((prev) =>
+        prev.some((b) => b.id === createdByline.id) ? prev : [...prev, createdByline],
+      );
+      // The row's CANONICAL spelling, not what was typed — that is the string
+      // `post.byline`'s foreign key will accept.
+      setByline(createdByline.name);
+      setNewByline("");
+      setAddingByline(false);
+    } catch (e) {
+      // Stay open with the typed value intact: a 409 ("that name is taken")
+      // and a guardrail-6 rejection are both fixable right here.
+      setBylineAddError((e as Error).message || "Couldn’t add that byline.");
+    } finally {
+      setBylineAddBusy(false);
+    }
+  }
+
+  /**
+   * ENG-1268 — retire a title or a byline from its picker.
+   *
+   * RETIRE, NOT DELETE, and the confirm says so in as many words: posts
+   * already using the name keep it. That is not reassurance, it is the actual
+   * behaviour — `post.label` / `post.byline` store the NAME and retiring only
+   * stamps `retired_at` on the lookup row.
+   *
+   * The optimistic removal is by NAME for a label and by ID for a byline,
+   * matching what each picker's option list is keyed on. Neither ever removes
+   * the value the post being edited carries: `options` and `bylineOptions`
+   * append that back after the filter, so retiring the title you are currently
+   * using cannot blank the post in front of you.
+   *
+   * ENG-1290 — but that union-back covers exactly ONE value: the edited post's
+   * own `initial.label` / `initial.byline`. It is not a general guarantee, and
+   * it does not exist at all in CREATE mode. Every other selected value left
+   * pointing at a row that was just retired would keep the `<select>` blank
+   * while state still held the name, so the clear below handles them.
+   */
+  async function onRetire(kind: "label" | "byline", row: { id: string; name: string }) {
+    const message = `Remove “${row.name}” from the list? Posts already using it keep it.`;
+    if (typeof window !== "undefined" && !window.confirm(message)) return;
+    setRetiringId(row.id);
+    setRetireError(null);
+    try {
+      if (kind === "label") {
+        await retireLabel(row.id);
+        setRetiredLabelNames((prev) => (prev.includes(row.name) ? prev : [...prev, row.name]));
+      } else {
+        await retireByline(row.id);
+        setRetiredBylineIds((prev) => (prev.includes(row.id) ? prev : [...prev, row.id]));
+        setAddedBylines((prev) => prev.filter((b) => b.id !== row.id));
+      }
+      // ENG-1290 — clear the selection when the row just retired IS the one
+      // selected AND nothing will union it back. Without this the <select>
+      // loses its matching <option> and renders blank while `label` / `byline`
+      // state still holds the name: `subjectReady` stays true (`byline.trim()
+      // !== ""`) and the first save 400s with `unknown_byline` against a picker
+      // that looks empty — a dead end the operator cannot diagnose.
+      //
+      // The guard is `!== initialByline` / `!== initialLabel`, NOT `!isEdit`,
+      // and the difference is load-bearing (pinned by the edit-mode tests),
+      // because that is exactly the condition the union belt above keys on:
+      // `bylineOptions` / `options` re-append the EDITED post's own value after
+      // the retired filter, so that one value stays selectable and must NOT be
+      // cleared (the "cannot blank the post in front of you" invariant, pinned
+      // by the edit-mode tests). Every other selected value — all of create
+      // mode, and an edit-mode operator who picked a different row before
+      // retiring it — has no union-back and does need clearing.
+      // Functional updaters, like every other setter in this block: `byline` /
+      // `label` here would be the values captured BEFORE the `await` above,
+      // and neither <select> is disabled while the retire is in flight. An
+      // operator who moves the picker mid-request would otherwise either have
+      // their fresh choice wiped (stale value still matched `row.name`) or be
+      // left on the row that was just retired (stale value did not match) —
+      // the second being the very dead end this fix closes.
+      //
+      // The fallback is the post's OWN value, not "": in create mode
+      // `initial*` is "" so this IS a clear, while in edit mode snapping back
+      // to `initialLabel` / `initialByline` keeps the control honest about the
+      // post in front of the operator. Clearing to "" there would be worse
+      // than cosmetic — `labelPatch` sends `label: null` for "", so the next
+      // save would quietly UN-TITLE a post whose title was never touched.
+      if (kind === "byline") {
+        setByline((prev) => (prev === row.name && row.name !== initialByline ? initialByline : prev));
+      }
+      if (kind === "label") {
+        setLabel((prev) => (prev === row.name && row.name !== initialLabel ? initialLabel : prev));
+      }
+    } catch (e) {
+      // Nothing is removed from the picker on failure — the row is still live
+      // server-side, and hiding it here would offer the operator a list that
+      // disagrees with what a save will accept.
+      setRetireError((e as Error).message || `Couldn’t remove “${row.name}”.`);
+    } finally {
+      setRetiringId(null);
+    }
+  }
+
   // Edit mode: PATCH the editable fields (caption + byline) on the existing
   // post — horse and media are fixed here (the PATCH contract covers neither).
   async function saveEdit() {
     if (!initial) return;
+    // ENG-1266 — never save a photo post down to nothing. The button is already
+    // disabled for this, but the guard stays: `mediaPatch` omits the key when
+    // the set is empty, so without it a save would silently keep the old photos
+    // while the operator watched an empty strip and believed they were gone.
+    if (editPhotoEmpty) {
+      setAction({ kind: "error", message: PHOTO_REQUIRED });
+      return;
+    }
+    // ENG-1266 — and never save one down to the tiles that happen to have
+    // landed: the set we would send omits the in-flight photo, and the PATCH
+    // deletes every row above it. The button is disabled for this too.
+    if (editPhotoUnsettled) {
+      setAction({ kind: "error", message: PHOTO_UPLOADING });
+      return;
+    }
     setAction({ kind: "working" });
     try {
       await patchPost(initial.id, {
         body: caption,
-        sourceTrainerId: bylineId,
+        // ENG-1268 — the editable byline, and ONLY for a horse post. A
+        // trainer post's trainer IS its subject and is immutable (the route
+        // 400s it); a StablePass post has no trainer at all and carries
+        // `bylinePatch` instead.
+        ...(subject === "horse" ? { sourceTrainerId: bylineId } : {}),
+        ...bylinePatch,
         ...labelPatch,
+        ...mediaPatch,
       });
       setAction({ kind: "ok", message: "Changes saved." });
       router.push("/posts");
@@ -981,12 +1721,29 @@ export default function ComposeScreen({
   // publish endpoint (it accepts draft + scheduled).
   async function publishDraftNow() {
     if (!initial) return;
+    if (editPhotoEmpty) {
+      setAction({ kind: "error", message: PHOTO_REQUIRED });
+      return;
+    }
+    // ENG-1266 — and never save one down to the tiles that happen to have
+    // landed: the set we would send omits the in-flight photo, and the PATCH
+    // deletes every row above it. The button is disabled for this too.
+    if (editPhotoUnsettled) {
+      setAction({ kind: "error", message: PHOTO_UPLOADING });
+      return;
+    }
     setAction({ kind: "working" });
     try {
       await patchPost(initial.id, {
         body: caption,
-        sourceTrainerId: bylineId,
+        // ENG-1268 — the editable byline, and ONLY for a horse post. A
+        // trainer post's trainer IS its subject and is immutable (the route
+        // 400s it); a StablePass post has no trainer at all and carries
+        // `bylinePatch` instead.
+        ...(subject === "horse" ? { sourceTrainerId: bylineId } : {}),
+        ...bylinePatch,
         ...labelPatch,
+        ...mediaPatch,
       });
       await publishPost(initial.id);
       setAction({ kind: "ok", message: "Post published." });
@@ -1004,6 +1761,17 @@ export default function ComposeScreen({
   // inline via `scheduleErrorMessage`.
   async function scheduleEdit() {
     if (!initial) return;
+    if (editPhotoEmpty) {
+      setAction({ kind: "error", message: PHOTO_REQUIRED });
+      return;
+    }
+    // ENG-1266 — and never save one down to the tiles that happen to have
+    // landed: the set we would send omits the in-flight photo, and the PATCH
+    // deletes every row above it. The button is disabled for this too.
+    if (editPhotoUnsettled) {
+      setAction({ kind: "error", message: PHOTO_UPLOADING });
+      return;
+    }
     const when = combineLocal(scheduleDate, scheduleTime);
     if (!when) {
       setAction({ kind: "error", message: "Pick a date and time to schedule." });
@@ -1017,8 +1785,14 @@ export default function ComposeScreen({
     try {
       await patchPost(initial.id, {
         body: caption,
-        sourceTrainerId: bylineId,
+        // ENG-1268 — the editable byline, and ONLY for a horse post. A
+        // trainer post's trainer IS its subject and is immutable (the route
+        // 400s it); a StablePass post has no trainer at all and carries
+        // `bylinePatch` instead.
+        ...(subject === "horse" ? { sourceTrainerId: bylineId } : {}),
+        ...bylinePatch,
         ...labelPatch,
+        ...mediaPatch,
       });
       await schedulePost(initial.id, when.toISOString());
       setAction({
@@ -1033,8 +1807,23 @@ export default function ComposeScreen({
   }
 
   const previewData: PostPreviewData = {
+    // ENG-1268 — the head follows the subject. The preview is the only place
+    // the operator sees what a member will get, so a StablePass post that
+    // previewed a horse head would be the ENG-558 lie in a new place.
+    subject,
     horseName: horse?.name ?? null,
-    byline: trainerName,
+    // The attribution line, whose meaning follows the subject (see
+    // PostPreviewData.byline): the byline TRAINER for a horse post, and the
+    // chosen `post_byline` name for a StablePass one. A trainer post takes
+    // neither — its head is the trainer.
+    byline: subject === "stablepass" ? byline || null : subject === "trainer" ? null : trainerName,
+    trainer: trainer
+      ? {
+          name: trainer.name,
+          photoUrl: trainer.photoUrl,
+          subline: trainerSubline(trainer),
+        }
+      : null,
     caption,
     // A text post genuinely has no media, so it reports none. PostPreview
     // (ENG-558 / A1) already handles a null media type without crashing —
@@ -1127,7 +1916,7 @@ export default function ComposeScreen({
                 type="button"
                 className={`btn ${initial?.status === "draft" ? styles.btnLight : "btn-primary"} ${styles.btnSm}`}
                 onClick={saveEdit}
-                disabled={busy}
+                disabled={busy || editPhotoEmpty || editPhotoUnsettled}
               >
                 {busy ? "Saving…" : "Save changes"}
               </button>
@@ -1137,7 +1926,7 @@ export default function ComposeScreen({
                   className={`btn btn-primary ${styles.btnSm}`}
                   data-testid="publish-draft"
                   onClick={publishDraftNow}
-                  disabled={busy}
+                  disabled={busy || editPhotoEmpty || editPhotoUnsettled}
                 >
                   {busy ? "Working…" : "Publish now"}
                 </button>
@@ -1178,11 +1967,56 @@ export default function ComposeScreen({
         <div className={styles.grid}>
           {/* LEFT COLUMN --------------------------------------------------- */}
           <div>
-            {/* STEP 1 — horse */}
+            {/* STEP 1 — SUBJECT (ENG-1268; copy revised by ENG-1297).
+                Three segmented options in the Step 2 type-tile language (the
+                ticket's design instruction: reuse, no new mockup), then the
+                chosen subject's own control below them. */}
             <section className={styles.section}>
-              <div className={styles.stepLabel}>Step 1 · Attribute</div>
-              <h3 className={styles.sectionTitle}>Which horse is this for?</h3>
-              <label className={styles.label} htmlFor="horse-search">
+              <div className={styles.stepLabel}>Step 1 · Subject</div>
+              <h3 className={styles.sectionTitle}>Posted as</h3>
+
+              {isEdit ? (
+                // Edit mode: the subject is FIXED, shown rather than picked —
+                // the same `type-fixed` treatment the post type has. PATCH
+                // rejects a `subject` key, and changing it would strand the
+                // asset already uploaded against this post.
+                <div className={styles.readOnlyRow} data-testid="subject-fixed">
+                  <span className={styles.readOnlyValue}>{SUBJECT_LABEL[subject]}</span>
+                  <span className={styles.help}>
+                    Who a post is from can&apos;t be changed after it is created.
+                  </span>
+                </div>
+              ) : (
+                <div
+                  className={styles.subjectPicker}
+                  role="radiogroup"
+                  aria-label="Posting as"
+                  data-testid="subject-picker"
+                >
+                  {SUBJECTS.map((s) => (
+                    <label
+                      key={s}
+                      className={`${styles.typeOption} ${subject === s ? styles.typeOptionSelected : ""}`}
+                      data-testid={`subject-option-${s}`}
+                      data-selected={subject === s ? "true" : undefined}
+                    >
+                      <input
+                        type="radio"
+                        name="post-subject"
+                        value={s}
+                        checked={subject === s}
+                        onChange={() => chooseSubject(s)}
+                      />
+                      {SUBJECT_LABEL[s]}
+                    </label>
+                  ))}
+                </div>
+              )}
+
+              {/* --- HORSE subject: today's search, unchanged ----------- */}
+              {subject === "horse" ? (
+                <>
+              <label className={styles.label} htmlFor="horse-search" style={{ marginTop: 14 }}>
                 Horse
               </label>
               <div className={styles.searchWrap}>
@@ -1272,6 +2106,235 @@ export default function ComposeScreen({
                   </div>
                 </div>
               ) : null}
+                </>
+              ) : null}
+
+              {/* --- TRAINER subject (ENG-1268) ------------------------
+                  The same search control as the horse picker, over the full
+                  trainer list, with the same result-row classes — the ticket's
+                  instruction, and it means the two pickers cannot drift into
+                  two different ways of choosing a subject.
+
+                  GUARDRAIL 3: the row prints name + `stable · location` and
+                  nothing else. `trainer_contact` is not loaded, not typed and
+                  not rendered — see data.ts's TrainerRow. */}
+              {subject === "trainer" ? (
+                <>
+                  <label className={styles.label} htmlFor="trainer-search" style={{ marginTop: 14 }}>
+                    Trainer
+                  </label>
+                  <div className={styles.searchWrap}>
+                    {!isEdit ? (
+                      <input
+                        id="trainer-search"
+                        className={styles.input}
+                        type="text"
+                        placeholder="Search trainers by name or stable…"
+                        value={trainerSearch}
+                        autoComplete="off"
+                        data-testid="trainer-search"
+                        onChange={(e) => {
+                          setTrainerSearch(e.target.value);
+                          setShowTrainerResults(true);
+                          if (trainer && e.target.value !== trainer.name) setTrainer(null);
+                        }}
+                        onFocus={() => setShowTrainerResults(true)}
+                      />
+                    ) : null}
+                    {showTrainerResults && !trainer ? (
+                      <ul className={styles.results} data-testid="trainer-results">
+                        {trainerMatches.length === 0 ? (
+                          <li className={styles.noResults}>
+                            No trainers match “{trainerSearch}”.
+                          </li>
+                        ) : (
+                          trainerMatches.map((t) => (
+                            <li key={t.id}>
+                              <button
+                                type="button"
+                                className={styles.resultRow}
+                                data-testid={`trainer-opt-${t.id}`}
+                                onClick={() => selectTrainer(t)}
+                              >
+                                <span className={styles.resultThumb}>
+                                  {t.photoUrl ? (
+                                    /* Lazy for the same reason the horse rows
+                                       are: this is the whole roster in a 260px
+                                       scroll box, so eager loading would fire a
+                                       signed-URL request per trainer the moment
+                                       the picker opens. The directive must stay
+                                       on the line directly above the <img>. */
+                                    // eslint-disable-next-line @next/next/no-img-element -- remote trainer thumb, fixed box
+                                    <img src={t.photoUrl} alt="" loading="lazy" />
+                                  ) : null}
+                                </span>
+                                <span>
+                                  <span className={styles.resultName}>{t.name}</span>
+                                  <span className={styles.resultSub}>
+                                    {trainerSubline(t) || "no stable set"}
+                                  </span>
+                                </span>
+                              </button>
+                            </li>
+                          ))
+                        )}
+                      </ul>
+                    ) : null}
+                  </div>
+                  <div className={styles.help}>
+                    The post is from the trainer, with no horse attached — for a stable update or a
+                    weekend preview that isn&apos;t about one horse.
+                  </div>
+
+                  {trainer ? (
+                    <div
+                      className={styles.horsePick}
+                      style={{ marginTop: 12 }}
+                      data-testid="trainer-pick"
+                    >
+                      <div className={`${styles.pickThumb} ${styles.pickThumbRound}`}>
+                        {trainer.photoUrl ? (
+                          // eslint-disable-next-line @next/next/no-img-element -- remote trainer photo, fixed box
+                          <img src={trainer.photoUrl} alt="" />
+                        ) : (
+                          (trainer.name.trim()[0] ?? "T").toUpperCase()
+                        )}
+                      </div>
+                      <div className={styles.pickMeta}>
+                        <p className={styles.pickName}>{trainer.name}</p>
+                        <div className={styles.pickSub}>
+                          {trainerSubline(trainer) || "no stable set"}
+                          {!isEdit ? (
+                            <button
+                              type="button"
+                              className={styles.changeLink}
+                              onClick={changeTrainer}
+                            >
+                              Change trainer
+                            </button>
+                          ) : null}
+                        </div>
+                      </div>
+                    </div>
+                  ) : null}
+                </>
+              ) : null}
+
+              {/* --- STABLEPASS subject (ENG-1268) ---------------------
+                  No horse and no trainer: the post is from the brand, and the
+                  BYLINE is what says where it came from. The dropdown is the
+                  label dropdown's control, down to the "+ Add new…" sentinel
+                  and the inline field — again the ticket's instruction, and
+                  again so the two cannot drift. */}
+              {subject === "stablepass" ? (
+                <>
+                  <label className={styles.label} htmlFor="post-byline" style={{ marginTop: 14 }}>
+                    Byline
+                  </label>
+                  <select
+                    id="post-byline"
+                    className={styles.select}
+                    value={byline}
+                    data-testid="byline-name-select"
+                    // Read-only in edit mode ONLY when the value is one we
+                    // could not otherwise offer — see the retired-byline note
+                    // on `bylineOptions`. Normally it stays editable: PATCH
+                    // accepts `byline` for a stablepass post.
+                    onChange={(e) => {
+                      const v = e.target.value;
+                      if (v === ADD_NEW_BYLINE_VALUE) {
+                        setAddingByline(true);
+                        setBylineAddError(null);
+                        return;
+                      }
+                      setByline(v);
+                    }}
+                    style={{ marginBottom: addingByline ? 8 : 6 }}
+                  >
+                    {/* Disabled placeholder, unlike the label picker's "No
+                        label": a byline is REQUIRED for a StablePass post
+                        (the route 400s without one), so "none" is not a state
+                        the operator may choose. */}
+                    <option value="" disabled>
+                      Choose a byline…
+                    </option>
+                    {bylineOptions.map((b) => (
+                      <option key={b.name} value={b.name}>
+                        {b.name}
+                      </option>
+                    ))}
+                    <option value={ADD_NEW_BYLINE_VALUE}>+ Add new…</option>
+                  </select>
+
+                  {addingByline ? (
+                    <div className={styles.addLabelRow} data-testid="add-byline-row">
+                      <input
+                        className={styles.input}
+                        type="text"
+                        value={newByline}
+                        autoFocus
+                        maxLength={MAX_BYLINE_LENGTH}
+                        data-testid="new-byline-input"
+                        aria-label="New byline"
+                        placeholder="Name the new byline…"
+                        onChange={(e) => setNewByline(e.target.value)}
+                        onKeyDown={(e) => {
+                          // Enter submits. Without this the field sits inside
+                          // the compose form and Enter would fire the primary
+                          // action, publishing a post still being named.
+                          if (e.key === "Enter") {
+                            e.preventDefault();
+                            void submitNewByline();
+                          }
+                          if (e.key === "Escape") {
+                            setAddingByline(false);
+                            setBylineAddError(null);
+                          }
+                        }}
+                      />
+                      <button
+                        type="button"
+                        className="btn btn-primary"
+                        disabled={bylineAddBusy}
+                        data-testid="add-byline-save"
+                        onClick={() => void submitNewByline()}
+                      >
+                        {bylineAddBusy ? "Adding…" : "Add"}
+                      </button>
+                      <button
+                        type="button"
+                        className="btn btn-light"
+                        data-testid="add-byline-cancel"
+                        onClick={() => {
+                          setAddingByline(false);
+                          setBylineAddError(null);
+                        }}
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  ) : null}
+                  {bylineAddError ? (
+                    <div className={styles.addLabelError} role="alert" data-testid="add-byline-error">
+                      {bylineAddError}
+                    </div>
+                  ) : null}
+
+                  <ManageList
+                    kind="byline"
+                    rows={retirableBylines}
+                    open={manageBylines}
+                    onToggle={() => setManageBylines((v) => !v)}
+                    retiringId={retiringId}
+                    onRetire={(row) => void onRetire("byline", row)}
+                  />
+
+                  <div className={styles.help}>
+                    Posted as stablepass, with no horse or trainer attached. The byline is what
+                    members see under the name.
+                  </div>
+                </>
+              ) : null}
             </section>
 
             {/* STEP 2 — post type. Chosen, never sniffed. In edit mode the
@@ -1303,8 +2366,14 @@ export default function ComposeScreen({
                   role="radiogroup"
                   aria-label="Post type"
                   data-testid="type-picker"
+                  /* ENG-1268 — the track count follows the number of tiles
+                     this subject actually offers. The rule's `repeat(4, 1fr)`
+                     would leave StablePass's two tiles at quarter width with
+                     two empty columns beside them, which reads as a broken
+                     control rather than a shorter one. */
+                  style={{ gridTemplateColumns: `repeat(${visibleTypes.length}, 1fr)` }}
                 >
-                  {POST_TYPES.map(({ type, icon }) => (
+                  {visibleTypes.map(({ type, icon }) => (
                     <label
                       key={type}
                       className={`${styles.typeOption} ${postType === type ? styles.typeOptionSelected : ""}`}
@@ -1329,8 +2398,11 @@ export default function ComposeScreen({
                     revealing it only after they pick Text would show it exactly
                     when it is no longer needed. */}
                 <div className={styles.help}>
-                  Text posts have no media: the title and body are the whole post, and they render
-                  as a Stable update in the app.
+                  {subject === "stablepass"
+                    ? // The tiles are HIDDEN for this subject, so the operator
+                      // is told why rather than left to notice two are missing.
+                      "A StablePass post carries media: photo or video only."
+                    : "Text posts have no media: the title and body are the whole post, and they render as a Stable update in the app."}
                 </div>
                 </>
               )}
@@ -1351,16 +2423,29 @@ export default function ComposeScreen({
                 // ENG-748 — multi-select for PHOTO only, and not in edit mode
                 // (media is read-only there). Video is a single Mux asset and
                 // voice a single Storage object, so neither may offer it.
-                multiple={postType === "photo" && !isEdit}
+                // ENG-748 multi-select for PHOTO, and since ENG-1266 in EDIT
+                // mode too — media is no longer read-only there. Video is a
+                // single Mux asset and voice a single Storage object, so
+                // neither may offer it.
+                multiple={usesPhotoSet}
                 data-testid="media-input"
                 onChange={(e) => {
                   const picked = Array.from(e.target.files ?? []);
+                  // Read and immediately disarm: the next dialog is a replace
+                  // unless a button says otherwise, so a stray pick can never
+                  // inherit the last one's intent.
+                  const mode = pickMode.current;
+                  pickMode.current = "replace";
                   if (picked.length === 0) return;
                   // A photo post always goes through the set path, even for one
                   // file — one code path, so the single-photo case cannot drift
-                  // away from the multi one.
-                  if (postType === "photo" && !isEdit) void onPickPhotos(picked);
-                  else void onPickFile(picked[0]);
+                  // away from the multi one. In edit mode there is no replacing
+                  // pick at all: the post's photos are the set, and the only
+                  // way to add to them is to append.
+                  if (usesPhotoSet) {
+                    if (mode === "append" || isEdit) void onAppendPhotos(picked);
+                    else void onPickPhotos(picked);
+                  } else if (!isEdit) void onPickFile(picked[0]);
                 }}
               />
 
@@ -1369,9 +2454,12 @@ export default function ComposeScreen({
                   <div
                     className={`${styles.preview} ${postType === "voice" ? styles.previewAudio : ""}`}
                   >
-                    {postType === "photo" && mediaUrl ? (
+                    {postType === "photo" && (coverPhoto?.previewUrl ?? mediaUrl) ? (
+                      // ENG-1266 — the COVER of the (now editable) set, which
+                      // is not necessarily the photo this post opened with:
+                      // reordering moves it, and `post.media_url` follows.
                       // eslint-disable-next-line @next/next/no-img-element -- signed existing media
-                      <img src={mediaUrl} alt="" />
+                      <img src={coverPhoto?.previewUrl ?? mediaUrl!} alt="" />
                     ) : postType === "video" && mediaUrl ? (
                       // Signed Mux HLS URL hydrated by the edit page loader.
                       <HlsVideo src={mediaUrl} controls playsInline preload="metadata" />
@@ -1387,7 +2475,16 @@ export default function ComposeScreen({
                   </div>
                   <div className={styles.uploadTools}>
                     <span className={styles.uploadMeta}>
-                      Existing {postType} · media can’t be changed when editing.
+                      {usesPhotoSet
+                        ? // ENG-1266 — they CAN be changed now, so the old
+                          // sentence would be a straight lie. The strip below
+                          // carries the controls.
+                          `${photos.length} ${photos.length === 1 ? "photo" : "photos"} \u00b7 add, remove or reorder them below.`
+                        : photosUnavailable
+                          ? // Honest about WHY, so the operator retries instead
+                            // of concluding the photos are gone.
+                            "This post\u2019s photos couldn\u2019t be loaded, so they can\u2019t be edited right now. Reload to try again \u2014 your other changes still save."
+                          : `Existing ${postType} \u00b7 media can\u2019t be changed when editing.`}
                     </span>
                   </div>
                 </div>
@@ -1432,7 +2529,20 @@ export default function ComposeScreen({
                       ) : null}
                     </span>
                     <span className={styles.uploadActions}>
-                      <button type="button" className={styles.uploadBtn} onClick={() => fileInputRef.current?.click()}>
+                      <button
+                        type="button"
+                        className={styles.uploadBtn}
+                        onClick={() => {
+                          // ENG-1266 — ARM the intent here rather than relying on
+                          // the change handler having disarmed the last one. A
+                          // CANCELLED dialog fires no `change` event, so an
+                          // "Add more photos" click the operator then escaped
+                          // would leave the ref on "append" and turn this
+                          // Replace into an append.
+                          pickMode.current = "replace";
+                          fileInputRef.current?.click();
+                        }}
+                      >
                         {/* A photo pick REPLACES the whole set, so say so once
                             there is more than one to lose. */}
                         {photos.length > 1 ? "Replace all" : "Replace"}
@@ -1461,7 +2571,13 @@ export default function ComposeScreen({
                       type="button"
                       className={`btn ${styles.btnLight} ${styles.btnSm}`}
                       style={{ marginTop: 12 }}
-                      onClick={() => fileInputRef.current?.click()}
+                      onClick={() => {
+                        // Armed here for the same reason as Replace above: a
+                        // cancelled Add-more dialog must not make the first pick
+                        // an append.
+                        pickMode.current = "replace";
+                        fileInputRef.current?.click();
+                      }}
                       disabled={!horse}
                     >
                       Select file
@@ -1494,7 +2610,7 @@ export default function ComposeScreen({
                   single-photo operator never sees either.
 
                   Up/down buttons, not drag — resolved open question, v1. */}
-              {!isEdit && postType === "photo" && photos.length > 0 ? (
+              {usesPhotoSet && (isEdit || photos.length > 0) ? (
                 <>
                   <div className={styles.photoStrip} data-testid="photo-strip">
                     {photos.map((p, i) => (
@@ -1569,7 +2685,10 @@ export default function ComposeScreen({
                           {p.state === "uploading" ? (
                             "uploading…"
                           ) : p.state === "done" ? (
-                            humanSize(p.size)
+                            // A photo loaded from the post has no File behind
+                            // it, so there is no size to print — "saved" is the
+                            // honest word for "this one is already in Storage".
+                            p.size > 0 ? humanSize(p.size) : "saved"
                           ) : (
                             <button
                               type="button"
@@ -1584,13 +2703,71 @@ export default function ComposeScreen({
                       </div>
                     ))}
                   </div>
-                  <div className={styles.help} data-testid="photo-strip-help">
-                    {readyPhotos.length === photos.length
-                      ? `${photos.length} of ${MAX_PHOTOS} photos.`
-                      : `${readyPhotos.length} of ${photos.length} uploaded (max ${MAX_PHOTOS}).`}{" "}
-                    The first uploaded photo is the cover — it is what the feed and the member card
-                    show.
+                  {/* ENG-1266 — the control the whole ticket is about. Styled
+                      with the screen's existing small light button (the same
+                      `.btnLight .btnSm` pairing as Step 3's "Select file"),
+                      because the 03-compose mockup predates multi-photo and
+                      draws no Add-more affordance — client decision: follow the
+                      existing design rather than invent one.
+
+                      Sits BELOW the strip, so the strip stays a pure row of
+                      tiles in display order and the button does not read as an
+                      eleventh position. */}
+                  <div className={styles.photoStripActions}>
+                    <button
+                      type="button"
+                      className={`btn ${styles.btnLight} ${styles.btnSm}`}
+                      data-testid="photo-add-more"
+                      // Deliberately NOT disabled while an earlier batch is
+                      // still uploading: appending mid-upload is allowed and
+                      // the earlier tiles are unaffected.
+                      disabled={!uploadPostId || photos.length >= MAX_PHOTOS}
+                      onClick={() => {
+                        pickMode.current = "append";
+                        if (fileInputRef.current) {
+                          // Clear first: picking the SAME file again fires no
+                          // change event while the input still holds it.
+                          fileInputRef.current.value = "";
+                          fileInputRef.current.click();
+                        }
+                      }}
+                    >
+                      Add more photos
+                    </button>
+                    <span className={styles.help} data-testid="photo-strip-help">
+                      {photos.length >= MAX_PHOTOS
+                        ? `That is the maximum of ${MAX_PHOTOS} photos.`
+                        : readyPhotos.length === photos.length
+                          ? `${photos.length} of ${MAX_PHOTOS} photos.`
+                          : `${readyPhotos.length} of ${photos.length} uploaded (max ${MAX_PHOTOS}).`}{" "}
+                      The first uploaded photo is the cover — it is what the feed and the member card
+                      show.
+                    </span>
                   </div>
+                  {/* Removing the last photo is a legitimate step on the way to
+                      replacing it, so it is allowed — but the post cannot be
+                      SAVED in that state, and the sentence says so where the
+                      operator just made it true. */}
+                  {editPhotoEmpty ? (
+                    <div
+                      className={`${styles.help} ${styles.uploadError}`}
+                      data-testid="photo-none"
+                      role="alert"
+                    >
+                      {PHOTO_REQUIRED}
+                    </div>
+                  ) : null}
+                  {/* Same place, same voice, for the other state the post
+                      cannot be saved in. Not `uploadError` — nothing has gone
+                      wrong, the tiles are simply still working, so it reads as
+                      help text rather than a failure. `editPhotoEmpty` wins
+                      when both are true: "there are none" is the more useful
+                      sentence than "one is still coming". */}
+                  {editPhotoUnsettled && !editPhotoEmpty ? (
+                    <div className={styles.help} data-testid="photo-uploading" role="status">
+                      {PHOTO_UPLOADING}
+                    </div>
+                  ) : null}
                 </>
               ) : null}
 
@@ -1630,26 +2807,55 @@ export default function ComposeScreen({
                 {isText ? "Write the post." : "Write the caption."}
               </h3>
 
-              <label className={styles.label} htmlFor="byline">
-                Trainer byline
-              </label>
-              <select
-                id="byline"
-                className={styles.select}
-                value={bylineId}
-                data-testid="byline-select"
-                onChange={(e) => setBylineId(e.target.value)}
-                style={{ marginBottom: 14 }}
-              >
-                <option value="" disabled>
-                  Select a trainer…
-                </option>
-                {trainers.map((t) => (
-                  <option key={t.id} value={t.id}>
-                    {t.name}
-                  </option>
-                ))}
-              </select>
+              {/* THE EDITABLE TRAINER BYLINE — HORSE POSTS ONLY (ENG-1268).
+                  A horse post is attributed TO a trainer, and which one is an
+                  editorial choice (it defaults to the horse's stable trainer
+                  but need not stay there). The other two subjects have no such
+                  choice to make: a trainer post's trainer IS its subject and is
+                  immutable, and a StablePass post has no trainer at all — its
+                  attribution is the Byline chosen in Step 1. Rendering this
+                  control for them would offer an edit the route rejects. */}
+              {subject === "horse" ? (
+                <>
+                  <label className={styles.label} htmlFor="byline">
+                    Trainer byline
+                  </label>
+                  <select
+                    id="byline"
+                    className={styles.select}
+                    value={bylineId}
+                    data-testid="byline-select"
+                    onChange={(e) => setBylineId(e.target.value)}
+                    style={{ marginBottom: 14 }}
+                  >
+                    <option value="" disabled>
+                      Select a trainer…
+                    </option>
+                    {trainers.map((t) => (
+                      <option key={t.id} value={t.id}>
+                        {t.name}
+                      </option>
+                    ))}
+                  </select>
+                </>
+              ) : (
+                // The attribution this post will actually carry, shown where
+                // the operator expects to find it — read-only, because it is
+                // set in Step 1 and this is Step 4.
+                <div className={styles.readOnlyRow} style={{ marginBottom: 14 }}>
+                  <label className={styles.label}>Byline</label>
+                  <span className={styles.readOnlyValue} data-testid="byline-fixed">
+                    {subject === "trainer"
+                      ? trainer?.name ?? "No trainer chosen yet"
+                      : byline || "No byline chosen yet"}
+                  </span>
+                  <span className={styles.help}>
+                    {subject === "trainer"
+                      ? "A trainer post is from the trainer you chose in Step 1."
+                      : `Posted as ${STABLEPASS_HANDLE}, with this byline underneath.`}
+                  </span>
+                </div>
+              )}
 
               {/*
                 ENG-979 — ONE field where there were two.
@@ -1767,7 +2973,26 @@ export default function ComposeScreen({
                   {addError}
                 </div>
               ) : null}
+              {/* ENG-1268 — the per-row retire action. Builtins are filtered
+                  out by `retirableLabels`, so they show no ×. */}
+              <ManageList
+                kind="title"
+                rows={retirableLabels}
+                open={manageLabels}
+                onToggle={() => setManageLabels((v) => !v)}
+                retiringId={retiringId}
+                onRetire={(row) => void onRetire("label", row)}
+              />
+              {/* One error surface for both pickers — they share one handler
+                  and only one retire can be in flight at a time. */}
+              {retireError ? (
+                <div className={styles.addLabelError} role="alert" data-testid="retire-error">
+                  {retireError}
+                </div>
+              ) : null}
+
               {adding || addError ? <div style={{ marginBottom: 14 }} /> : null}
+              <div style={{ marginBottom: 14 }} />
 
               <div className={styles.captionRow}>
                 <label className={styles.label} htmlFor="caption">
@@ -1914,7 +3139,9 @@ export default function ComposeScreen({
                   data-testid="primary-action"
                   onClick={isEdit ? saveEdit : () => runAction(mode)}
                   disabled={
-                    isEdit ? busy : !canAct || busy || (mode === "schedule" && !canSchedule)
+                    isEdit
+                      ? busy || editPhotoEmpty || editPhotoUnsettled
+                      : !canAct || busy || (mode === "schedule" && !canSchedule)
                   }
                 >
                   {busy ? (isEdit ? "Saving…" : "Working…") : isEdit ? "Save changes" : primaryLabel}
@@ -2001,7 +3228,7 @@ export default function ComposeScreen({
                   data-testid="schedule-action"
                   style={{ marginTop: 12 }}
                   onClick={scheduleEdit}
-                  disabled={!canSchedule || busy}
+                  disabled={!canSchedule || busy || editPhotoEmpty || editPhotoUnsettled}
                 >
                   {busy
                     ? "Saving…"
@@ -2035,5 +3262,82 @@ export default function ComposeScreen({
 
       <PreviewModal open={previewOpen} onClose={() => setPreviewOpen(false)} data={previewData} />
     </>
+  );
+}
+
+/**
+ * ENG-1268 — the retire (×) affordance for the title and byline pickers.
+ *
+ * WHY IT IS A DISCLOSURE AND NOT A ROW OF ×s IN THE <select>: a native select
+ * cannot host a per-option button, and both pickers are deliberately native
+ * selects (ENG-979 chose one over a pill row at 14+ categories, and this
+ * ticket's instruction is to reuse that control, not replace it). So the
+ * action lives in a list under the field — one row per retirable name, each
+ * with its own ×, which is the per-row action the ticket asks for.
+ *
+ * BUILTIN LABELS ARE SIMPLY ABSENT from `rows` (the caller filters them), so
+ * "builtin labels show no ×" holds by construction rather than by a disabled
+ * button the operator would try. A byline has no builtin concept at all.
+ *
+ * ONE component for both pickers: two copies of a destructive confirm is how
+ * one of them ends up missing the "posts already using it keep it" sentence.
+ */
+function ManageList({
+  kind,
+  rows,
+  open,
+  onToggle,
+  retiringId,
+  onRetire,
+}: {
+  kind: "title" | "byline";
+  rows: { id: string; name: string }[];
+  open: boolean;
+  onToggle: () => void;
+  retiringId: string | null;
+  onRetire: (row: { id: string; name: string }) => void;
+}) {
+  const noun = kind === "title" ? "titles" : "bylines";
+  return (
+    <div data-testid={`manage-${kind}`}>
+      <button
+        type="button"
+        className={styles.manageToggle}
+        data-testid={`manage-${kind}-toggle`}
+        aria-expanded={open}
+        onClick={onToggle}
+      >
+        {open ? `Done managing ${noun}` : `Manage ${noun}`}
+      </button>
+      {open ? (
+        <ul className={styles.manageList} data-testid={`manage-${kind}-list`}>
+          {rows.length === 0 ? (
+            <li className={styles.manageEmpty}>
+              {kind === "title"
+                ? "Only built-in titles here — those are permanent."
+                : "No bylines to remove yet."}
+            </li>
+          ) : (
+            rows.map((row) => (
+              <li key={row.id} className={styles.manageRow}>
+                <span className={styles.manageName}>{row.name}</span>
+                <button
+                  type="button"
+                  className={styles.manageRemove}
+                  data-testid={`manage-${kind}-remove-${row.id}`}
+                  /* Names the ROW, not just the action: "×" alone tells a
+                     screen-reader user nothing about what it removes. */
+                  aria-label={`Remove ${row.name}`}
+                  disabled={retiringId === row.id}
+                  onClick={() => onRetire(row)}
+                >
+                  ×
+                </button>
+              </li>
+            ))
+          )}
+        </ul>
+      ) : null}
+    </div>
   );
 }

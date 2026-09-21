@@ -159,10 +159,11 @@ export default function PostsLibrary({
                     <th style={{ width: "44%" }}>Post</th>
                     {/* "Posted as" is sortable; Type is not — a five-value
                         enum is what the chips are for. Order below matches the
-                        cell order in <PostRow>. NOTE (ENG-1269): the subject
-                        sort inner-joins the horse, so it lists horse posts
-                        only — see `postsSelect` in lib/posts/sort.ts. */}
-                    <SortableTh {...columnProps("horse")} className="nowrap" />
+                        cell order in <PostRow>. The sort orders by the
+                        `subject_name` computed column (ENG-1293), so it covers
+                        horse, trainer AND StablePass posts; unresolvable names
+                        sink. */}
+                    <SortableTh {...columnProps("subject")} className="nowrap" />
                     <th className="nowrap">Type</th>
                     <SortableTh {...columnProps("status")} className="nowrap" />
                     <SortableTh {...columnProps("published")} className="nowrap" />

@@ -1871,6 +1871,14 @@ Once the SHA is unreachable there is nothing to reopen.
 hit this on the post-subject-v1 stack; it is a property of `--delete-branch`, not of any one epic.
 
 ## The Posts library's subject sort is an INNER join, so it lists horse posts only
+**CLOSED — ENG-1293 (21 Sep 2026).** No longer true of the code: `postsSelect`, `HORSE_EMBED` and
+`HORSE_EMBED_INNER` are deleted, and the sort now orders by the `subject_name` PostgREST computed
+column added by ENG-1292 — a post-level column, so no embed, no join, no filtering. Both call sites
+pass the select constant through unchanged. The history below is kept because the SHAPE of the bug
+is the transferable lesson (see "A `!inner` added for an ORDER is a filter the type system cannot
+see" at the end of this file); the prescription in its last sentence is what ENG-1293 followed —
+a post-level sort key, not a bare `!inner` removal.
+
 `lib/posts/sort.ts#postsSelect` rewrites `horse:horse_id(` to `horse:horse_id!inner(` when
 `?sort=horse`, because PostgREST will not order parent rows by an embedded column without it. Once
 B1 made `post.horse_id` nullable (ENG-1269) that inner join also became a FILTER: click the
@@ -1915,3 +1923,21 @@ POST. Nothing hit it until ENG-1290 added a retired label fixture, and nothing h
 first e2e that exercises label retire, or Add-new of a name that is retired (the real route un-retires
 the row rather than inserting), will fall through to the generic handler and fail confusingly rather
 than saying "the mock cannot do this yet". Add the branch when you write that spec, not after.
+
+## A `!inner` added for an ORDER is a filter the type system cannot see — order by a post-level column
+ENG-1291 / ENG-1293, closing the entry above. PostgREST will not order PARENT rows by an embedded
+column unless the embed is `!inner`, so the obvious fix for "sort by a related name" is to rewrite
+the embed for that one sort. That rewrite is a JOIN, and a join is a FILTER: every parent row whose
+FK is null drops out of the rows AND out of `count:"exact"`, with no error and no count that
+disagrees. It is invisible to `tsc` (a `.select()` is just a string) and invisible to a mocked test
+(the supabase fake returns whatever is seeded regardless of the select string — which is exactly why
+this shipped green for a whole ticket). Measured cost here: 36 rows instead of 50.
+**Do this instead:** put the sortable name on the parent as a PostgREST **computed column**
+(`subject_name(post)`, ENG-1292) and `.order()` on it. No embed, no join, nothing to filter, and the
+projection stops depending on which sort is active. Make the computed column resolve the name the
+SAME way the cell renders it (`format.ts` renders display-first with both sides trimmed, so the SQL
+is `coalesce(nullif(btrim(display_name),''), nullif(btrim(racing_name),''))`) — if the two diverge,
+the list sorts by a string the operator cannot see, which is its own class of bug.
+**And test it as a result set, not as a string:** the test that would have caught this seeds one row
+per subject and asserts all three come back sorted, with the fake taught to honour `!inner` join
+semantics. Asserting only "the select contains `!inner`" is what the old suite did, and it passed.

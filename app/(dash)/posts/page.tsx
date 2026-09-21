@@ -8,7 +8,6 @@ import {
   POST_SORT_DEFAULT_DIR,
   parsePostSort,
   postsOrder,
-  postsSelect,
 } from "@/lib/posts/sort";
 import type { PostRow, StatusCounts, StatusFilter } from "./types";
 import { HORSE_PHOTO_BUCKET, POST_MEDIA_BUCKET, signPhotoMap } from "@/lib/storage/photos";
@@ -24,9 +23,10 @@ import "./posts.css";
 // PII is selected (guardrail §4).
 
 const PAGE_SIZE = 20;
-// Lives in lib/posts/sort.ts so the horse-sort rewrite (`postsSelect`) can be
-// tested against the string this page actually sends. ENG-979 added `label` to
-// that string; see lib/posts/sort.test.ts, which pins it.
+// Lives in lib/posts/sort.ts because the screen and the BFF share one sort
+// model, and lib/posts/sort.test.ts pins the columns this projection must
+// carry. ENG-979 added `label` to that string; see lib/posts/sort.test.ts,
+// which pins it.
 const POST_FIELDS = POSTS_PAGE_SELECT;
 
 // Resolve free-text `q` into a PostgREST OR clause across post title/body plus
@@ -111,7 +111,7 @@ export default async function PostsPage({
   // list is offset-paginated, so a client-side sort would only reorder the 20
   // rows this page happens to hold. `postsOrder` also appends a `created_at`
   // tiebreaker so paging through equal-valued rows stays stable.
-  let pageQuery = sb.from("post").select(postsSelect(POST_FIELDS, sort), { count: "exact" });
+  let pageQuery = sb.from("post").select(POST_FIELDS, { count: "exact" });
   for (const o of postsOrder(sort, dir)) {
     pageQuery = pageQuery.order(o.column, {
       ascending: o.ascending,

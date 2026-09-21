@@ -1979,3 +1979,24 @@ also sorts by.
 walking up from `process.cwd()`. From a worktree under `stablepass-admin/.claude/worktrees/` it
 resolves fine (the walk reaches `rx/stable/`). From a clone anywhere else, all 15 of its tests fail
 with `THE GUARD HAS GONE BLIND` — which reads as a regression and is not one.
+
+## A `disabled=` prop is a GUARD — a handler test walks straight past it
+ENG-1298, a production regression against ENG-1268's own acceptance criterion. ENG-1268 generalised
+"Pick a horse first." into `subjectReady` and threaded it through every *handler*, but Step 3's
+"Select file" button kept `disabled={!horse}`. On a trainer or StablePass post `horse` is null, so
+the button was dead and NO media could be attached — the file input is hidden and is opened solely
+by `fileInputRef.current?.click()`, the drop-zone `<label>` has no `htmlFor` and does not wrap it,
+and Replace / "Add more photos" only render once media exists. The whole suite stayed GREEN: every
+test drives the pick programmatically (`fireEvent.change` on `media-input`), which bypasses the
+button, and the e2e layer only screenshots the screen — a disabled button screenshots identically.
+**Do this:** when a readiness flag is introduced or widened, grep for every `disabled=` / `readOnly=`
+/ conditional render that reads the OLD narrower condition, not just the handlers. Test the control's
+own `disabled` state in BOTH directions per case, and have at least one e2e step actually CLICK it
+(`page.waitForEvent("filechooser")` is the proof for a file picker). A handler-level assertion is
+not coverage of the button that reaches the handler.
+
+## A `<button>` inside a `<label>` is named by the LABEL, not by its own text
+`getByRole("button", { name: "Select file" })` fails on Step 3's button: `<button>` is a labelable
+element, so its accessible name is the enclosing `<label>`'s whole text ("Choose a video … Select
+file"). Query it by text (`screen.getByText("Select file")`, asserting `tagName === "BUTTON"`) or,
+in Playwright, `button:has-text("Select file")`.

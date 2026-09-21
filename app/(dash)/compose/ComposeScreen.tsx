@@ -2578,7 +2578,7 @@ export default function ComposeScreen({
                         pickMode.current = "replace";
                         fileInputRef.current?.click();
                       }}
-                      disabled={!horse}
+                      disabled={!subjectReady}
                     >
                       Select file
                     </button>

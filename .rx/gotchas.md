@@ -1941,3 +1941,21 @@ the list sorts by a string the operator cannot see, which is its own class of bu
 **And test it as a result set, not as a string:** the test that would have caught this seeds one row
 per subject and asserts all three come back sorted, with the fake taught to honour `!inner` join
 semantics. Asserting only "the select contains `!inner`" is what the old suite did, and it passed.
+
+## Deleting a helper does not delete the pattern — guard the CALL SITES, not just the module
+ENG-1293's first cut asserted `expect(readFileSync("lib/posts/sort.ts")).not.toContain("!inner")`
+after deleting `postsSelect`. Reintroducing the exact ENG-1291 bug inline at
+`app/(dash)/posts/page.tsx` — `.select(sort === "subject" ? SELECT.replace("horse:horse_id(",
+"horse:horse_id!inner(") : SELECT)` — left the whole suite GREEN (97 files / 1750 tests). Nothing
+could see it: the source-text guard read the module only, the constants it asserts are bypassed by
+an inline `.replace`, no unit test imports a Server Component, and the e2e mock implements no join
+semantics. The screen is the surface the bug was REPORTED against; the API was the secondary
+consumer. Do-this: a source-text guard names every call site (`it.each` over the file paths), and
+the mutation drill runs at each one, not just the convenient one.
+
+## Mutation-test an UNCOMMITTED tree with a file copy, never `git checkout --`
+`git checkout -- <file>` restores from the INDEX, so on a dirty worktree it silently discards the
+uncommitted ticket change you were mutating, not just the mutation. It surfaces one run later as a
+confusing failure (`TypeError: postsSelect is not a function`) and the work has to be retyped from
+the diff. Use `cp <file> /tmp/x.bak` … `cp /tmp/x.bak <file>`, or `git stash`. Costs nothing, and
+the revert is provably exact.

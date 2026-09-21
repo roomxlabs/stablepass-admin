@@ -318,3 +318,37 @@ describe("the Add-more-photos row (ENG-1266)", () => {
     expect(btnLight).toMatch(/background:\s*var\(--white\)/);
   });
 });
+
+// ENG-1299. Step 3's drop zone is a <label> holding four spans/buttons.
+// `.dropTitle` and `.dropSub` are authored as if they were blocks (the subtitle
+// even carries a `margin-top`), but the markup renders both as <span>, so
+// without an explicit `display` they are inline: the title and subtitle run
+// together on one line ("Choose a videoVideo goes to Mux — …"), the subtitle's
+// vertical margin is silently dropped (it does not apply to non-replaced
+// inlines), and the "Select file" button is pulled onto that same line —
+// collapsing the centred vertical stack that `.uploadZone { text-align:
+// center }` and the auto-margined `.dropIcon` imply.
+//
+// This shipped broken and the e2e baselines were captured from it, so no
+// screenshot diff could ever have caught it. Vitest stubs CSS modules, so a
+// render test cannot see `display` either — read the rule text, as above.
+describe("the Step 3 drop zone stacks icon / title / subtitle / button (ENG-1299)", () => {
+  it("makes the title a block so it owns its own line", () => {
+    expect(rule(".dropTitle")).toMatch(/display:\s*block/);
+  });
+
+  it("makes the subtitle a block, which is also what lets its margin apply", () => {
+    const sub = rule(".dropSub");
+    expect(sub).toMatch(/display:\s*block/);
+    // The margin is the tell: it is dead weight on an inline element, so the
+    // two declarations have to travel together.
+    expect(sub).toMatch(/margin-top:\s*4px/);
+  });
+
+  it("leaves the zone centred, so the stack reads as a column", () => {
+    // Blocks alone are not the fix — they only stack. These are what centre
+    // them: without either one the column drifts left and the icon detaches.
+    expect(rule(".uploadZone")).toMatch(/text-align:\s*center/);
+    expect(rule(".dropIcon")).toMatch(/margin:\s*0\s+auto\s+12px/);
+  });
+});

@@ -94,9 +94,12 @@ describe("ComposeScreen", () => {
   it("renders the compose flow", () => {
     renderScreen();
     expect(screen.getByRole("heading", { name: "Compose post" })).toBeTruthy();
-    // ENG-1268 renamed Step 1's heading from "Which horse is this for?" to
-    // "Who is this post from?" — the step now picks a SUBJECT, not just a horse.
-    expect(screen.getByText("Who is this post from?")).toBeTruthy();
+    // ENG-1268 renamed Step 1's heading from "Which horse is this for?" — the
+    // step now picks a SUBJECT, not just a horse. ENG-1297 then settled the
+    // wording on "Posted as", the same words the Posts library column uses,
+    // under a "Step 1 · Subject" eyebrow so the screen never says it twice.
+    expect(screen.getByText("Posted as")).toBeTruthy();
+    expect(screen.getByText("Step 1 · Subject")).toBeTruthy();
     expect(screen.getByText("Add the content.")).toBeTruthy();
     expect(screen.getByText("Write the caption.")).toBeTruthy();
   });

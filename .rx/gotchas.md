@@ -1959,3 +1959,23 @@ uncommitted ticket change you were mutating, not just the mutation. It surfaces 
 confusing failure (`TypeError: postsSelect is not a function`) and the work has to be retyped from
 the diff. Use `cp <file> /tmp/x.bak` … `cp /tmp/x.bak <file>`, or `git stash`. Costs nothing, and
 the revert is provably exact.
+
+## A `||` fallback is only tested by the WHITESPACE case, never by `null`
+ENG-1295, pinning what ENG-1293 shipped untested. `format.ts` resolves the horse cell as
+`horse?.display_name?.trim() || horse?.racing_name` so it matches the BE's `subject_name`
+(`coalesce(nullif(btrim(display_name),''), nullif(btrim(racing_name),''))`). The existing test fed
+`display_name: null` — which falls through the `||` with OR without the `.trim()`, so it proved
+nothing: the whole 97-file / 1754-test suite stayed GREEN under a revert to
+`horse?.display_name || horse?.racing_name`. Only `"   "` separates the two: it is truthy, it
+short-circuits the fallback, and `subjectLabel`'s `clean()` then renders "Unassigned" while the row
+sorts under the racing name.
+**Do this:** whenever a `||`/`??` chain exists because one side is *trimmed or coalesced*, the
+test case must be the whitespace-only string, not the null — and mutation-verify by deleting the
+`.trim()`, not by deleting the whole expression. Same rule wherever admin renders a name the BE
+also sorts by.
+
+## Run the admin suite from a checkout that sits BESIDE stablepass-mobile
+`app/(dash)/compose/reel-chrome-parity.test.ts` locates stablepass-mobile's `post-card.tsx` by
+walking up from `process.cwd()`. From a worktree under `stablepass-admin/.claude/worktrees/` it
+resolves fine (the walk reaches `rx/stable/`). From a clone anywhere else, all 15 of its tests fail
+with `THE GUARD HAS GONE BLIND` — which reads as a regression and is not one.

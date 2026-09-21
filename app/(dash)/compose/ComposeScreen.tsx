@@ -1967,13 +1967,13 @@ export default function ComposeScreen({
         <div className={styles.grid}>
           {/* LEFT COLUMN --------------------------------------------------- */}
           <div>
-            {/* STEP 1 — POSTING AS (ENG-1268).
+            {/* STEP 1 — SUBJECT (ENG-1268; copy revised by ENG-1297).
                 Three segmented options in the Step 2 type-tile language (the
                 ticket's design instruction: reuse, no new mockup), then the
                 chosen subject's own control below them. */}
             <section className={styles.section}>
-              <div className={styles.stepLabel}>Step 1 · Posting as</div>
-              <h3 className={styles.sectionTitle}>Who is this post from?</h3>
+              <div className={styles.stepLabel}>Step 1 · Subject</div>
+              <h3 className={styles.sectionTitle}>Posted as</h3>
 
               {isEdit ? (
                 // Edit mode: the subject is FIXED, shown rather than picked —

@@ -4,8 +4,12 @@ import type { ReactNode } from "react";
 import { cleanup, render, screen, within } from "@testing-library/react";
 import SubscribersTable, {
   bandById,
+  canRevokeComp,
   buildExportHref,
   buildSubscribersHref,
+  providerById,
+  providerLabel,
+  PROVIDERS,
   statusPill,
   TENURE_BANDS,
 } from "./SubscribersTable";
@@ -26,14 +30,19 @@ vi.mock("next/link", () => ({
   ),
 }));
 
+// The per-row CompAccess island (ENG-1194) calls useRouter().
+vi.mock("next/navigation", () => ({ useRouter: () => ({ refresh: vi.fn() }) }));
+
 afterEach(cleanup);
 
 function row(n: number, over: Partial<SubscriberRow> = {}): SubscriberRow {
   return {
     id: `s${n}`,
+    userId: `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`,
     name: `Member ${n}`,
     email: `member${n}@example.com`,
     status: "active",
+    provider: "stripe",
     startedAt: "2026-03-01T00:00:00.000Z",
     currentPeriodEnd: "2026-10-01T00:00:00.000Z",
     canceledAt: null,
@@ -293,6 +302,177 @@ describe("<SubscribersTable>", () => {
     // Every band the chips render is resolvable by its own id.
     for (const b of TENURE_BANDS.filter((b) => b.id)) {
       expect(bandById(b.id)).toBe(b);
+    }
+  });
+
+  // ---------------------------------------------------------------------------
+  // Billed via (ENG-1193)
+  // ---------------------------------------------------------------------------
+  describe("billed via", () => {
+    it("renders a Billed via column after Status, with the channel label per row", () => {
+      render(
+        <SubscribersTable
+          rows={[
+            row(1, { provider: "stripe" }),
+            row(2, { provider: "app_store" }),
+            row(3, { provider: "play_store" }),
+            row(4, { provider: "promotional" }),
+          ]}
+          total={4}
+          matching={4}
+          offset={0}
+          limit={25}
+        />,
+      );
+      const headers = screen.getAllByRole("columnheader").map((h) => h.textContent);
+      expect(headers.indexOf("Billed via")).toBe(headers.indexOf("Status") + 1);
+      expect(screen.getAllByTestId("subscriber-provider").map((c) => c.textContent)).toEqual([
+        "Web",
+        "App Store",
+        "Google Play",
+        "Complimentary",
+      ]);
+    });
+
+    it("labels an unrecognised channel verbatim, never as Web", () => {
+      expect(providerLabel("stripe")).toBe("Web");
+      expect(providerLabel("amazon")).toBe("amazon");
+    });
+
+    it("renders the chips, in order, with Any active when unfiltered", () => {
+      render(<SubscribersTable rows={[row(1)]} total={1} matching={1} offset={0} limit={25} />);
+      const chipRow = screen.getByText("Billed via", { selector: ".filter-label" }).parentElement!;
+      expect(
+        Array.from(chipRow.querySelectorAll(".chip")).map((c) => c.textContent),
+      ).toEqual(["Any", "Web", "App Store", "Google Play", "Complimentary"]);
+      expect(screen.getByTestId("provider-filter-any").className).toContain("active");
+      expect(screen.getByTestId("provider-filter-app_store").className).not.toContain("active");
+    });
+
+    it("marks the active provider chip and treats an unknown one as no filter", () => {
+      const { unmount } = render(
+        <SubscribersTable rows={[row(1)]} total={1} matching={1} provider="play_store" offset={0} limit={25} />,
+      );
+      expect(screen.getByTestId("provider-filter-play_store").className).toContain("active");
+      expect(screen.getByTestId("provider-filter-any").className).not.toContain("active");
+      unmount();
+
+      render(
+        <SubscribersTable rows={[]} total={3} matching={0} provider="xyz" offset={0} limit={25} />,
+      );
+      expect(screen.getByTestId("provider-filter-any").className).toContain("active");
+      // Not a filter, so the unfiltered empty copy — and no link carries it.
+      expect(screen.getByText(/No subscribers yet/)).toBeTruthy();
+      expect(screen.getByTestId("subscribers-export").getAttribute("href")).toBe(
+        "/api/admin/subscribers/export",
+      );
+    });
+
+    it("provider chips keep status, band and q; other chips, pager and export keep provider", () => {
+      render(
+        <SubscribersTable
+          rows={[row(1)]}
+          total={60}
+          matching={60}
+          status="canceled"
+          provider="app_store"
+          band="3-5"
+          q="mel"
+          offset={25}
+          limit={25}
+        />,
+      );
+      expect(screen.getByTestId("provider-filter-play_store").getAttribute("href")).toBe(
+        "/subscribers?status=canceled&provider=play_store&band=3-5&q=mel",
+      );
+      // "Any" clears only the provider.
+      expect(screen.getByTestId("provider-filter-any").getAttribute("href")).toBe(
+        "/subscribers?status=canceled&band=3-5&q=mel",
+      );
+      expect(screen.getByTestId("status-filter-active").getAttribute("href")).toContain("provider=app_store");
+      expect(screen.getByTestId("tenure-filter-12").getAttribute("href")).toContain("provider=app_store");
+      expect(screen.getByText("‹ Prev").getAttribute("href")).toContain("provider=app_store");
+      expect(screen.getByText("Next ›").getAttribute("href")).toContain("provider=app_store");
+      expect(screen.getByTestId("subscribers-export").getAttribute("href")).toBe(
+        "/api/admin/subscribers/export?status=canceled&provider=app_store&minMonths=3&maxMonths=5&q=mel",
+      );
+    });
+
+    it("builds hrefs with provider, dropping 'all'", () => {
+      expect(buildSubscribersHref({ provider: "promotional" })).toBe("/subscribers?provider=promotional");
+      expect(buildSubscribersHref({ provider: "all" })).toBe("/subscribers");
+      expect(buildExportHref({ provider: "play_store" })).toBe(
+        "/api/admin/subscribers/export?provider=play_store",
+      );
+    });
+
+    it("resolves every chip by its own id and ignores an unknown one", () => {
+      expect(providerById("xyz")).toBeUndefined();
+      expect(providerById(undefined)).toBeUndefined();
+      expect(providerById("app_store")?.label).toBe("App Store");
+      for (const p of PROVIDERS.filter((p) => p.id)) {
+        expect(providerById(p.id)).toBe(p);
+      }
+    });
+  });
+});
+
+describe("Comp column (ENG-1194)", () => {
+  const NOW = new Date("2026-09-17T00:00:00.000Z");
+
+  it("is the LAST column, after Billed via and every read-only column", () => {
+    render(<SubscribersTable rows={[row(1)]} total={1} matching={1} offset={0} limit={25} />);
+    const headers = screen.getAllByRole("columnheader").map((h) => h.textContent?.trim());
+    expect(headers[headers.length - 1]).toBe("Comp");
+    expect(headers.indexOf("Comp")).toBeGreaterThan(headers.indexOf("Billed via"));
+  });
+
+  it("renders one Comp action per row, addressed by the member's userId — not the row id", () => {
+    render(
+      <SubscribersTable
+        rows={[row(1), row(2, { name: null, email: "anon@example.com" })]}
+        total={2}
+        matching={2}
+        offset={0}
+        limit={25}
+      />,
+    );
+    expect(screen.getAllByTestId("comp-open")).toHaveLength(2);
+    expect(screen.getByRole("button", { name: "Comp access for Member 1" })).toBeTruthy();
+    // A nameless member is labelled by email.
+    expect(screen.getByRole("button", { name: "Comp access for anon@example.com" })).toBeTruthy();
+  });
+
+  it("offers Revoke only on a live promotional row", () => {
+    render(
+      <SubscribersTable
+        rows={[
+          row(1, { provider: "promotional", status: "active" }),
+          row(2, { provider: "stripe", status: "active" }),
+          row(3, { provider: "promotional", status: "lapsed" }),
+        ]}
+        total={3}
+        matching={3}
+        offset={0}
+        limit={25}
+      />,
+    );
+    const revokes = screen.getAllByTestId("comp-revoke");
+    expect(revokes).toHaveLength(1);
+    expect(revokes[0].getAttribute("aria-label")).toBe("Revoke complimentary access for Member 1");
+  });
+
+  it("canRevokeComp: promotional + (active, or canceled with a future period end)", () => {
+    const p = (over: Partial<SubscriberRow>) => row(1, { provider: "promotional", ...over });
+    expect(canRevokeComp(p({ status: "active" }), NOW)).toBe(true);
+    expect(canRevokeComp(p({ status: "canceled", currentPeriodEnd: "2026-10-01T00:00:00Z" }), NOW)).toBe(true);
+    expect(canRevokeComp(p({ status: "canceled", currentPeriodEnd: "2026-09-01T00:00:00Z" }), NOW)).toBe(false);
+    expect(canRevokeComp(p({ status: "canceled", currentPeriodEnd: null }), NOW)).toBe(false);
+    expect(canRevokeComp(p({ status: "canceled", currentPeriodEnd: "garbage" }), NOW)).toBe(false);
+    expect(canRevokeComp(p({ status: "lapsed" }), NOW)).toBe(false);
+    expect(canRevokeComp(p({ status: "trial" }), NOW)).toBe(false);
+    for (const provider of ["stripe", "app_store", "play_store"] as const) {
+      expect(canRevokeComp(row(1, { provider, status: "active" }), NOW)).toBe(false);
     }
   });
 });

@@ -109,7 +109,7 @@ test("subscribers — CSV export covers the filtered set, not the visible page",
   const csv = Buffer.concat(chunks).toString("utf8");
 
   const lines = csv.trim().split(/\r\n/);
-  expect(lines[0]).toBe("name,email,status,started_at,tenure_months,current_period_end,canceled_at");
+  expect(lines[0]).toBe("name,email,status,provider,started_at,tenure_months,current_period_end,canceled_at");
   // Header + exactly the two cancelled subscribers — the export honours the
   // filter rather than dumping the whole base.
   expect(lines).toHaveLength(3);
@@ -142,6 +142,78 @@ test("subscribers — the UNFILTERED export still excludes the operator", async 
   expect(csv).not.toContain("ops@stablepass.co");
   expect(csv).not.toContain("StablePass Ops");
   expect(csv).toContain("harriet@example.com");
+});
+
+test("subscribers — Billed via: column, chips, and the provider filter narrows (ENG-1193)", async ({ page }) => {
+  test.setTimeout(60000);
+  await signIn(page);
+  await page.goto("/subscribers");
+  await expect(page.locator(".adm-table")).toBeVisible({ timeout: 30000 });
+
+  // The column sits right after Status, and every channel label appears —
+  // including the NULL-provider fixture (Tom), which must read "Web".
+  const headers = await page.locator(".adm-table thead th").allTextContents();
+  expect(headers.indexOf("Billed via")).toBe(headers.indexOf("Status") + 1);
+  await expect(
+    page.getByTestId("subscriber-row").filter({ hasText: "tom@example.com" }).getByTestId("subscriber-provider"),
+  ).toHaveText("Web");
+  for (const label of ["Web", "App Store", "Google Play", "Complimentary"]) {
+    await expect(page.getByTestId("subscriber-provider").filter({ hasText: label }).first()).toBeVisible();
+  }
+
+  await page.getByTestId("provider-filter-app_store").click();
+  await page.waitForURL("**/subscribers?provider=app_store", { timeout: 30000 });
+
+  // Harriet (active) and Douglas (cancelled) are the two App Store fixtures.
+  await expect(page.locator(".adm-table tbody tr")).toHaveCount(2);
+  await expect(page.getByTestId("subscriber-provider")).toHaveText(["App Store", "App Store"]);
+  await expect(page.locator(".adm-table tbody")).toContainText("harriet@example.com");
+  await expect(page.locator(".adm-table tbody")).toContainText("douglas@example.com");
+  await expect(page.getByTestId("provider-filter-app_store")).toHaveClass(/active/);
+  // The headline stays the unfiltered total.
+  await expect(page.getByTestId("subscribers-total")).toContainText("8");
+
+  await page.screenshot({
+    path: "e2e/__screenshots__/46-subscribers-provider.png",
+    fullPage: true,
+  });
+
+  // Combines with status: cancelled AND App Store is Douglas alone.
+  await page.getByTestId("status-filter-canceled").click();
+  await page.waitForURL("**/subscribers?status=canceled&provider=app_store", { timeout: 30000 });
+  await expect(page.locator(".adm-table tbody tr")).toHaveCount(1);
+  await expect(page.locator(".adm-table tbody")).toContainText("douglas@example.com");
+});
+
+test("subscribers — an unknown ?provider= is ignored, not an unclearable filter", async ({ page }) => {
+  test.setTimeout(60000);
+  await signIn(page);
+  await page.goto("/subscribers?provider=xyz");
+  await expect(page.locator(".adm-table tbody tr")).toHaveCount(8, { timeout: 30000 });
+  await expect(page.getByTestId("provider-filter-any")).toHaveClass(/active/);
+});
+
+test("subscribers — CSV export carries the provider column and honours the provider filter", async ({ page }) => {
+  test.setTimeout(60000);
+  await signIn(page);
+  await page.goto("/subscribers?provider=play_store");
+
+  const [download] = await Promise.all([
+    page.waitForEvent("download", { timeout: 30000 }),
+    page.getByTestId("subscribers-export").click(),
+  ]);
+
+  const stream = await download.createReadStream();
+  const chunks: Buffer[] = [];
+  for await (const chunk of stream!) chunks.push(chunk as Buffer);
+  const lines = Buffer.concat(chunks).toString("utf8").trim().split(/\r\n/);
+
+  expect(lines[0]).toBe("name,email,status,provider,started_at,tenure_months,current_period_end,canceled_at");
+  // Header + Rafael (lapsed) and Simone (cancelled), the two Google Play rows.
+  expect(lines).toHaveLength(3);
+  const byEmail = new Map(lines.slice(1).map((l) => [l.split(",")[1], l.split(",")]));
+  expect(byEmail.get("rafael@example.com")?.[3]).toBe("play_store");
+  expect(byEmail.get("simone@example.com")?.[3]).toBe("play_store");
 });
 
 test("subscribers — empty state", async ({ page }) => {
@@ -182,4 +254,108 @@ test("subscribers — a signed-out visitor is redirected, never shown member ema
   await expect(page.locator(".adm-table")).toHaveCount(0);
 
   await context.close();
+});
+
+// ---------------------------------------------------------------------------
+// Comp access (ENG-1194). The BFF calls RevenueCat SERVER-side, so the browser
+// cannot stub RevenueCat itself: the grant/revoke tests stub the admin comp
+// endpoint with page.route and assert what the UI SENT. The last test leaves the
+// endpoint unstubbed on purpose — the e2e server has no RevenueCat key, so the
+// REAL route (behind the real admin gate) must answer 503 and the UI must say so.
+// ---------------------------------------------------------------------------
+
+const PRIYA_UID = "00000000-0000-4000-8000-000000000003"; // sub-3, promotional + active
+const HARRIET_UID = "00000000-0000-4000-8000-000000000001"; // sub-1, app_store
+
+test("subscribers — Comp: inline duration confirm, POST carries the chosen duration, toast (ENG-1194)", async ({
+  page,
+}) => {
+  test.setTimeout(60000);
+  await signIn(page);
+  await page.goto("/subscribers");
+  await expect(page.locator(".adm-table")).toBeVisible({ timeout: 30000 });
+
+  const headers = await page.locator(".adm-table thead th").allTextContents();
+  expect(headers[headers.length - 1].trim()).toBe("Comp");
+  // Revoke only on the one live complimentary row (Priya).
+  await expect(page.getByTestId("comp-revoke")).toHaveCount(1);
+  await expect(page.getByRole("button", { name: "Revoke complimentary access for Priya Raman" })).toBeVisible();
+
+  const sent: { url: string; method: string; body: unknown }[] = [];
+  await page.route("**/api/admin/subscribers/*/comp", async (route) => {
+    const req = route.request();
+    sent.push({ url: req.url(), method: req.method(), body: req.postDataJSON() });
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ data: { granted: true, duration: "three_month" } }),
+    });
+  });
+
+  await page.getByRole("button", { name: "Comp access for Harriet Vale" }).click();
+  const confirm = page.getByTestId("comp-confirm");
+  await expect(confirm).toBeVisible();
+  // Nothing is sent by opening the confirm.
+  expect(sent).toEqual([]);
+  await confirm.getByTestId("comp-duration").selectOption("three_month");
+
+  await page.screenshot({ path: "e2e/__screenshots__/47-eng1194-subscribers-comp-confirm.png", fullPage: true });
+
+  await confirm.getByTestId("comp-grant").click();
+  await expect(page.getByTestId("adm-toast").filter({ hasText: "Complimentary access granted" })).toBeVisible();
+  expect(sent).toEqual([
+    {
+      url: `http://127.0.0.1:3002/api/admin/subscribers/${HARRIET_UID}/comp`,
+      method: "POST",
+      body: { duration: "three_month" },
+    },
+  ]);
+  await expect(page.getByTestId("comp-confirm")).toHaveCount(0);
+
+  await page.screenshot({ path: "e2e/__screenshots__/47-eng1194-subscribers-comp-granted.png", fullPage: true });
+});
+
+test("subscribers — Revoke on a complimentary row: confirm, DELETE, toast (ENG-1194)", async ({ page }) => {
+  test.setTimeout(60000);
+  await signIn(page);
+  await page.goto("/subscribers");
+  await expect(page.locator(".adm-table")).toBeVisible({ timeout: 30000 });
+
+  const methods: string[] = [];
+  await page.route(`**/api/admin/subscribers/${PRIYA_UID}/comp`, async (route) => {
+    methods.push(route.request().method());
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ data: { revoked: true } }) });
+  });
+
+  let dialogText = "";
+  page.once("dialog", async (d) => {
+    dialogText = d.message();
+    await d.accept();
+  });
+  await page.getByTestId("comp-revoke").click();
+  await expect(page.getByTestId("adm-toast").filter({ hasText: "Complimentary access revoked" })).toBeVisible();
+  expect(dialogText).toContain("Revoke complimentary access for Priya Raman?");
+  expect(methods).toEqual(["DELETE"]);
+});
+
+test("subscribers — Comp against the REAL route with no RevenueCat key → 503 copy (ENG-1194)", async ({ page }) => {
+  test.setTimeout(60000);
+  await signIn(page);
+  await page.goto("/subscribers");
+  await expect(page.locator(".adm-table")).toBeVisible({ timeout: 30000 });
+
+  const [res] = await Promise.all([
+    page.waitForResponse((r) => r.url().endsWith(`/api/admin/subscribers/${HARRIET_UID}/comp`)),
+    (async () => {
+      await page.getByRole("button", { name: "Comp access for Harriet Vale" }).click();
+      await page.getByTestId("comp-grant").click();
+    })(),
+  ]);
+  expect(res.status()).toBe(503);
+  expect((await res.json()).error.code).toBe("revenuecat_not_configured");
+  await expect(page.getByTestId("adm-toast").filter({ hasText: "isn't configured on this server" })).toBeVisible();
+  // The confirm stays open so the operator can retry once it is configured.
+  await expect(page.getByTestId("comp-confirm")).toBeVisible();
+
+  await page.screenshot({ path: "e2e/__screenshots__/47-eng1194-subscribers-comp-error.png", fullPage: true });
 });

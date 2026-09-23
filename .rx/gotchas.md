@@ -2032,3 +2032,12 @@ cell padding, `white-space: nowrap` dates, row-action confirm as an absolute ove
 anchor tears it out of the sticky header row (the "COMP" header rendered a row lower). Anchor on the
 `<td>` only. Running `e2e/subscribers.spec.ts` rewrites the committed `13-*` / `46-*` baselines —
 `git checkout --` them after every run.
+
+## /subscribers table is at its width budget — a 9th column clips Comp/Revoke (ENG-1329)
+At the 1280px harness viewport the eight columns (after ENG-1194's Comp) fill `.adm-card` exactly; the card is
+`overflow: hidden`, so a ninth column silently pushed Comp/Revoke off-card (nothing errors, the screenshot just shows
+"Cor"). ENG-1329 put Trial / Paid as the Status cell's second line instead, and `e2e/subscribers.spec.ts` now asserts
+`th.subs-comp` ends inside the card. Do-this: any new per-row subscriber attribute stacks into an existing cell, or
+the ticket must budget width (and don't wrap the table in `overflow-x:auto` — it breaks the sticky `<th>`).
+Also: running `e2e/subscribers.spec.ts` re-captures every `13-*`/`46-*`/`47-eng1194-*` baseline — expected diffs
+when the table changes, noise otherwise (`git checkout` them).

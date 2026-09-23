@@ -109,7 +109,7 @@ test("subscribers — CSV export covers the filtered set, not the visible page",
   const csv = Buffer.concat(chunks).toString("utf8");
 
   const lines = csv.trim().split(/\r\n/);
-  expect(lines[0]).toBe("name,email,status,provider,started_at,tenure_months,current_period_end,canceled_at");
+  expect(lines[0]).toBe("name,email,status,provider,period,started_at,tenure_months,current_period_end,canceled_at");
   // Header + exactly the two cancelled subscribers — the export honours the
   // filter rather than dumping the whole base.
   expect(lines).toHaveLength(3);
@@ -208,12 +208,73 @@ test("subscribers — CSV export carries the provider column and honours the pro
   for await (const chunk of stream!) chunks.push(chunk as Buffer);
   const lines = Buffer.concat(chunks).toString("utf8").trim().split(/\r\n/);
 
-  expect(lines[0]).toBe("name,email,status,provider,started_at,tenure_months,current_period_end,canceled_at");
+  expect(lines[0]).toBe("name,email,status,provider,period,started_at,tenure_months,current_period_end,canceled_at");
   // Header + Rafael (lapsed) and Simone (cancelled), the two Google Play rows.
   expect(lines).toHaveLength(3);
   const byEmail = new Map(lines.slice(1).map((l) => [l.split(",")[1], l.split(",")]));
   expect(byEmail.get("rafael@example.com")?.[3]).toBe("play_store");
   expect(byEmail.get("simone@example.com")?.[3]).toBe("play_store");
+});
+
+test("subscribers — Trial / Paid: status-cell label, chips, and the period filter narrows (ENG-1329)", async ({ page }) => {
+  test.setTimeout(60000);
+  await signIn(page);
+  await page.goto("/subscribers");
+  await expect(page.locator(".adm-table")).toBeVisible({ timeout: 30000 });
+
+  // Simone (canceled, play_store) has a NULL period_type and must read "Unknown".
+  await expect(
+    page.getByTestId("subscriber-row-cancelled").filter({ hasText: "simone@example.com" }).getByTestId("subscriber-period"),
+  ).toHaveText("Unknown");
+
+  // The period rides in the Status cell, not a ninth column, so the Comp
+  // column must still sit fully inside the card at the 1280px viewport — a
+  // ninth column pushed Comp/Revoke past the card's overflow clip.
+  const card = await page.locator(".adm-card").boundingBox();
+  const compHeader = await page.locator(".adm-table th.subs-comp").boundingBox();
+  expect(card && compHeader).toBeTruthy();
+  expect(compHeader!.x + compHeader!.width).toBeLessThanOrEqual(card!.x + card!.width);
+  await page.screenshot({ path: "e2e/__screenshots__/48-subscribers-period-all.png", fullPage: true });
+
+  await page.getByTestId("period-filter-trial").click();
+  await page.waitForURL("**/subscribers?period=trial", { timeout: 30000 });
+
+  // Tom and Priya are the two Pricing v2 trialists (status active, period trial).
+  await expect(page.locator(".adm-table tbody tr")).toHaveCount(2);
+  await expect(page.getByTestId("subscriber-period")).toHaveText(["Trial", "Trial"]);
+  await expect(page.locator(".adm-table tbody")).toContainText("tom@example.com");
+  await expect(page.locator(".adm-table tbody")).toContainText("priya@example.com");
+  await expect(page.getByTestId("period-filter-trial")).toHaveClass(/active/);
+  // The headline stays the unfiltered total.
+  await expect(page.getByTestId("subscribers-total")).toContainText("8");
+
+  await page.screenshot({
+    path: "e2e/__screenshots__/48-subscribers-period.png",
+    fullPage: true,
+  });
+});
+
+test("subscribers — CSV export carries the period column and honours the period filter", async ({ page }) => {
+  test.setTimeout(60000);
+  await signIn(page);
+  await page.goto("/subscribers?period=trial");
+
+  const [download] = await Promise.all([
+    page.waitForEvent("download", { timeout: 30000 }),
+    page.getByTestId("subscribers-export").click(),
+  ]);
+
+  const stream = await download.createReadStream();
+  const chunks: Buffer[] = [];
+  for await (const chunk of stream!) chunks.push(chunk as Buffer);
+  const lines = Buffer.concat(chunks).toString("utf8").trim().split(/\r\n/);
+
+  expect(lines[0]).toBe("name,email,status,provider,period,started_at,tenure_months,current_period_end,canceled_at");
+  // Header + Tom and Priya, the two Trial rows.
+  expect(lines).toHaveLength(3);
+  const byEmail = new Map(lines.slice(1).map((l) => [l.split(",")[1], l.split(",")]));
+  expect(byEmail.get("tom@example.com")?.[4]).toBe("Trial");
+  expect(byEmail.get("priya@example.com")?.[4]).toBe("Trial");
 });
 
 test("subscribers — empty state", async ({ page }) => {

@@ -27,6 +27,7 @@ type SubRow = {
   id: string;
   status: string;
   provider?: string | null;
+  period_type?: string | null;
   created_at: string;
   updated_at: string | null;
   current_period_end: string | null;
@@ -105,7 +106,7 @@ describe("GET /api/admin/subscribers/export", () => {
     expect(r.headers.get("content-type")).toMatch(/^text\/csv/);
     expect(r.headers.get("content-disposition")).toContain("attachment; filename=\"subscribers-");
     const body = await r.text();
-    expect(body.startsWith("name,email,status,provider,started_at,tenure_months,current_period_end,canceled_at")).toBe(true);
+    expect(body.startsWith("name,email,status,provider,period,started_at,tenure_months,current_period_end,canceled_at")).toBe(true);
     expect(body).toContain("ann@example.com");
   });
 
@@ -140,10 +141,10 @@ describe("GET /api/admin/subscribers/export", () => {
     const r = await GET(req("?provider=app_store"));
     expect(r.status).toBe(200);
     const lines = (await r.text()).trim().split("\r\n");
-    expect(lines[0]).toBe("name,email,status,provider,started_at,tenure_months,current_period_end,canceled_at");
+    expect(lines[0]).toBe("name,email,status,provider,period,started_at,tenure_months,current_period_end,canceled_at");
     expect(lines).toHaveLength(2);
     // Tenure is wall-clock relative here (the route takes no `now`), so match it loosely.
-    expect(lines[1]).toMatch(/^Ann,ann@example\.com,active,app_store,2026-01-01T00:00:00Z,\d+,,$/);
+    expect(lines[1]).toMatch(/^Ann,ann@example\.com,active,app_store,Unknown,2026-01-01T00:00:00Z,\d+,,$/);
   });
 
   it("maps a NULL provider to stripe, and ?provider=stripe includes it", async () => {
@@ -156,5 +157,78 @@ describe("GET /api/admin/subscribers/export", () => {
     const body = await r.text();
     expect(body).toContain("Cara,cara@example.com,active,stripe,");
     expect(body).not.toContain("ann@example.com");
+  });
+
+  // ---------------------------------------------------------------------------
+  // Trial / Paid (ENG-1329)
+  // ---------------------------------------------------------------------------
+  describe("period (ENG-1329)", () => {
+    it("403s for a non-admin calling ?period=trial (guardrail)", async () => {
+      asNonAdmin();
+      const r = await GET(req("?period=trial"));
+      expect(r.status).toBe(403);
+    });
+
+    it("403s with mfa_required for an AAL1 admin calling ?period=trial (guardrail)", async () => {
+      asAdmin();
+      state.aal = "aal1";
+      const r = await GET(req("?period=trial"));
+      expect(r.status).toBe(403);
+      const j = await r.json();
+      expect(j.error.code).toBe("mfa_required");
+    });
+
+    it("?period=trial returns exactly the period-trial rows, never a status-trial NULL-period row", async () => {
+      useRows([
+        // Pricing v2 trialist: status active, period_type trial.
+        subRow({
+          id: "1",
+          status: "active",
+          period_type: "trial",
+          user: { name: "Dana", email: "dana@example.com" },
+        }),
+        // Legacy trial: status trial, period_type NULL — must NOT appear.
+        subRow({
+          id: "2",
+          status: "trial",
+          period_type: null,
+          user: { name: "Eli", email: "eli@example.com" },
+        }),
+        // Paying member.
+        subRow({
+          id: "3",
+          status: "active",
+          period_type: "normal",
+          user: { name: "Fay", email: "fay@example.com" },
+        }),
+      ]);
+      const r = await GET(req("?period=trial"));
+      expect(r.status).toBe(200);
+      const lines = (await r.text()).trim().split("\r\n");
+      const emails = lines.slice(1).map((l) => l.split(",")[1]);
+      expect(emails).toEqual(["dana@example.com"]);
+    });
+
+    it("the header and the period column read the table's Trial/Paid/Unknown labels for an unfiltered export", async () => {
+      useRows([
+        subRow({ id: "1", period_type: "trial", user: { name: "Dana", email: "dana@example.com" } }),
+        subRow({ id: "2", period_type: "normal", user: { name: "Fay", email: "fay@example.com" } }),
+        subRow({ id: "3", period_type: null, user: { name: "Eli", email: "eli@example.com" } }),
+      ]);
+      const r = await GET(req());
+      const lines = (await r.text()).trim().split("\r\n");
+      expect(lines[0]).toBe(
+        "name,email,status,provider,period,started_at,tenure_months,current_period_end,canceled_at",
+      );
+      const byEmail = Object.fromEntries(
+        lines.slice(1).map((l) => {
+          const cols = l.split(",");
+          return [cols[1], cols[4]];
+        }),
+      );
+      expect(byEmail["dana@example.com"]).toBe("Trial");
+      expect(byEmail["fay@example.com"]).toBe("Paid");
+      expect(byEmail["eli@example.com"]).toBe("Unknown");
+    });
   });
 });

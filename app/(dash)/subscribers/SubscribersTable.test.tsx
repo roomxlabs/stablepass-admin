@@ -7,14 +7,16 @@ import SubscribersTable, {
   canRevokeComp,
   buildExportHref,
   buildSubscribersHref,
+  periodById,
   providerById,
   providerLabel,
+  PERIODS,
   PROVIDERS,
   statusPill,
   TENURE_BANDS,
 } from "./SubscribersTable";
 import { formatSubscribedDate } from "./SubscribedDate";
-import type { SubscriberRow } from "./data";
+import { periodLabel, type SubscriberRow } from "./data";
 
 // next/link renders an <a> here; the real one wants an App Router context that
 // a bare RTL render has no reason to stand up.
@@ -43,6 +45,7 @@ function row(n: number, over: Partial<SubscriberRow> = {}): SubscriberRow {
     email: `member${n}@example.com`,
     status: "active",
     provider: "stripe",
+    period: "normal",
     startedAt: "2026-03-01T00:00:00.000Z",
     currentPeriodEnd: "2026-10-01T00:00:00.000Z",
     canceledAt: null,
@@ -412,6 +415,138 @@ describe("<SubscribersTable>", () => {
       expect(providerById("app_store")?.label).toBe("App Store");
       for (const p of PROVIDERS.filter((p) => p.id)) {
         expect(providerById(p.id)).toBe(p);
+      }
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Trial / Paid (ENG-1329)
+  // ---------------------------------------------------------------------------
+  describe("trial / paid", () => {
+    it("renders Trial / Paid under each status pill, with the mapped label per row", () => {
+      render(
+        <SubscribersTable
+          rows={[
+            row(1, { period: "trial" }),
+            row(2, { period: "normal" }),
+            row(3, { period: "unknown" }),
+          ]}
+          total={3}
+          matching={3}
+          offset={0}
+          limit={25}
+        />,
+      );
+      // Not a ninth column: the label is the Status cell's second line, so the
+      // header row is unchanged and each period sits in the same <td> as its
+      // status pill.
+      const headers = screen.getAllByRole("columnheader").map((h) => h.textContent?.trim());
+      expect(headers).not.toContain("Trial / Paid");
+      const statusIdx = headers.indexOf("Status");
+      for (const cell of screen.getAllByTestId("subscriber-period")) {
+        const td = cell.closest("td")!;
+        expect(Array.from(td.parentElement!.children).indexOf(td)).toBe(statusIdx);
+        expect(td.querySelector(".pill")).not.toBeNull();
+      }
+      expect(screen.getAllByTestId("subscriber-period").map((c) => c.textContent)).toEqual([
+        "Trial",
+        "Paid",
+        "Unknown",
+      ]);
+    });
+
+    it("marks only the unknown period as absent data", () => {
+      render(
+        <SubscribersTable
+          rows={[
+            row(1, { period: "trial" }),
+            row(2, { period: "normal" }),
+            row(3, { period: "unknown" }),
+          ]}
+          total={3}
+          matching={3}
+          offset={0}
+          limit={25}
+        />,
+      );
+      const cells = screen.getAllByTestId("subscriber-period");
+      expect(cells.map((c) => c.classList.contains("is-unknown"))).toEqual([false, false, true]);
+    });
+
+    it("renders the chips, in order, with Any active when unfiltered", () => {
+      render(<SubscribersTable rows={[row(1)]} total={1} matching={1} offset={0} limit={25} />);
+      const chipRow = screen.getByText("Trial or paid", { selector: ".filter-label" }).parentElement!;
+      expect(
+        Array.from(chipRow.querySelectorAll(".chip")).map((c) => c.textContent),
+      ).toEqual(["Any", "Trial", "Paid", "Unknown"]);
+      expect(screen.getByTestId("period-filter-any").className).toContain("active");
+      expect(screen.getByTestId("period-filter-trial").className).not.toContain("active");
+    });
+
+    it("marks the active period chip and treats an unknown value as no filter", () => {
+      const { unmount } = render(
+        <SubscribersTable rows={[row(1)]} total={1} matching={1} period="trial" offset={0} limit={25} />,
+      );
+      expect(screen.getByTestId("period-filter-trial").className).toContain("active");
+      expect(screen.getByTestId("period-filter-any").className).not.toContain("active");
+      unmount();
+
+      render(
+        <SubscribersTable rows={[]} total={3} matching={0} period="xyz" offset={0} limit={25} />,
+      );
+      expect(screen.getByTestId("period-filter-any").className).toContain("active");
+      expect(screen.getByText(/No subscribers yet/)).toBeTruthy();
+      expect(screen.getByTestId("subscribers-export").getAttribute("href")).toBe(
+        "/api/admin/subscribers/export",
+      );
+    });
+
+    it("period chips keep status, provider, band and q; other chips, pager and export keep period", () => {
+      render(
+        <SubscribersTable
+          rows={[row(1)]}
+          total={60}
+          matching={60}
+          status="canceled"
+          provider="app_store"
+          period="trial"
+          band="3-5"
+          q="mel"
+          offset={25}
+          limit={25}
+        />,
+      );
+      expect(screen.getByTestId("period-filter-normal").getAttribute("href")).toBe(
+        "/subscribers?status=canceled&provider=app_store&period=normal&band=3-5&q=mel",
+      );
+      // "Any" clears only the period.
+      expect(screen.getByTestId("period-filter-any").getAttribute("href")).toBe(
+        "/subscribers?status=canceled&provider=app_store&band=3-5&q=mel",
+      );
+      expect(screen.getByTestId("status-filter-active").getAttribute("href")).toContain("period=trial");
+      expect(screen.getByTestId("provider-filter-play_store").getAttribute("href")).toContain("period=trial");
+      expect(screen.getByTestId("tenure-filter-12").getAttribute("href")).toContain("period=trial");
+      expect(screen.getByText("‹ Prev").getAttribute("href")).toContain("period=trial");
+      expect(screen.getByText("Next ›").getAttribute("href")).toContain("period=trial");
+      expect(screen.getByTestId("subscribers-export").getAttribute("href")).toBe(
+        "/api/admin/subscribers/export?status=canceled&provider=app_store&period=trial&minMonths=3&maxMonths=5&q=mel",
+      );
+    });
+
+    it("builds hrefs with period, dropping 'all'", () => {
+      expect(buildSubscribersHref({ period: "trial" })).toBe("/subscribers?period=trial");
+      expect(buildSubscribersHref({ period: "all" })).toBe("/subscribers");
+      expect(buildExportHref({ period: "normal" })).toBe(
+        "/api/admin/subscribers/export?period=normal",
+      );
+    });
+
+    it("resolves every chip by its own id and ignores an unknown one", () => {
+      expect(periodById("xyz")).toBeUndefined();
+      expect(periodById(undefined)).toBeUndefined();
+      expect(periodById("trial")?.label).toBe(periodLabel("trial"));
+      for (const p of PERIODS.filter((p) => p.id)) {
+        expect(periodById(p.id)).toBe(p);
       }
     });
   });

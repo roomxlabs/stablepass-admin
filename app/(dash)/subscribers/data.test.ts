@@ -9,6 +9,8 @@ import {
   SUBSCRIBERS_PAGE_SIZE,
   SUBSCRIPTION_SELECT,
   SUBSCRIBER_PROVIDERS,
+  SUBSCRIBER_PERIODS,
+  periodLabel,
   type SubscriberRow,
 } from "./data";
 
@@ -82,6 +84,7 @@ type SubscriptionDbLike = {
   user_id?: string;
   status: string;
   provider?: string | null;
+  period_type?: string | null;
   created_at: string;
   updated_at: string | null;
   current_period_end: string | null;
@@ -230,6 +233,7 @@ const ROWS: SubscriberRow[] = [
     email: "ann@example.com",
     status: "active",
     provider: "stripe",
+    period: "normal",
     startedAt: "2026-01-05T00:00:00Z",
     currentPeriodEnd: "2026-10-05T00:00:00Z",
     canceledAt: null,
@@ -242,6 +246,7 @@ const ROWS: SubscriberRow[] = [
     email: "bob@example.com",
     status: "trial",
     provider: "app_store",
+    period: "unknown",
     startedAt: "2026-09-01T00:00:00Z",
     currentPeriodEnd: null,
     canceledAt: null,
@@ -254,6 +259,7 @@ const ROWS: SubscriberRow[] = [
     email: "cara@example.com",
     status: "canceled",
     provider: "play_store",
+    period: "trial",
     startedAt: "2024-01-01T00:00:00Z",
     currentPeriodEnd: null,
     canceledAt: "2026-06-01T00:00:00Z",
@@ -331,15 +337,15 @@ describe("toCsv", () => {
   it("writes the exact header row", () => {
     const csv = toCsv([]);
     expect(csv.split("\r\n")[0]).toBe(
-      "name,email,status,provider,started_at,tenure_months,current_period_end,canceled_at",
+      "name,email,status,provider,period,started_at,tenure_months,current_period_end,canceled_at",
     );
   });
 
   it("writes one CRLF-terminated line per row with a trailing newline", () => {
     const csv = toCsv([ROWS[0]]);
     expect(csv).toBe(
-      "name,email,status,provider,started_at,tenure_months,current_period_end,canceled_at\r\n" +
-        "Ann,ann@example.com,active,stripe,2026-01-05T00:00:00Z,8,2026-10-05T00:00:00Z,\r\n",
+      "name,email,status,provider,period,started_at,tenure_months,current_period_end,canceled_at\r\n" +
+        "Ann,ann@example.com,active,stripe,Paid,2026-01-05T00:00:00Z,8,2026-10-05T00:00:00Z,\r\n",
     );
   });
 
@@ -435,6 +441,7 @@ describe("toCsv — formula injection, beyond the obvious `=`", () => {
       email: "m@example.com",
       status: "active",
       provider: "stripe",
+      period: "normal",
       startedAt: null,
       currentPeriodEnd: null,
       canceledAt: null,
@@ -460,11 +467,11 @@ describe("toCsv — formula injection, beyond the obvious `=`", () => {
   });
 
   it("leaves an ordinary name untouched", () => {
-    expect(dataLine("Harriet Vale")).toBe("Harriet Vale,m@example.com,active,stripe,,0,,");
+    expect(dataLine("Harriet Vale")).toBe("Harriet Vale,m@example.com,active,stripe,Paid,,0,,");
   });
 
   it("still quotes AND prefixes a payload containing a comma", () => {
-    expect(dataLine("=1+1,x")).toBe('"\'=1+1,x",m@example.com,active,stripe,,0,,');
+    expect(dataLine("=1+1,x")).toBe('"\'=1+1,x",m@example.com,active,stripe,Paid,,0,,');
   });
 });
 
@@ -479,7 +486,7 @@ describe("provider — select, mapping, filter, CSV", () => {
   // "Web" with a green suite otherwise.
   it("pins the subscription projection, provider included", () => {
     expect(SUBSCRIPTION_SELECT).toBe(
-      "id,user_id,status,provider,created_at,updated_at,current_period_end,user:user_id(name,email,is_admin)",
+      "id,user_id,status,provider,period_type,created_at,updated_at,current_period_end,user:user_id(name,email,is_admin)",
     );
   });
 
@@ -487,7 +494,7 @@ describe("provider — select, mapping, filter, CSV", () => {
     const { client, selects } = makeRangeClient([row({ id: "1" })]);
     await fetchAllSubscribers(client, NOW);
     expect(selects[0]).toBe(
-      "id,user_id,status,provider,created_at,updated_at,current_period_end,user:user_id(name,email,is_admin)",
+      "id,user_id,status,provider,period_type,created_at,updated_at,current_period_end,user:user_id(name,email,is_admin)",
     );
   });
 
@@ -550,14 +557,133 @@ describe("provider — select, mapping, filter, CSV", () => {
 
   it("writes the provider value after status in each CSV line", () => {
     const lines = toCsv([ROWS[1], ROWS[2]]).split("\r\n");
-    expect(lines[1]).toBe("Bob,bob@example.com,trial,app_store,2026-09-01T00:00:00Z,0,,");
+    expect(lines[1]).toBe("Bob,bob@example.com,trial,app_store,Unknown,2026-09-01T00:00:00Z,0,,");
     expect(lines[2]).toBe(
-      "Cara,cara@example.com,canceled,play_store,2024-01-01T00:00:00Z,32,,2026-06-01T00:00:00Z",
+      "Cara,cara@example.com,canceled,play_store,Trial,2024-01-01T00:00:00Z,32,,2026-06-01T00:00:00Z",
     );
   });
 
   it("runs the provider field through the formula-injection escaper too", () => {
     const line = toCsv([{ ...ROWS[0], provider: "=evil" as SubscriberRow["provider"] }]).split("\r\n")[1];
     expect(line.split(",")[3]).toBe("'=evil");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Trial / Paid (ENG-1329): `subscription.period_type`, added by stablepass-be
+// ENG-1323. List + CSV + filter all read it. NULL is "unknown", never "Paid".
+// ---------------------------------------------------------------------------
+
+describe("period — select, mapping, filter, CSV", () => {
+  it("maps period_type through: trial/normal verbatim, NULL to unknown, an unrecognised value verbatim", async () => {
+    const { client } = makeRangeClient([
+      row({ id: "1", period_type: "trial", user: { name: "A", email: "a@example.com", is_admin: false } }),
+      row({ id: "2", period_type: "normal", user: { name: "B", email: "b@example.com", is_admin: false } }),
+      row({ id: "3", period_type: null, user: { name: "C", email: "c@example.com", is_admin: false } }),
+      row({ id: "4", period_type: "intro_offer", user: { name: "D", email: "d@example.com", is_admin: false } }),
+    ]);
+    const rows = await fetchAllSubscribers(client, NOW);
+    expect(rows.map((r) => [r.id, r.period])).toEqual([
+      ["1", "trial"],
+      ["2", "normal"],
+      ["3", "unknown"],
+      ["4", "intro_offer"],
+    ]);
+  });
+
+  it("exports exactly the three periods", () => {
+    expect(SUBSCRIBER_PERIODS).toEqual(["trial", "normal", "unknown"]);
+  });
+
+  // A Pricing v2 trialist (status active, period trial), a legacy trial (status
+  // trial, period unknown from a NULL period_type), a paying member (status
+  // active, period normal), and a cancelled trialist (status canceled, period
+  // trial) — the exact combinations the filter must never confuse via status.
+  const PERIOD_ROWS: SubscriberRow[] = [
+    {
+      id: "p1",
+      userId: "up1",
+      name: "Dana",
+      email: "dana@example.com",
+      status: "active",
+      provider: "app_store",
+      period: "trial",
+      startedAt: "2026-09-10T00:00:00Z",
+      currentPeriodEnd: "2026-10-10T00:00:00Z",
+      canceledAt: null,
+      tenureMonths: 0,
+    },
+    {
+      id: "p2",
+      userId: "up2",
+      name: "Eli",
+      email: "eli@example.com",
+      status: "trial",
+      provider: "stripe",
+      period: "unknown",
+      startedAt: "2026-01-01T00:00:00Z",
+      currentPeriodEnd: null,
+      canceledAt: null,
+      tenureMonths: 8,
+    },
+    {
+      id: "p3",
+      userId: "up3",
+      name: "Fay",
+      email: "fay@example.com",
+      status: "active",
+      provider: "stripe",
+      period: "normal",
+      startedAt: "2025-01-01T00:00:00Z",
+      currentPeriodEnd: "2026-10-01T00:00:00Z",
+      canceledAt: null,
+      tenureMonths: 20,
+    },
+    {
+      id: "p4",
+      userId: "up4",
+      name: "Gus",
+      email: "gus@example.com",
+      status: "canceled",
+      provider: "app_store",
+      period: "trial",
+      startedAt: "2026-08-01T00:00:00Z",
+      currentPeriodEnd: null,
+      canceledAt: "2026-09-02T00:00:00Z",
+      tenureMonths: 1,
+    },
+  ];
+
+  it("filters by exact period, never by status", () => {
+    expect(applyFilters(PERIOD_ROWS, { period: "trial" })).toEqual([PERIOD_ROWS[0], PERIOD_ROWS[3]]);
+    expect(applyFilters(PERIOD_ROWS, { period: "normal" })).toEqual([PERIOD_ROWS[2]]);
+    expect(applyFilters(PERIOD_ROWS, { period: "unknown" })).toEqual([PERIOD_ROWS[1]]);
+  });
+
+  it("does not narrow when period is undefined or 'all'", () => {
+    expect(applyFilters(PERIOD_ROWS, { period: undefined })).toEqual(PERIOD_ROWS);
+    expect(applyFilters(PERIOD_ROWS, { period: "all" })).toEqual(PERIOD_ROWS);
+  });
+
+  it("combines period with status", () => {
+    expect(applyFilters(PERIOD_ROWS, { period: "trial", status: "active" })).toEqual([PERIOD_ROWS[0]]);
+    expect(applyFilters(PERIOD_ROWS, { period: "trial", status: "canceled" })).toEqual([PERIOD_ROWS[3]]);
+  });
+
+  it("toCsv writes the Trial/Paid/Unknown label, not the raw period", () => {
+    const lines = toCsv(PERIOD_ROWS).split("\r\n");
+    expect(lines[0]).toBe(
+      "name,email,status,provider,period,started_at,tenure_months,current_period_end,canceled_at",
+    );
+    expect(lines[1].split(",")[4]).toBe(periodLabel("trial"));
+    expect(lines[2].split(",")[4]).toBe(periodLabel("unknown"));
+    expect(lines[3].split(",")[4]).toBe(periodLabel("normal"));
+    expect(lines[4].split(",")[4]).toBe(periodLabel("trial"));
+    expect([lines[1], lines[2], lines[3], lines[4]].map((l) => l.split(",")[4])).toEqual([
+      "Trial",
+      "Unknown",
+      "Paid",
+      "Trial",
+    ]);
   });
 });

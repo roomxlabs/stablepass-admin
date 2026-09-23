@@ -299,6 +299,33 @@
   white-space: nowrap;
 }
 
+/* Trial / Paid (ENG-1329) ------------------------------------------- */
+/* The status cell's second line (see the comment in SubscribersTable.tsx for
+   why it is not its own column). Sized like `.row-sub` under the member's
+   name, so the two stacked cells in a row share one rhythm. Trial / Paid in
+   ink (it is the fact an operator is scanning for), Unknown in the shared
+   --muted grey + italic so a NULL period_type reads as missing data rather
+   than as a third kind of member. --muted, not --muted-light: the lighter grey
+   is under 3:1 on white. */
+.subs-status {
+  white-space: nowrap;
+}
+
+.subs-period {
+  margin-top: 4px;
+  /* Lines the text up with the pill's own text: .pill's 9px side padding. */
+  padding-left: 9px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--ink);
+}
+
+.subs-period.is-unknown {
+  font-weight: 400;
+  color: var(--muted);
+  font-style: italic;
+}
+
 /* Comp access (ENG-1194) ---------------------------------------------- */
 /* No mockup. Chip weight so an action column does not out-shout the filter
    chips above it: the same 12.5px / line border / pill radius as

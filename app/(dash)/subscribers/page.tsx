@@ -1,7 +1,7 @@
 import { requireAdminPage } from "@/lib/auth/admin";
 import SearchField from "../SearchField";
 import { listSubscribers, SUBSCRIBERS_PAGE_SIZE } from "./data";
-import SubscribersTable, { bandById, providerById } from "./SubscribersTable";
+import SubscribersTable, { bandById, periodById, providerById } from "./SubscribersTable";
 import "./subscribers.css";
 
 // Subscribers — who is subscribed, for how long, and who has cancelled.
@@ -30,7 +30,14 @@ import "./subscribers.css";
 // is cache()-wrapped, so the re-assertion costs nothing on this request.
 export const dynamic = "force-dynamic";
 
-type Search = { status?: string; provider?: string; band?: string; q?: string; offset?: string };
+type Search = {
+  status?: string;
+  provider?: string;
+  period?: string;
+  band?: string;
+  q?: string;
+  offset?: string;
+};
 
 export default async function SubscribersPage({
   searchParams,
@@ -47,6 +54,8 @@ export default async function SubscribersPage({
   // Same treatment for ?provider=: resolved through the chip table, so an
   // unknown value is dropped instead of filtering the list to nothing.
   const provider = providerById(sp.provider?.trim())?.id;
+  // ?period= (ENG-1329), resolved the same way for the same reason.
+  const period = periodById(sp.period?.trim())?.id;
   const q = sp.q?.trim() || undefined;
   const offset = Math.max(0, parseInt(sp.offset ?? "0", 10) || 0);
 
@@ -54,6 +63,7 @@ export default async function SubscribersPage({
   const { rows, total, matching } = await listSubscribers(sb, {
     status,
     provider,
+    period,
     minMonths: band?.minMonths,
     maxMonths: band?.maxMonths,
     q,
@@ -75,6 +85,7 @@ export default async function SubscribersPage({
             hidden={{
               ...(status ? { status } : {}),
               ...(provider ? { provider } : {}),
+              ...(period ? { period } : {}),
               ...(bandId ? { band: bandId } : {}),
             }}
           />
@@ -88,6 +99,7 @@ export default async function SubscribersPage({
           matching={matching}
           status={status}
           provider={provider}
+          period={period}
           band={bandId}
           q={q}
           offset={offset}

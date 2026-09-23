@@ -1,7 +1,14 @@
 import Link from "next/link";
 import SubscribedDate from "./SubscribedDate";
 import CompAccess from "./CompAccess";
-import { SUBSCRIBER_STATUSES, type SubscriberProvider, type SubscriberRow } from "./data";
+import {
+  SUBSCRIBER_PERIODS,
+  SUBSCRIBER_STATUSES,
+  periodLabel,
+  type SubscriberPeriod,
+  type SubscriberProvider,
+  type SubscriberRow,
+} from "./data";
 
 // Presentational shell for the Subscribers screen: the status filter bar, the
 // tenure band row, the billed-via row, the table itself, and the paging footer.
@@ -78,6 +85,29 @@ export function providerLabel(provider: string): string {
   return providerById(provider)?.label ?? provider;
 }
 
+export type PeriodOption = {
+  /** Query value, e.g. "trial". `undefined` id means "Any". */
+  id?: SubscriberPeriod;
+  label: string;
+};
+
+// Trial vs Paid (ENG-1329). Same shape as PROVIDERS one row over: the chips,
+// the table cell and the ?period= parsing in page.tsx all read this one list,
+// and the labels come from data.ts's periodLabel so the CSV export uses the
+// very same words. "Unknown" is a real chip, not an omission — every pre-Pricing
+// v2 row has a NULL period_type, and an operator counting trials needs to see
+// how much of the base the data cannot classify.
+export const PERIODS: PeriodOption[] = [
+  { label: "Any" },
+  ...SUBSCRIBER_PERIODS.map((id) => ({ id, label: periodLabel(id) })),
+];
+
+/** Resolve a ?period= value; unknown ids are ignored, same as `providerById`. */
+export function periodById(id?: string): PeriodOption | undefined {
+  if (!id) return undefined;
+  return PERIODS.find((p) => p.id === id);
+}
+
 /**
  * Whether a row offers Revoke (ENG-1194): only complimentary access that is still
  * live. Decided here, on the server render, and handed to the client island as a
@@ -120,19 +150,28 @@ export type SubscribersTableProps = {
   matching: number;
   status?: string;
   provider?: string;
+  period?: string;
   band?: string;
   q?: string;
   offset: number;
   limit: number;
 };
 
-type HrefParams = { status?: string; provider?: string; band?: string; q?: string; offset?: number };
+type HrefParams = {
+  status?: string;
+  provider?: string;
+  period?: string;
+  band?: string;
+  q?: string;
+  offset?: number;
+};
 
 /** Href for another slice/page of the same list. */
-export function buildSubscribersHref({ status, provider, band, q, offset = 0 }: HrefParams): string {
+export function buildSubscribersHref({ status, provider, period, band, q, offset = 0 }: HrefParams): string {
   const params = new URLSearchParams();
   if (status && status !== "all") params.set("status", status);
   if (provider && provider !== "all") params.set("provider", provider);
+  if (period && period !== "all") params.set("period", period);
   if (band) params.set("band", band);
   if (q) params.set("q", q);
   if (offset > 0) params.set("offset", String(offset));
@@ -145,10 +184,11 @@ export function buildSubscribersHref({ status, provider, band, q, offset = 0 }: 
  * window — the export covers the whole filtered set, every page, which is the
  * acceptance criterion.
  */
-export function buildExportHref({ status, provider, band, q }: Omit<HrefParams, "offset">): string {
+export function buildExportHref({ status, provider, period, band, q }: Omit<HrefParams, "offset">): string {
   const params = new URLSearchParams();
   if (status && status !== "all") params.set("status", status);
   if (provider && provider !== "all") params.set("provider", provider);
+  if (period && period !== "all") params.set("period", period);
   const b = bandById(band);
   if (b?.minMonths !== undefined) params.set("minMonths", String(b.minMonths));
   if (b?.maxMonths !== undefined) params.set("maxMonths", String(b.maxMonths));
@@ -163,6 +203,7 @@ export default function SubscribersTable({
   matching,
   status,
   provider,
+  period,
   band,
   q,
   offset,
@@ -170,7 +211,8 @@ export default function SubscribersTable({
 }: SubscribersTableProps) {
   const activeStatus = status && status !== "all" ? status : undefined;
   const activeProvider = providerById(provider)?.id;
-  const filtered = Boolean(activeStatus || activeProvider || band || q);
+  const activePeriod = periodById(period)?.id;
+  const filtered = Boolean(activeStatus || activeProvider || activePeriod || band || q);
   const prevOffset = Math.max(0, offset - limit);
   // Compare against the PAGE WINDOW, not the rows rendered — `rows.length` is
   // post-filtering, so on a last page that dropped a row `offset + rows.length
@@ -204,7 +246,7 @@ export default function SubscribersTable({
         </span>
         <Link
           className={`chip${!activeStatus ? " active" : ""}`}
-          href={buildSubscribersHref({ provider: activeProvider, band, q })}
+          href={buildSubscribersHref({ provider: activeProvider, period: activePeriod, band, q })}
         >
           All
         </Link>
@@ -212,7 +254,7 @@ export default function SubscribersTable({
           <Link
             key={s}
             className={`chip${activeStatus === s ? " active" : ""}`}
-            href={buildSubscribersHref({ status: s, provider: activeProvider, band, q })}
+            href={buildSubscribersHref({ status: s, provider: activeProvider, period: activePeriod, band, q })}
             data-testid={`status-filter-${s}`}
           >
             {statusPill(s).label}
@@ -221,7 +263,7 @@ export default function SubscribersTable({
         <div className="spacer" />
         <a
           className="btn btn-primary"
-          href={buildExportHref({ status, provider: activeProvider, band, q })}
+          href={buildExportHref({ status, provider: activeProvider, period: activePeriod, band, q })}
           download
           data-testid="subscribers-export"
         >
@@ -235,7 +277,7 @@ export default function SubscribersTable({
           <Link
             key={b.id ?? "any"}
             className={`chip${(band ?? undefined) === b.id ? " active" : ""}`}
-            href={buildSubscribersHref({ status, provider: activeProvider, band: b.id, q })}
+            href={buildSubscribersHref({ status, provider: activeProvider, period: activePeriod, band: b.id, q })}
             data-testid={`tenure-filter-${b.id ?? "any"}`}
           >
             {b.label}
@@ -251,8 +293,25 @@ export default function SubscribersTable({
           <Link
             key={p.id ?? "any"}
             className={`chip${activeProvider === p.id ? " active" : ""}`}
-            href={buildSubscribersHref({ status, provider: p.id, band, q })}
+            href={buildSubscribersHref({ status, provider: p.id, period: activePeriod, band, q })}
             data-testid={`provider-filter-${p.id ?? "any"}`}
+          >
+            {p.label}
+          </Link>
+        ))}
+      </div>
+
+      {/* Trial vs Paid (ENG-1329) — a fourth independent question, same row
+          treatment as Billed via directly above it. Filters on period_type,
+          never on status: a Pricing v2 trialist is status Active. */}
+      <div className="subs-filter-row">
+        <span className="filter-label">Trial or paid</span>
+        {PERIODS.map((p) => (
+          <Link
+            key={p.id ?? "any"}
+            className={`chip${activePeriod === p.id ? " active" : ""}`}
+            href={buildSubscribersHref({ status, provider: activeProvider, period: p.id, band, q })}
+            data-testid={`period-filter-${p.id ?? "any"}`}
           >
             {p.label}
           </Link>
@@ -272,7 +331,12 @@ export default function SubscribersTable({
           <thead>
             <tr>
               <th scope="col">Subscriber</th>
-              <th scope="col">Status</th>
+              <th
+                scope="col"
+                title="Second line: trial or paid, from the billing period type. Unknown means the record predates trial tracking, so it cannot say."
+              >
+                Status
+              </th>
               <th scope="col">Billed via</th>
               <th scope="col">Subscribed</th>
               <th scope="col">Tenure</th>
@@ -313,8 +377,25 @@ export default function SubscribersTable({
                       <a href={`mailto:${row.email}`}>{row.email}</a>
                     </div>
                   </td>
-                  <td>
+                  {/* Trial / Paid (ENG-1329) is the status cell's second line,
+                      not a ninth column: at the 1280px harness viewport the
+                      eight existing columns already fill the card exactly, and
+                      a ninth pushed Comp/Revoke past the card's clip. It also
+                      reads as what it is — a qualifier of the status ("Active,
+                      Trial"), since a Pricing v2 trialist is status Active.
+                      Plain muted-scale text, not a second pill: the pill is
+                      status's, and red stays reserved for Cancelled. Unknown
+                      (NULL period_type) is additionally `.is-unknown` so it
+                      reads as absent data, never as a quiet "Paid". */}
+                  <td className="subs-status">
                     <span className={pill.className}>{pill.label}</span>
+                    <div
+                      className={`subs-period${row.period === "unknown" ? " is-unknown" : ""}`}
+                      data-testid="subscriber-period"
+                      data-period={row.period}
+                    >
+                      {periodLabel(row.period)}
+                    </div>
                   </td>
                   <td className="subs-provider" data-testid="subscriber-provider">
                     {providerLabel(row.provider)}
@@ -377,14 +458,14 @@ export default function SubscribersTable({
           </div>
           <div className="pager">
             {offset > 0 ? (
-              <Link href={buildSubscribersHref({ status, provider: activeProvider, band, q, offset: prevOffset })}>
+              <Link href={buildSubscribersHref({ status, provider: activeProvider, period: activePeriod, band, q, offset: prevOffset })}>
                 ‹ Prev
               </Link>
             ) : (
               <span className="disabled">‹ Prev</span>
             )}
             {hasMore ? (
-              <Link href={buildSubscribersHref({ status, provider: activeProvider, band, q, offset: offset + limit })}>
+              <Link href={buildSubscribersHref({ status, provider: activeProvider, period: activePeriod, band, q, offset: offset + limit })}>
                 Next ›
               </Link>
             ) : (

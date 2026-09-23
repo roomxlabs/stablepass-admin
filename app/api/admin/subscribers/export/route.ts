@@ -1,15 +1,15 @@
 import { requireAdmin } from "@/lib/auth/admin";
 import { fetchAllSubscribers, applyFilters, toCsv } from "@/app/(dash)/subscribers/data";
 
-// GET /api/admin/subscribers/export?status=&provider=&minMonths=&maxMonths=&q= — CSV of
+// GET /api/admin/subscribers/export?status=&provider=&period=&minMonths=&maxMonths=&q= — CSV of
 // the (optionally filtered) subscriber list.
 //
 // READ PATH: uses `requireAdmin()`'s `sb` (the caller's own RLS client), same
 // as GET /api/admin/subscribers — see that route's comment.
 //
-// Reads the SAME filter params as the list mode (`status`, `provider`, `minMonths`,
-// `maxMonths`, `q`) but deliberately IGNORES `offset`/`limit`: the export
-// covers the whole FILTERED set, every page, not whichever page the admin
+// Reads the SAME filter params as the list mode (`status`, `provider`, `period`,
+// `minMonths`, `maxMonths`, `q`) but deliberately IGNORES `offset`/`limit`: the
+// export covers the whole FILTERED set, every page, not whichever page the admin
 // happened to be viewing when they clicked "export".
 export async function GET(req: Request) {
   const g = await requireAdmin();
@@ -22,6 +22,7 @@ export async function GET(req: Request) {
   const filters = {
     status: url.searchParams.get("status") ?? undefined,
     provider: url.searchParams.get("provider") ?? undefined,
+    period: url.searchParams.get("period") ?? undefined,
     minMonths: minMonthsRaw != null ? parseInt(minMonthsRaw, 10) : undefined,
     maxMonths: maxMonthsRaw != null ? parseInt(maxMonthsRaw, 10) : undefined,
     q: url.searchParams.get("q") ?? undefined,

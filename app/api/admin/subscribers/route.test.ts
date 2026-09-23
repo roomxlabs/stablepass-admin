@@ -159,4 +159,20 @@ describe("GET /api/admin/subscribers", () => {
     const j = await r.json();
     expect(j.error.code).toBe("mfa_required");
   });
+
+  // ENG-1329: ?period= is a per-row filter param this route does not support
+  // (it is aggregate-only); the guardrail gate must still apply before that.
+  it("403s for a non-admin calling ?period=trial (guardrail)", async () => {
+    asNonAdmin();
+    const r = await GET(req("?period=trial"));
+    expect(r.status).toBe(403);
+  });
+
+  it("403s with mfa_required for an admin whose session is only AAL1 calling ?period=trial (guardrail)", async () => {
+    useSubscriptionRows([subRow()], "aal1");
+    const r = await GET(req("?period=trial"));
+    expect(r.status).toBe(403);
+    const j = await r.json();
+    expect(j.error.code).toBe("mfa_required");
+  });
 });

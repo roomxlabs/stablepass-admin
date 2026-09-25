@@ -2041,3 +2041,28 @@ At the 1280px harness viewport the eight columns (after ENG-1194's Comp) fill `.
 the ticket must budget width (and don't wrap the table in `overflow-x:auto` — it breaks the sticky `<th>`).
 Also: running `e2e/subscribers.spec.ts` re-captures every `13-*`/`46-*`/`47-eng1194-*` baseline — expected diffs
 when the table changes, noise otherwise (`git checkout` them).
+
+## RevenueCat `GET /v1/subscribers/{uid}` IS the create endpoint — but creating has a blast radius (ENG-1436)
+RevenueCat 404s `POST /v1/subscribers/{uid}/entitlements/content/promotional` for a subscriber it has
+never seen, which 502'd admin comp access for exactly its target population. Live docs
+(https://www.revenuecat.com/docs/api-v1/customers) confirm `GET /v1/subscribers/{app_user_id}` is
+"Get or Create Customer" (200 found / 201 created), and `X-Platform` must be OMITTED with a secret key.
+Two non-obvious consequences, both of which bit in review:
+- **Once a grant can CREATE, a shape-only id check is no longer inert.** `isUuid()` is shape-only, so a
+  mistyped-but-well-formed uuid used to die harmlessly at the 404; after the fix it would mint a permanent
+  RevenueCat customer holding `content` for nobody and answer 200, while be's `syncUser` silently skips
+  (`no_row`). Do-this: any admin route whose upstream call has a CREATE side effect must first confirm the
+  target is a real member. `subscription` is the right table — `handle_new_user` gives EVERY signup a row
+  (`stablepass-be .../20260905120000_delete_account.sql:470`), including the web signup who never paid, so
+  gating on it does not exclude the members comp is for. It is a READ; decision 12 only bans writes.
+- **N sequential upstream calls must share ONE deadline.** Three legs at `REVENUECAT_TIMEOUT_MS` each = 15s
+  worst case. There is no `maxDuration` on any route here and `vercel.json` has only `{"regions":["syd1"]}`,
+  so the platform default (10s Hobby) kills the invocation — the operator gets `FUNCTION_INVOCATION_TIMEOUT`
+  instead of our 502 envelope and ops gets NO `admin_comp_failed` line, which is the one signal that matters.
+- RevenueCat's `openapi-v1-entitlements.yaml` documents ONLY a 201 for the promotional endpoint and no error
+  responses, so "404 ⇒ unknown subscriber" is empirical, not contractual. Bound the recovery to one retry.
+
+## Widening `assertNoSubscriptionWrite()` — relax the table allowlist, never the write assertions
+That helper asserts three things; only `state.calls.from.filter(t => t !== "app_user")` needs to change when a
+route legitimately READS another table. `rec.writes` and `state.calls.mutations` are the actual decision-12
+guarantee — keep them exactly as they are, or the guardrail silently stops guarding.

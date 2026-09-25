@@ -1272,6 +1272,22 @@ describe("the head AVATAR is mobile's box, not our circle", () => {
         "and admin draws one box for both",
     ).toBe(box);
 
+    // THE STABLEPASS BOX IS DRAWN FROM THE SAME TWO CONSTANTS. Reading the value
+    // of HEAD_AVATAR_BOX proves nothing if `sMarkBox` stops using it: mobile
+    // could shrink the S-mark box to 44, or round it to `HEAD_AVATAR_BOX / 2`,
+    // and admin's single `.postAvatar` would still pass everything above
+    // (review of admin PR 110, mutations C and D).
+    const sMark = headStyle("sMarkBox").body.replace(/\s+/g, " ");
+    expect(sMark, "mobile's sMarkBox is no longer HEAD_AVATAR_BOX wide").toMatch(
+      /(?:^|[{,])\s*width\s*:\s*HEAD_AVATAR_BOX\s*(?:,|$)/,
+    );
+    expect(sMark, "mobile's sMarkBox is no longer HEAD_AVATAR_BOX tall").toMatch(
+      /(?:^|[{,])\s*height\s*:\s*HEAD_AVATAR_BOX\s*(?:,|$)/,
+    );
+    expect(sMark, "mobile's sMarkBox corners are no longer AVATAR_BOX_RADIUS").toMatch(
+      /(?:^|[{,])\s*borderRadius\s*:\s*AVATAR_BOX_RADIUS\s*(?:,|$)/,
+    );
+
     // THE HEAD REALLY ASKS FOR THE ROUNDED BOX. Without this, mobile could
     // switch `shape` back to the default circle and every NUMBER below would
     // still match while the two products drew different silhouettes.
@@ -1513,6 +1529,21 @@ describe("the byline's AGE TAIL runs on every subject, as mobile's does", () => 
       "mobile's PostHead no longer takes a required `postedAgo: string`",
     ).toMatch(/postedAgo\s*:\s*string\s*;/);
 
+    // ...and the head prints the prop it was handed, untouched. The byline
+    // regex above only reads the markup, so `postedAgo = model.subject ===
+    // 'trainer' ? '' : postedAgo` one statement earlier would gate the tail
+    // while the markup stayed identical (review of admin PR 110, mutation A).
+    // Exactly three mentions: the destructure, the prop type, and `{postedAgo}`.
+    // Any reassignment or alias adds a fourth.
+    const agoRefs = HEAD_CODE.match(/\bpostedAgo\b/g) ?? [];
+    expect(
+      agoRefs.length,
+      `mobile's PostHead mentions \`postedAgo\` ${agoRefs.length} times; expected ` +
+        "exactly 3 (destructure, prop type, render). Something now reads or " +
+        "rewrites the age before the byline prints it — re-read whether it is gated.",
+    ).toBe(3);
+    expect(HEAD_CODE, "mobile's PostHead reassigns postedAgo").not.toMatch(/\bpostedAgo\s*=(?!=)/);
+
     // AND THE CARD PASSES THE SAME AGE TO BOTH HEADS.
     //
     // THIS IS THE HOLE THE RULES ABOVE LEFT, and it is this ticket's own drift
@@ -1549,10 +1580,12 @@ describe("the byline's AGE TAIL runs on every subject, as mobile's does", () => 
       }
       expect(
         age,
-        `mobile's card hands one head \`${age}\` — a CONDITIONAL age. The head ` +
+        `mobile's card hands one head \`${age}\`, not the plain \`post.postedAgo\`. ` +
+          "Any other expression — a ternary, or an indirection like `agoFor(post)` " +
+          "(review of admin PR 110, mutation B) — can gate the tail per subject. The head " +
           "prints whatever it is given, so a gate here is a gate on the tail, and " +
           "admin's three heads would be wrong again. Re-read which subjects get it.",
-      ).not.toMatch(/\?|subject/);
+      ).toBe("post.postedAgo");
     }
     expect(
       new Set(ages).size,

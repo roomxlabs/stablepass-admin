@@ -67,16 +67,42 @@ export async function POST(req: Request, { params }: Ctx) {
     return fail("invalid_duration", "Choose a duration of 1, 2, 3, 6 or 12 months.", 400);
   }
 
+  // The target must be a REAL member before we go anywhere near RevenueCat
+  // (ENG-1436). Granting now CREATES the subscriber when RevenueCat has never
+  // seen them, so without this a mistyped-but-well-formed uuid would mint a
+  // permanent RevenueCat customer holding `content` for nobody — and answer 200.
+  // Previously the grant's own 404 made that case inert; the fix removes that
+  // accident, so the check has to be explicit.
+  //
+  // `subscription` is the right table: `handle_new_user` gives EVERY signup a
+  // row (stablepass-be `20260905120000_delete_account.sql`), including the web
+  // signup who never paid and never opened the app — exactly the member this
+  // ticket is about. This is a READ under the admin's own RLS client; the route
+  // still never WRITES `subscription` (epic ENG-1183 decision 12).
+  const { data: member } = await gate.sb.from("subscription").select("user_id").eq("user_id", id).maybeSingle();
+  if (!member) return fail("member_not_found", "No member with that id.", 404);
+
+  // A member RevenueCat has never seen is created on the way through
+  // (ENG-1436) — `ensured` records that, and it is the ONLY subscriber this
+  // request may bring into existence.
+  let ensured = false;
   try {
-    await grantPromotional(id, duration);
+    ({ ensured } = await grantPromotional(id, duration));
   } catch (e) {
-    return revenueCatFailure(e, { adminUid: await adminId(gate.sb), targetUid: id, duration });
+    // `ensured` on the error: the grant can fail AFTER the subscriber was
+    // created, which leaves a real customer behind. Ops must be able to find it.
+    return revenueCatFailure(e, {
+      adminUid: await adminId(gate.sb),
+      targetUid: id,
+      duration,
+      ensured: e instanceof RevenueCatError ? e.ensured : false,
+    });
   }
 
   // Audit is a structured log line (no table — `admin_auth_event` is auth-only).
   // Ids and duration only: never the member's email or name.
   console.info(
-    JSON.stringify({ event: "admin_comp_granted", adminUid: await adminId(gate.sb), targetUid: id, duration }),
+    JSON.stringify({ event: "admin_comp_granted", adminUid: await adminId(gate.sb), targetUid: id, duration, ensured }),
   );
   return ok({ granted: true, duration });
 }

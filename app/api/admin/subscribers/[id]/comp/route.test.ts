@@ -37,13 +37,23 @@ function asAal1Admin() {
   asAdmin();
   state.aal = "aal1";
 }
+// The route reads `subscription` for the member-existence check (ENG-1436)
+// before it ever calls RevenueCat. Seed a row so a test that expects to reach
+// RevenueCat passes that check. Tests that must fail BEFORE the check
+// (401/403/invalid id/invalid duration) must NOT call this.
+function withMember() {
+  state.tables.subscription = { select: { single: { user_id: MEMBER } } };
+}
 
 // ADMIN NEVER WRITES `subscription` (epic decision 12). Asserted on every test:
-// no mutation at all, and the only table this route may even name is the gate's.
+// no mutation at all. The route now legitimately READS `subscription` for the
+// member-existence check (ENG-1436), so that table may be named alongside the
+// gate's `app_user` — as a read only. The two write assertions above are the
+// real decision-12 guarantee, not this one.
 function assertNoSubscriptionWrite() {
   expect(rec.writes).toEqual([]);
   expect(state.calls.mutations).toEqual([]);
-  expect(state.calls.from.filter((t) => t !== "app_user")).toEqual([]);
+  expect(state.calls.from.filter((t) => t !== "app_user" && t !== "subscription")).toEqual([]);
 }
 
 beforeEach(() => {
@@ -113,8 +123,20 @@ describe("POST /api/admin/subscribers/:id/comp — grant", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it("404 member_not_found for a well-formed uuid that is not a member", async () => {
+    // ENG-1436 guardrail: don't create RevenueCat subscribers for anyone but
+    // the member being comped. No `subscription` row is scripted, so the
+    // existence check must fail closed BEFORE RevenueCat is ever touched.
+    asAdmin();
+    const r = await POST(postReq({ duration: "monthly" }), ctx());
+    expect(r.status).toBe(404);
+    expect((await r.json()).error.code).toBe("member_not_found");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it("200 grant: calls RevenueCat for THIS member and logs ids only", async () => {
     asAdmin();
+    withMember();
     const r = await POST(postReq({ duration: "three_month" }), ctx());
     expect(r.status).toBe(200);
     expect(await r.json()).toEqual({ data: { granted: true, duration: "three_month" } });
@@ -131,13 +153,46 @@ describe("POST /api/admin/subscribers/:id/comp — grant", () => {
       adminUid: "admin-1",
       targetUid: MEMBER,
       duration: "three_month",
+      ensured: false,
     });
     // No member/admin PII in the audit line.
     expect(String(info.mock.calls[0][0])).not.toMatch(/@/);
   });
 
+  it("200 grant for an unknown subscriber: 404 → ensure → retry → success (ENG-1436)", async () => {
+    asAdmin();
+    withMember();
+    fetchMock
+      .mockResolvedValueOnce(new Response("{}", { status: 404 }))
+      .mockResolvedValueOnce(new Response("{}", { status: 201 }))
+      .mockResolvedValueOnce(new Response("{}", { status: 201 }));
+
+    const r = await POST(postReq({ duration: "monthly" }), ctx());
+    expect(r.status).toBe(200);
+    expect(await r.json()).toEqual({ data: { granted: true, duration: "monthly" } });
+
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      `https://api.revenuecat.com/v1/subscribers/${MEMBER}/entitlements/content/promotional`,
+    );
+    expect(fetchMock.mock.calls[1][0]).toBe(`https://api.revenuecat.com/v1/subscribers/${MEMBER}`);
+    expect(fetchMock.mock.calls[2][0]).toBe(
+      `https://api.revenuecat.com/v1/subscribers/${MEMBER}/entitlements/content/promotional`,
+    );
+
+    expect(warn).not.toHaveBeenCalled();
+    expect(JSON.parse(String(info.mock.calls[0][0]))).toEqual({
+      event: "admin_comp_granted",
+      adminUid: "admin-1",
+      targetUid: MEMBER,
+      duration: "monthly",
+      ensured: true,
+    });
+  });
+
   it("502 revenuecat_unavailable when RevenueCat answers non-2xx", async () => {
     asAdmin();
+    withMember();
     fetchMock.mockResolvedValueOnce(new Response("{}", { status: 500 }));
     const r = await POST(postReq({ duration: "monthly" }), ctx());
     expect(r.status).toBe(502);
@@ -151,11 +206,39 @@ describe("POST /api/admin/subscribers/:id/comp — grant", () => {
       duration: "monthly",
       kind: "unavailable",
       status: 500,
+      ensured: false,
+    });
+    // No retry loop on a real outage: exactly one grant call.
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("admin_comp_failed logs ensured: true when the RETRIED grant fails (ENG-1436)", async () => {
+    // grant → 404 (unknown subscriber) → ensure GET → 201 (subscriber now
+    // created) → retried grant → 500. The subscriber exists in RevenueCat by
+    // the time the failure happens, so ops must be told via `ensured: true`.
+    asAdmin();
+    withMember();
+    fetchMock
+      .mockResolvedValueOnce(new Response("{}", { status: 404 }))
+      .mockResolvedValueOnce(new Response("{}", { status: 201 }))
+      .mockResolvedValueOnce(new Response("{}", { status: 500 }));
+    const r = await POST(postReq({ duration: "monthly" }), ctx());
+    expect(r.status).toBe(502);
+    expect((await r.json()).error.code).toBe("revenuecat_unavailable");
+    expect(JSON.parse(String(warn.mock.calls[0][0]))).toEqual({
+      event: "admin_comp_failed",
+      adminUid: "admin-1",
+      targetUid: MEMBER,
+      duration: "monthly",
+      kind: "unavailable",
+      status: 500,
+      ensured: true,
     });
   });
 
   it("502 revenuecat_unavailable when fetch itself fails", async () => {
     asAdmin();
+    withMember();
     fetchMock.mockRejectedValueOnce(new TypeError("fetch failed"));
     const r = await POST(postReq({ duration: "monthly" }), ctx());
     expect(r.status).toBe(502);
@@ -164,6 +247,7 @@ describe("POST /api/admin/subscribers/:id/comp — grant", () => {
 
   it("503 revenuecat_not_configured without the env key", async () => {
     asAdmin();
+    withMember();
     vi.stubEnv("REVENUECAT_SECRET_API_KEY", "");
     const r = await POST(postReq({ duration: "monthly" }), ctx());
     expect(r.status).toBe(503);

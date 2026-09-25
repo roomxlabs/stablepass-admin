@@ -58,11 +58,10 @@ export type PostPreviewData = {
    * ENG-769 — the editorial category picked in ENG-745's label picker, or null
    * for "No label".
    *
-   * The preview needs it for the reason this ticket exists: the member card
-   * renders the label pill INSIDE the white header row, and a reel has no
-   * white header row, so a label chosen for a portrait video reaches no
-   * member. The preview cannot tell the operator that without knowing whether
-   * they picked one.
+   * ENG-1438: the member card now renders the pill in BOTH chromes — the
+   * classic white header row and the reel's scrim — so the preview draws it in
+   * both. (It used to be header-row-only, which meant a label chosen for a
+   * portrait video reached no member and this preview had to say so.)
    *
    * Optional so the many existing test harnesses that build a PostPreviewData
    * by hand keep compiling; absent and null both mean "no label".
@@ -225,11 +224,12 @@ export default function PostPreview({
   // not a second opinion about what a reel is.
   const isReel = hasMediaBox && isReelPreview(dims, mediaType);
 
-  // The label reaches no member on a reel (see PostPreviewData.label). Its own
-  // flag because two places need it: the pill stands down, AND the operator is
-  // told why — a pill that silently vanishes is the same lie in a new place.
+  // ENG-1438 — the label now reaches the member on a reel too. Mobile builds
+  // the pill once and slots it into BOTH heads, so this preview draws it in
+  // both chromes and there is no longer a "why did my pill vanish" note to
+  // print. One value, two drawing sites, which is what stops the reel's pill
+  // and the classic one being able to disagree about the label's text.
   const labelText = label?.trim() ? label.trim() : null;
-  const labelUnrendered = isReel && labelText !== null;
 
   return (
     <div className={`${styles.previewBlock} ${compact ? styles.previewCompact : ""}`}>
@@ -265,8 +265,13 @@ export default function PostPreview({
               On a reel the member card overlays the identity on the frame
               instead and this row stands down entirely (mobile
               `post-card.tsx`: `{isReel ? null : (<View style={styles.head}>`).
-              Everything inside it goes with it — the label pill AND the race
-              badge included, which is why a reel shows neither. */}
+
+              WHAT GOES WITH IT, and what does not (ENG-1438). The RACE BADGE
+              goes: mobile slots it into the classic head only
+              (`above={raceBadgeNode}`), so a reel shows none and neither does
+              this preview. The LABEL PILL does NOT go any more — mobile slots
+              the same pill into both heads, so the reel scrim below draws its
+              own. Both facts are pinned in reel-chrome-parity.test.ts. */}
           {isReel ? null : (
           <header className={styles.postHead} data-subject={subject}>
             <PreviewAvatar
@@ -438,6 +443,21 @@ export default function PostPreview({
                           : "just now"
                         : headSubline || (subject === "stablepass" ? "Choose a byline" : "")}
                     </div>
+                    {/* THE REEL'S LABEL PILL (ENG-1438) — BELOW the byline,
+                        closing the stack, which is where mobile's
+                        `labelPillStacked` puts it on both heads. Not above the
+                        name: that is the classic card's older placement in this
+                        file, and copying it here would put admin's two chromes
+                        at odds with each other as well as with mobile.
+
+                        Same `labelText` the classic head renders, so the two
+                        can never show different copy for one chosen label. */}
+                    {labelText ? (
+                      <span className={styles.reelLabelPill} data-testid="preview-reel-label">
+                        <span className={styles.reelLabelPillDot} aria-hidden="true" />
+                        <span className={styles.reelLabelPillText}>{labelText}</span>
+                      </span>
+                    ) : null}
                   </div>
                 </div>
               ) : null}
@@ -511,22 +531,11 @@ export default function PostPreview({
         </article>
       </div>
 
-      {/* WHY THE PILL VANISHED. Without this the reel chrome silently drops a
-          label the operator deliberately chose, which is the same class of
-          quiet lie as the old blind crop — just moved one control over.
-          role=status because it appears and disappears under them (picking a
-          label, or swapping the media for a portrait video) with no action of
-          their own on this element. */}
-      {labelUnrendered ? (
-        <p
-          className={styles.previewReelNote}
-          role="status"
-          data-testid="preview-reel-label-note"
-        >
-          Reels show no label pill, so “{labelText}” will not appear on the member card. The label
-          is still saved with the post.
-        </p>
-      ) : null}
+      {/* ENG-1438 — "WHY THE PILL VANISHED" used to live here. It no longer
+          does, because the pill no longer vanishes: mobile draws it on the reel
+          too and so does the scrim above. The note is DELETED rather than
+          softened; an explanation that outlives the thing it explained is the
+          same quiet lie it was written to prevent, just pointing the other way. */}
 
       <div className={styles.previewFootnote}>
         This is the member card. Web renders the same content in a wider column.

@@ -202,7 +202,8 @@ describe("the caption counter has no over-limit state (ENG-745)", () => {
 // half of this ticket could be reverted with every other suite green.
 //
 // The values are the member card's own (stablepass-mobile
-// `src/components/post-card.tsx`: reelTopScrim / reelHorse / reelByline,
+// `src/components/post-card.tsx`: reelTopScrim + the label pill; and, since
+// ENG-1271, `src/components/post-head.tsx`: reelName (was reelHorse) / reelByline,
 // Spacing.lg/xl = 16/20px, Colors.ink #1A1A1A at 55%), so this is a fidelity
 // guard rather than a restatement of arbitrary numbers.
 describe("reel chrome fidelity (ENG-769)", () => {
@@ -245,11 +246,36 @@ describe("reel chrome fidelity (ENG-769)", () => {
     expect(pill).not.toMatch(/#[0-9a-f]{3,6}/i);
   });
 
-  it("styles the note that explains a dropped label as a note, not an error", () => {
-    const note = rule(".previewReelNote");
-    expect(note).toMatch(/color:\s*var\(--muted\)/);
-    // Never red: the label is not a mistake, it just will not render here.
-    expect(note).not.toMatch(/var\(--danger\)|#c0392b|red/i);
+  it("draws the REEL's label pill on the scrim, stacked under the byline", () => {
+    // ENG-1438 — replaces "styles the note that explains a dropped label".
+    // There is no dropped label any more: mobile slots the same pill into both
+    // heads, so the reel has one and `.previewReelNote` is gone. Keeping the
+    // old assertion would have pinned a note the operator must never see again.
+    const pill = rule(".reelLabelPill");
+    expect(pill).toMatch(/background:\s*var\(--brand-green\)/);
+    expect(pill).toMatch(/color:\s*var\(--cream\)/);
+    // `labelPillStacked` — hugs its text under the byline, not centred in the
+    // name's row and not stretched to the column's width.
+    expect(pill).toMatch(/align-self:\s*flex-start/);
+    expect(pill).toMatch(/max-width:\s*100%/);
+    // Sentence case, NOT the classic chip's uppercase (Justin, 26 Aug).
+    expect(rule(".reelLabelPillText")).not.toMatch(/text-transform/);
+    // Tokens, never eyeballed hex.
+    expect(pill).not.toMatch(/#[0-9a-f]{3,6}/i);
+    expect(rule(".reelLabelPillDot")).toMatch(/background:\s*var\(--cream\)/);
+  });
+
+  it("no longer ships the note that told the operator the pill would vanish", () => {
+    // The note is a CSS fact too, and its ABSENCE is the assertable one: a
+    // revert that brought `.previewReelNote` back would put a false sentence
+    // under every reel, and nothing else in this repo would notice.
+    //
+    // Anchored on the RULE (a selector at the start of a line, opening a block),
+    // not on the bare name: the stylesheet still MENTIONS `.previewReelNote` in
+    // the comment that records why it went, and a guard that a tombstone can
+    // trip is a guard nobody will be able to keep.
+    expect(CSS).not.toMatch(/^\s*\.previewReelNote\s*\{/m);
+    expect(CSS).not.toMatch(/^\s*\.previewCompact\s+\.previewReelNote\s*\{/m);
   });
 });
 

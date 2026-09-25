@@ -1057,10 +1057,20 @@
    REEL CHROME (ENG-769)
 
    The member card gives a portrait VIDEO Instagram's reel treatment: no white
-   header row, the identity overlaid on the frame on a soft ink scrim. Values
-   mirror mobile's `reelTopScrim` / `reelHorse` / `reelByline` block in
-   stablepass-mobile `src/components/post-card.tsx` (Spacing.lg/xl = 16/20px,
-   Colors.ink #1A1A1A at 55%, white at 85%).
+   header row, the identity overlaid on the frame on a soft ink scrim.
+
+   WHERE THE VALUES COME FROM (updated ENG-1438). Mobile's ENG-1271 split the
+   card head into its own component, so the mirror is now two files in
+   stablepass-mobile:
+     - `src/components/post-card.tsx` — `reelCard`, `reelTopScrim`, and the
+       label pill (`labelPill` + `labelPillStacked`), which the card builds and
+       slots into BOTH heads.
+     - `src/components/post-head.tsx` — `reelName` (was `reelHorse`), and
+       `reelByline` / `reelMeta`.
+   Spacing.xs/sm/lg/xl = 4/8/16/20px, Colors.ink #1A1A1A at 55%, white at 85%.
+   `.reelHorse` keeps its old spelling against mobile's `reelName` — see the
+   note in reel-chrome-parity.test.ts, which asserts the mapping so the
+   misnomer cannot hide a drift.
 
    These are CSS facts no render test can see — Vitest stubs CSS modules — so
    compose-css.test.ts pins them, per the note at the top of that file.
@@ -1106,10 +1116,16 @@
   box-shadow: 0 0 0 1.5px rgba(255, 255, 255, 0.35);
 }
 
+/* Mobile's `reelMeta` (post-head.tsx): the column beside the disc. A flex
+   COLUMN since ENG-1438, because the label pill below the byline has to hug its
+   own text (`align-self: flex-start`) instead of filling the column — which is
+   what mobile's `labelPillStacked` does. */
 .reelMeta {
   flex: 1;
   min-width: 0;
   padding-right: 8px;
+  display: flex;
+  flex-direction: column;
 }
 
 .reelHorse {
@@ -1133,9 +1149,63 @@
   text-overflow: ellipsis;
 }
 
+/* THE REEL'S LABEL PILL (ENG-1438).
+
+   It used to not exist: the pill lived inside mobile's white header row, a reel
+   drew no header row, so a label chosen for a portrait video reached no member
+   and this preview said so in a note. Mobile changed that — the card now builds
+   the pill once and slots it into BOTH heads via `PostHead`'s `below` prop
+   (Naufal, 31 Aug 2026: "the reel follows the post format") — so the note was
+   telling the operator something false, and it is gone with it.
+
+   Values are mobile's `labelPill` + `labelPillStacked` + `labelPillText` +
+   `labelDot`, read back by reel-chrome-parity.test.ts. NOTE it is NOT the same
+   shape as `.labelPill` below: the classic chip in this file still carries the
+   old uppercase 10.5px treatment, which is a separate, pre-existing drift from
+   mobile's sentence-case 11.5px chip and is out of this ticket's surface. */
+.reelLabelPill {
+  display: inline-flex;
+  align-items: center;
+  align-self: flex-start;
+  max-width: 100%;
+  flex-shrink: 0;
+  gap: 5px;
+  height: 20px;
+  margin-top: 4px;
+  padding: 0 10px;
+  border-radius: 999px;
+  background: var(--brand-green);
+  color: var(--cream);
+}
+
+/* `labelDot` — 5px cream. (The race badge's dot is 6px; this one is not it.) */
+.reelLabelPillDot {
+  width: 5px;
+  height: 5px;
+  flex-shrink: 0;
+  border-radius: 999px;
+  background: var(--cream);
+}
+
+/* `labelPillText` — sentence case, NOT the classic chip's uppercase. A long
+   title ellipsises within the pill rather than forcing it wider. */
+.reelLabelPillText {
+  font-family: var(--font-sans);
+  font-weight: 600;
+  font-size: 11.5px;
+  letter-spacing: 0.2px;
+  /* mobile `labelPillText.lineHeight` — 16, inside the 20px pill. */
+  line-height: 16px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* ENG-769 — the editorial label pill (ENG-745's picker, mobile ENG-750's
-   pill). Brand green with cream type, sitting ABOVE the horse name. Classic
-   cards only: it lives inside the header row, which a reel does not draw. */
+   pill). Brand green with cream type, sitting ABOVE the horse name in the white
+   header row, which a reel does not draw — see `.reelLabelPill` above for the
+   reel's own. */
 .labelPill {
   background: var(--brand-green);
   color: var(--cream);
@@ -1147,18 +1217,10 @@
   margin-bottom: 6px;
 }
 
-/* Why the pill is missing, said out loud rather than left for the operator to
-   notice. Amber-ish muted note under the card, not an error. */
-.previewReelNote {
-  font-size: 12px;
-  line-height: 1.45;
-  color: var(--muted);
-  background: var(--cream-dark);
-  border-left: 2px solid var(--brand-green);
-  border-radius: 4px;
-  padding: 8px 10px;
-  margin: 8px 0 0;
-}
+/* `.previewReelNote` ("Reels show no label pill…") was REMOVED by ENG-1438
+   rather than reworded: mobile now draws the pill on the reel, so there is no
+   longer anything to explain away. A note that survives the fact it described
+   is the same quiet lie it was written to prevent. */
 
 /* The sidebar scale, matching the compact rules for the classic head. */
 .previewCompact .reelScrim {
@@ -1173,8 +1235,8 @@
   font-size: 11px;
   line-height: 14px;
 }
-.previewCompact .previewReelNote {
-  font-size: 11.5px;
+.previewCompact .reelLabelPillText {
+  font-size: 10.5px;
 }
 
 /* ENG-979 — the Add-new row under the title picker.

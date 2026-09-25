@@ -17,6 +17,35 @@
  * located, this file FAILS with "the guard has gone blind" rather than quietly
  * passing on zero assertions. A guard that stays green when it can no longer
  * see is exactly the failure mode ENG-750 and ENG-785 both hit this round.
+ *
+ * ── ENG-1438: THE HEAD MOVED HOUSE ──────────────────────────────────────────
+ *
+ * The guard worked. Mobile's ENG-1271 (post subjects) refactored the card head
+ * into its OWN component — `src/components/post-head.tsx` — and this file went
+ * red in four places rather than quietly mirroring a card that no longer
+ * exists. That is the guard doing its job, so the fix is to RE-AIM the anchors
+ * at the new structure, not to relax them. Three things genuinely changed:
+ *
+ *   1. `reelHorse` / `reelByline` / `reelMeta` are no longer styles of the
+ *      CARD. They live in post-head.tsx, and the name style is `reelName` (the
+ *      head is no longer "the horse, always"). So this file now reads TWO
+ *      mobile files, at the SAME revision, and both are required.
+ *   2. THE LABEL PILL IS NOW ON THE REEL. The card slots the same
+ *      `renderLabelPill(styles.labelPillStacked)` into BOTH heads via
+ *      `PostHead`'s `below` prop. The old rule ("the pill lives inside the head
+ *      row a reel nulls out, so a reel has none by construction") is dead, and
+ *      admin's preview — which hid the pill and printed a note explaining why —
+ *      was telling the operator something that stopped being true. Admin now
+ *      draws the pill on the scrim and the note is gone.
+ *   3. THE RACE BADGE IS STILL REEL-LESS, but for a NEW reason: it is no longer
+ *      structurally trapped inside the suppressed row — it is a slot
+ *      (`above={raceBadgeNode}`) the card passes to the CLASSIC head only. Same
+ *      outcome, different mechanism, so the anchor had to move with it.
+ *
+ * The scale constants (`HEAD_NAME_SIZE` and friends) are exported from
+ * post-head.tsx as named constants rather than spelled inline, so `styleNumber`
+ * resolves those too — and throws if it cannot, exactly as it does for a
+ * `Spacing.*` it cannot find.
  */
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
@@ -61,61 +90,83 @@ const MOBILE_REPO = findMobileRepo();
  * WHICH REVISION of the member card is the contract.
  *
  * The FIRST REF THAT EXISTS wins — deterministically, not "the first that
- * makes the test pass", which would be no guard at all. Admin's round-6
- * preview mirrors the round-6 member card, so the integration branch is asked
- * for first; once it merges and is deleted, `origin/main` carries the same
- * rules and takes over; the working tree is the last resort for a checkout
- * with no remote.
+ * makes the test pass", which would be no guard at all. Admin's preview mirrors
+ * the member card as it stands on the CURRENT integration branch, so that
+ * branch is asked for first; once it merges and is deleted, `origin/main`
+ * carries the same rules and takes over; the working tree is the last resort
+ * for a checkout with no remote.
  *
  * This ordering is load-bearing and was found the hard way: the local mobile
- * checkout sits on `main`, where ENG-750's label pill has NOT landed. Reading
- * the working tree — the obvious implementation — would have mirrored a
- * revision with no label pill at all and quietly verified nothing about the
- * rule this ticket exists to encode.
+ * checkout sits on whatever branch its owner last used (today `android/release`),
+ * which is not the revision admin mirrors. Reading the working tree — the
+ * obvious implementation — would mirror an arbitrary revision and quietly
+ * verify nothing about the rules this file exists to encode.
+ *
+ * ENG-1438 retired `origin/feature/round6-v1` — it still exists, but it predates
+ * mobile's ENG-1271 and carries no post-head.tsx, so asking for it first would
+ * resolve the card to a revision the head has not split out of yet and send
+ * this guard loudly blind. It is replaced by
+ * `origin/feature/release-v1`: that is where the post
+ * subject work (mobile ENG-1271) lives and it is the branch admin's own
+ * `feature/release-v1` is integrated against. NOTE that post-head.tsx does NOT
+ * exist on `origin/main` yet — so if release-v1 disappears before it merges,
+ * this guard goes BLIND (loudly) rather than green. That is the correct
+ * failure: it means nobody has re-derived the contract.
  */
-const CONTRACT_REFS = ["origin/feature/round6-v1", "origin/main"] as const;
+const CONTRACT_REFS = [
+  "origin/feature/release-v1",
+  "origin/main",
+] as const;
 
-function readMemberCard(): { source: string; origin: string } | null {
-  if (!MOBILE_REPO) return null;
-  const rel = "src/components/post-card.tsx";
-
-  /**
-   * Only trust refs if MOBILE_REPO is the ROOT of its own git repo.
-   *
-   * `git -C <dir>` resolves against whatever repository CONTAINS <dir>, not
-   * the directory itself. Without this check, a `stablepass-mobile` folder
-   * that happens to sit inside another checkout would have its refs resolved
-   * in that outer repo — asking admin's own history for a mobile file. Found
-   * by mutation-testing this guard, which is exactly what it is for.
-   */
-  let isOwnRepo = false;
+/**
+ * Is MOBILE_REPO the ROOT of its own git repo?
+ *
+ * `git -C <dir>` resolves against whatever repository CONTAINS <dir>, not the
+ * directory itself. Without this check, a `stablepass-mobile` folder that
+ * happens to sit inside another checkout would have its refs resolved in that
+ * outer repo — asking admin's own history for a mobile file. Found by
+ * mutation-testing this guard, which is exactly what it is for.
+ */
+function mobileIsOwnRepo(): boolean {
+  if (!MOBILE_REPO) return false;
   try {
     const top = execFileSync("git", ["-C", MOBILE_REPO, "rev-parse", "--show-toplevel"], {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"],
     }).trim();
-    isOwnRepo = top === MOBILE_REPO;
+    return top === MOBILE_REPO;
   } catch {
-    isOwnRepo = false;
+    return false;
   }
+}
 
-  if (isOwnRepo) {
+const MOBILE_IS_OWN_REPO = mobileIsOwnRepo();
+
+function showAtRef(rel: string, ref: string): string | null {
+  try {
+    // rev-parse proves the ref exists; `show` can still fail if the path
+    // moved within that revision, so both are inside the try.
+    execFileSync("git", ["-C", MOBILE_REPO!, "rev-parse", "--verify", "--quiet", ref], {
+      stdio: "ignore",
+    });
+    return execFileSync("git", ["-C", MOBILE_REPO!, "show", `${ref}:${rel}`], {
+      encoding: "utf8",
+      maxBuffer: 20 * 1024 * 1024,
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+  } catch {
+    return null;
+  }
+}
+
+/** One mobile file, at the first contract ref that has it. */
+function readMobileFile(rel: string): { source: string; origin: string } | null {
+  if (!MOBILE_REPO) return null;
+
+  if (MOBILE_IS_OWN_REPO) {
     for (const ref of CONTRACT_REFS) {
-      try {
-        // rev-parse proves the ref exists; `show` can still fail if the path
-        // moved within that revision, so both are inside the try.
-        execFileSync("git", ["-C", MOBILE_REPO, "rev-parse", "--verify", "--quiet", ref], {
-          stdio: "ignore",
-        });
-        const source = execFileSync("git", ["-C", MOBILE_REPO, "show", `${ref}:${rel}`], {
-          encoding: "utf8",
-          maxBuffer: 20 * 1024 * 1024,
-          stdio: ["ignore", "pipe", "ignore"],
-        });
-        return { source, origin: `${MOBILE_REPO} @ ${ref}` };
-      } catch {
-        continue;
-      }
+      const source = showAtRef(rel, ref);
+      if (source !== null) return { source, origin: `${MOBILE_REPO} @ ${ref}` };
     }
   }
 
@@ -124,7 +175,33 @@ function readMemberCard(): { source: string; origin: string } | null {
   return { source: readFileSync(path, "utf8"), origin: `${path} (working tree)` };
 }
 
-const CARD = readMemberCard();
+const CARD = readMobileFile("src/components/post-card.tsx");
+
+/**
+ * post-head.tsx, at the SAME revision the card came from (ENG-1271).
+ *
+ * Pinned to the card's own origin rather than re-running the ref search: the
+ * two files are one component split in two, and reading the head from a
+ * DIFFERENT revision than the card would compare a scrim to a name style that
+ * never shipped together. If the card came from a ref and the head is not in
+ * that ref, this returns null and every head-derived assertion goes BLIND —
+ * which is right, because the split is exactly the kind of refactor that must
+ * be re-derived by a human and not guessed at by a fallback.
+ */
+function readMemberHead(): { source: string; origin: string } | null {
+  if (!MOBILE_REPO || !CARD) return null;
+  const rel = "src/components/post-head.tsx";
+  const ref = CARD.origin.split(" @ ")[1];
+  if (ref) {
+    const source = showAtRef(rel, ref);
+    return source === null ? null : { source, origin: `${MOBILE_REPO} @ ${ref}` };
+  }
+  const path = join(MOBILE_REPO, rel);
+  if (!existsSync(path)) return null;
+  return { source: readFileSync(path, "utf8"), origin: `${path} (working tree)` };
+}
+
+const HEAD = readMemberHead();
 
 /** `src/theme/tokens.ts` from the SAME revision the card was read from. */
 function readMemberTokens(): string | null {
@@ -132,14 +209,9 @@ function readMemberTokens(): string | null {
   const rel = "src/theme/tokens.ts";
   const ref = CARD.origin.split(" @ ")[1];
   if (ref) {
-    try {
-      return execFileSync("git", ["-C", MOBILE_REPO, "show", `${ref}:${rel}`], {
-        encoding: "utf8",
-        stdio: ["ignore", "pipe", "ignore"],
-      });
-    } catch {
-      /* fall through to the working tree */
-    }
+    const source = showAtRef(rel, ref);
+    if (source !== null) return source;
+    /* fall through to the working tree */
   }
   const path = join(MOBILE_REPO, rel);
   return existsSync(path) ? readFileSync(path, "utf8") : null;
@@ -163,6 +235,26 @@ function cardSource(): string {
     );
   }
   return CARD.source;
+}
+
+/**
+ * post-head.tsx's source, or a loud failure (ENG-1271 moved the head here).
+ *
+ * Deliberately symmetrical with `cardSource()`: a missing head is as blinding
+ * as a missing card, because half the reel chrome's VALUES now live in it.
+ */
+function headSource(): string {
+  if (!HEAD) {
+    throw new Error(
+      "THE GUARD HAS GONE BLIND: found the member card " +
+        `(${CARD?.origin}) but not src/components/post-head.tsx at the SAME ` +
+        "revision. Mobile's ENG-1271 split the card head into that file, and " +
+        "the reel's name/byline/meta styles live there now. Either the split " +
+        "was reverted, or the file moved again, or the contract ref predates " +
+        "it — re-derive the anchor, do not delete the assertion.",
+    );
+  }
+  return HEAD.source;
 }
 
 /** One capture group out of the member card, or a loud failure. */
@@ -222,27 +314,26 @@ function stripNonCode(src: string): string {
 }
 
 const CODE = CARD ? stripNonCode(CARD.source) : "";
+/** The same treatment for post-head.tsx, which is just as prose-heavy. */
+const HEAD_CODE = HEAD ? stripNonCode(HEAD.source) : "";
 
 /**
- * Index of the first match of `re` in the code, or a loud failure.
+ * The RAW text at a span the stripped CODE located.
  *
- * Needed because a bare substring search is not specific enough to anchor on:
- * `styles.labelPill` also matches `styles.labelPillText`, and `styles.raceBadge`
- * also matches `styles.raceBadgeGold`. Both are SIBLINGS that stay inside the
- * head row when the thing itself moves out — so the containment assertions
- * below stayed green through a mutation that should have reddened them. Caught
- * by mutation-testing; the trailing `(?![A-Za-z])` boundaries are the fix.
+ * `stripNonCode` is LENGTH-PRESERVING (it blanks, it does not delete — see the
+ * note in it), so an index found in CODE addresses the same character in the
+ * original source. That is what lets an anchor be found in the CODE, where a
+ * comment cannot forge it, and its VALUE then be read out of the raw source,
+ * where the string literal still exists.
+ *
+ * Both halves are load-bearing. Matching `variant="reel"` against the raw
+ * source alone would happily "find" it in the paragraph ABOVE the JSX that
+ * explains what `variant="reel"` does — a guard satisfied by its own
+ * documentation. Matching against CODE alone cannot see it at all, because the
+ * literal has been blanked.
  */
-function codeIndexRe(re: RegExp, what: string): number {
-  const m = CODE.match(re);
-  if (!m || m.index === undefined) {
-    throw new Error(
-      `THE GUARD HAS GONE BLIND: ${what} — expected ${re} to match the member ` +
-        `card's CODE (${CARD?.origin}), outside comments and strings. ` +
-        "Re-derive the anchor rather than deleting the assertion.",
-    );
-  }
-  return m.index;
+function rawAt(source: string, at: number, length: number): string {
+  return source.slice(at, at + length);
 }
 
 function codeIndex(needle: string, what: string): number {
@@ -303,6 +394,20 @@ describe("the member card is reachable at all", () => {
     expect(cardSource().length).toBeGreaterThan(1000);
     // Surfaced so a failure elsewhere in this file names its source revision.
     expect(CARD!.origin).toContain("stablepass-mobile");
+  });
+
+  it("found post-head.tsx at the SAME revision — the head moved there", () => {
+    // ENG-1271. Asserted separately from the card so the failure message says
+    // WHICH half is missing: "the card is gone" and "the head split out from
+    // under us" need different fixes, and a single combined check would report
+    // the wrong one half the time.
+    expect(HEAD, "stablepass-mobile's post-head.tsx not found — see headSource()").not.toBeNull();
+    expect(headSource().length).toBeGreaterThan(1000);
+    // Same revision, not merely the same repo — see readMemberHead().
+    expect(HEAD!.origin).toBe(CARD!.origin);
+    // The card really does delegate to it, rather than post-head.tsx being a
+    // leftover file nothing renders.
+    expect(CODE, "post-card.tsx no longer renders <PostHead>").toContain("PostHead");
   });
 });
 
@@ -410,13 +515,20 @@ describe("the reel PREDICATE matches the member card's isReel", () => {
   });
 });
 
-describe("the reel CHROME rules match the member card", () => {
-  /** The span of the `{isReel ? null : ( ... )}` block that holds the head. */
-  function classicHeadSpan(): [number, number] {
-    const at = codeIndex("isReel ? null :", "mobile's white-header-row suppression");
-    return blockSpan(at, "the classic head block");
-  }
+/**
+ * The span of the `{isReel ? null : ( ... )}` block that holds the classic head.
+ *
+ * Module scope since ENG-1438: the race-badge rule now needs it too (the badge
+ * is a SLOT passed to the head inside this block, not a style that happens to
+ * sit in it), and two copies of an anchor is two chances for them to drift
+ * apart — which is the whole disease this file treats.
+ */
+function classicHeadSpan(): [number, number] {
+  const at = codeIndex("isReel ? null :", "mobile's white-header-row suppression");
+  return blockSpan(at, "the classic head block");
+}
 
+describe("the reel CHROME rules match the member card", () => {
   it("stands the white header row down on a reel", () => {
     const [open, close] = classicHeadSpan();
     const block = CODE.slice(open, close);
@@ -424,26 +536,87 @@ describe("the reel CHROME rules match the member card", () => {
     expect(block, "the isReel-suppressed block is not the head row").toContain("styles.head");
   });
 
-  it("keeps the LABEL PILL inside that head — so a reel has none by construction", () => {
-    // THE RULE THIS TICKET EXISTS FOR. Asserted structurally rather than by
-    // trusting the comment next to it: the pill must live INSIDE the block the
-    // reel branch nulls out. If mobile ever moves the pill out of the head, a
-    // reel starts showing one and admin's preview becomes wrong again — red.
-    const [open, close] = classicHeadSpan();
-    const pill = codeIndexRe(/styles\.labelPill(?![A-Za-z])/, "mobile's label pill");
-    // EXACTLY ONE reference. Position alone only proves that *a* pill is inside
-    // the head; mobile could add a SECOND pill inside the reel scrim and this
-    // would stay green while admin hid the pill and told the operator it never
-    // renders — the same lie, inverted. Found in review.
+  it("slots the LABEL PILL into BOTH heads — a reel now shows one too", () => {
+    // THE RULE THIS TICKET RE-AIMED (ENG-1438). It used to read the other way
+    // round: the pill lived inside the block the reel branch nulls out, so a
+    // reel had none *by construction*, and admin hid the pill and printed a
+    // note saying the operator's label would never reach a member.
+    //
+    // That stopped being true. Mobile builds the pill ONCE
+    // (`renderLabelPill(extra)`) and slots it into both heads through
+    // `PostHead`'s `below` prop — Naufal, 31 Aug 2026, "the reel follows the
+    // post format". So admin now DRAWS the pill on the scrim, and the note is
+    // gone. This assertion is what turns red if mobile ever reverses that
+    // again, because admin would go back to lying in the opposite direction.
+    // The factory is declared as `const renderLabelPill = (extra?) => ...`, so
+    // its declaration carries NO `(` after the name and does not show up here.
+    // Exactly two CALLS — one per head. Pinning the COUNT is what stops a third
+    // head (or a removed one) sliding past: the positional checks below would
+    // still pass with an extra call somewhere else in the file.
+    const calls = [...CODE.matchAll(/renderLabelPill\(/g)].map((m) => m.index!);
     expect(
-      (CODE.match(/styles\.labelPill(?![A-Za-z])/g) ?? []).length,
-      "mobile now references its label pill more than once — a reel may have gained one",
+      (CODE.match(/const renderLabelPill\s*=/g) ?? []).length,
+      "mobile no longer builds its label pill through one factory — there may be two pills that can disagree",
     ).toBe(1);
     expect(
-      pill > open && pill < close,
-      "mobile's label pill is no longer inside the head row that a reel suppresses — " +
-        "admin's preview hides the pill on reels on the strength of that. Re-check both.",
+      calls.length,
+      `expected mobile to call renderLabelPill exactly twice (one per head); found ${calls.length}`,
+    ).toBe(2);
+
+    const [open, close] = classicHeadSpan();
+    const inClassic = calls.filter((at) => at > open && at < close);
+    const inReel = calls.filter((at) => at > close);
+    expect(
+      inClassic.length,
+      "mobile's classic head no longer slots the label pill — admin still draws it there",
+    ).toBe(1);
+    expect(
+      inReel.length,
+      "mobile's REEL head no longer slots the label pill. Admin draws one on the " +
+        "scrim on the strength of that; if mobile dropped it, admin must too " +
+        "(and the operator must be told again). Re-check both.",
+    ).toBe(1);
+
+    // ...and the reel's call really is inside the reel HEADER, not merely
+    // somewhere after the classic head. Bounded by two real landmarks rather
+    // than a character-distance window: the scrim opens the reel header, and
+    // `isReel ? null : followPill` is the statement that follows the whole reel
+    // branch, so anything between them is inside it.
+    const scrim = codeIndex("styles.reelTopScrim", "mobile's reel scrim");
+    const afterReelBranch = codeIndex(
+      "isReel ? null : followPill",
+      "the end of mobile's reel branch",
+    );
+    expect(
+      afterReelBranch,
+      "mobile's reel branch no longer precedes the classic follow pill — re-derive the bounds",
+    ).toBeGreaterThan(scrim);
+    expect(
+      inReel[0] > scrim && inReel[0] < afterReelBranch,
+      "mobile's second label pill is not in the reel header — re-derive which head it belongs to",
     ).toBe(true);
+
+    // The pill mobile slots is the STACKED variant, on both heads: it drops out
+    // of the name's row to the bottom of the stack. Admin's scrim pill is laid
+    // out below the byline because of this, so a revert to the inline 62%-capped
+    // chip has to turn this red rather than leaving admin's layout behind.
+    expect(
+      (CODE.match(/styles\.labelPillStacked(?![A-Za-z])/g) ?? []).length,
+      "mobile's heads stopped passing labelPillStacked — the pill's placement changed",
+    ).toBe(2);
+
+    // AND the style itself is referenced exactly ONCE — by the factory. (The
+    // StyleSheet entry is `labelPill:`, not `styles.labelPill`, so it does not
+    // count.) Kept from the old rule, and NOT redundant with the checks above:
+    // they only see pills built through `renderLabelPill`, so a BESPOKE
+    // `<View style={styles.labelPill} />` dropped straight into the reel scrim
+    // creates no extra factory call and no extra `labelPillStacked`, and every
+    // other assertion here would stay green while a reel grew a second pill.
+    // Caught by mutation-testing this guard — which is what it is for.
+    expect(
+      (CODE.match(/styles\.labelPill(?![A-Za-z])/g) ?? []).length,
+      "mobile references its label pill style somewhere other than the one factory — a head may have gained a second pill",
+    ).toBe(1);
   });
 
   it("stands the FOLLOW pill down on a reel", () => {
@@ -465,22 +638,55 @@ describe("the reel CHROME rules match the member card", () => {
 });
 
 describe("what admin deliberately does NOT mirror", () => {
-  it("records that the race badge rides with the suppressed head", () => {
-    // Not an admin rule so much as a consequence: the race badge sits inside
-    // the head row, so a reel drops it too. Admin's preview matches that, and
-    // it is surprising enough to be worth pinning rather than rediscovering.
-    const at = codeIndex("isReel ? null :", "the head suppression");
-    const [open, close] = blockSpan(at, "the classic head block");
-    const badge = codeIndexRe(/styles\.raceBadge(?![A-Za-z])/, "mobile's race badge");
+  it("records that the race badge is slotted into the CLASSIC head only", () => {
+    // SAME OUTCOME, NEW MECHANISM (ENG-1438). A reel still shows no race badge
+    // and admin's preview still drops it — but it is no longer structurally
+    // trapped inside the suppressed row. ENG-1271 turned it into a NODE
+    // (`raceBadgeNode`) that the card slots into `PostHead`'s `above`, and it
+    // passes that slot to the classic head and withholds it from the reel.
+    //
+    // So the anchor moved from "where is `styles.raceBadge`" to "which heads
+    // get `above=`". Both are structural; this one describes what mobile
+    // actually does now, which is the difference between a guard and a fossil.
+    const [open, close] = classicHeadSpan();
+
+    // The node is built ONCE, outside both heads. More than one construction
+    // would mean a second badge somewhere this rule has not looked.
     expect(
-      (CODE.match(/styles\.raceBadge(?![A-Za-z])/g) ?? []).length,
-      "mobile now references its race badge more than once — a reel may have gained one",
+      (CODE.match(/const raceBadgeNode\s*=/g) ?? []).length,
+      "mobile no longer builds a single raceBadgeNode — re-derive where the badge is drawn",
+    ).toBe(1);
+
+    const slots = [...CODE.matchAll(/above=\{raceBadgeNode\}/g)].map((m) => m.index!);
+    expect(
+      slots.length,
+      "mobile slots its race badge into a number of heads other than one — if the " +
+        "REEL gained one, admin's preview is now wrong to drop it. Re-check both.",
     ).toBe(1);
     expect(
-      badge > open && badge < close,
-      "mobile's race badge left the head row — admin's preview drops it on reels " +
-        "because it was inside. Re-check both.",
+      slots[0] > open && slots[0] < close,
+      "mobile's race badge slot is no longer inside the head row that a reel " +
+        "suppresses — admin's preview drops it on reels because of that. Re-check both.",
     ).toBe(true);
+
+    // And nothing else passes an `above` slot: a reel head that gained ANY
+    // above-the-name content would put a row admin does not draw on the scrim.
+    expect(
+      (CODE.match(/\babove=\{/g) ?? []).length,
+      "a mobile head gained an `above` slot that is not the race badge — the reel " +
+        "scrim's stack order may have changed",
+    ).toBe(1);
+
+    // AND the badge STYLE is referenced exactly once. Kept from the old rule,
+    // and it is not redundant with the slot count above: a BESPOKE
+    // `<View style={styles.raceBadge} />` dropped into the reel scrim builds no
+    // second `raceBadgeNode` and passes no second `above=`, so every structural
+    // check above stays green while a reel grows a badge admin does not draw.
+    // Caught by mutation-testing this guard.
+    expect(
+      (CODE.match(/styles\.raceBadge(?![A-Za-z])/g) ?? []).length,
+      "mobile draws its race badge somewhere other than the one slotted node — a reel may have gained one",
+    ).toBe(1);
   });
 });
 
@@ -516,22 +722,82 @@ function memberTokens(): { spacing: Record<string, number>; colors: Record<strin
   return { spacing, colors };
 }
 
-/** The body of one entry in the card's StyleSheet.create({...}) object. */
-function memberStyle(name: string): string {
-  const at = codeIndexRe(new RegExp(`\\n  ${name}:\\s*\\{`), `mobile's ${name} style`);
-  const open = CODE.indexOf("{", at);
+/**
+ * The body of one entry in a StyleSheet.create({...}) object, in `code`.
+ *
+ * ENG-1271 split the card's styles across two files, so the CALLER names which
+ * one a style is expected to be in. Deliberately not "look in the card, then
+ * fall back to the head": a silent fallback is how a style that MOVED would go
+ * unnoticed, and where a rule lives is itself part of the contract this guards.
+ */
+function styleIn(
+  code: string,
+  raw: string,
+  name: string,
+  where: string,
+  origin?: string,
+): { body: string; rawBody: string } {
+  const re = new RegExp(`\\n  ${name}:\\s*\\{`);
+  const m = code.match(re);
+  if (!m || m.index === undefined) {
+    throw new Error(
+      `THE GUARD HAS GONE BLIND: mobile's \`${name}\` style — expected ${re} to ` +
+        `match ${where}'s CODE (${origin}), outside comments and strings. The ` +
+        "style was renamed, moved to another file, or deleted. Re-derive the " +
+        "anchor from the mobile source rather than deleting the assertion.",
+    );
+  }
+  const at = m.index;
+  const open = code.indexOf("{", at);
   let depth = 0;
-  for (let i = open; i < CODE.length; i++) {
-    if (CODE[i] === "{") depth += 1;
-    else if (CODE[i] === "}") {
+  for (let i = open; i < code.length; i++) {
+    if (code[i] === "{") depth += 1;
+    else if (code[i] === "}") {
       depth -= 1;
-      if (depth === 0) return CODE.slice(open + 1, i);
+      if (depth === 0) {
+        return {
+          body: code.slice(open + 1, i),
+          rawBody: rawAt(raw, open + 1, i - open - 1),
+        };
+      }
     }
   }
   throw new Error(`THE GUARD HAS GONE BLIND: unbalanced braces in mobile's ${name}`);
 }
 
-/** A numeric style property, resolving `Spacing.*` to its token value. */
+/**
+ * A style declared on the CARD — the scrim, the card padding, the label pill.
+ *
+ * `.body` has its string literals blanked (safe to search for structure);
+ * `.rawBody` still has them (the only place a `'flex-start'` can be read).
+ */
+function cardStyle(name: string): { body: string; rawBody: string } {
+  return styleIn(CODE, cardSource(), name, "post-card.tsx", CARD?.origin);
+}
+
+/** A style declared on the HEAD — the reel's name, byline and meta column. */
+function headStyle(name: string): { body: string; rawBody: string } {
+  return styleIn(HEAD_CODE, headSource(), name, "post-head.tsx", HEAD?.origin);
+}
+
+/**
+ * post-head.tsx's exported scale constants, e.g. `HEAD_NAME_SIZE = 15`.
+ *
+ * ENG-869 pulled the four head numbers out into named constants so one edit
+ * moves both heads; ENG-1271 carried them into post-head.tsx. `styleNumber`
+ * has to resolve them or it could not read `fontSize: HEAD_NAME_SIZE` at all —
+ * and a guard that cannot read the size it is guarding is the blind guard this
+ * file exists to prevent.
+ */
+function headConstant(name: string): number | undefined {
+  const m = HEAD_CODE.match(new RegExp(`\\bconst ${name}\\s*=\\s*([0-9.]+)\\s*;`));
+  return m ? Number(m[1]) : undefined;
+}
+
+/**
+ * A numeric style property, resolving `Spacing.*` and post-head.tsx's own
+ * exported constants to their values.
+ */
 function styleNumber(block: string, prop: string, what: string): number {
   const m = block.match(new RegExp(`${prop}\\s*:\\s*([A-Za-z0-9_.]+)`));
   if (!m) throw new Error(`THE GUARD HAS GONE BLIND: no ${prop} in ${what}`);
@@ -541,6 +807,18 @@ function styleNumber(block: string, prop: string, what: string): number {
   if (spacingKey) {
     const value = memberTokens().spacing[spacingKey[1]];
     if (value === undefined) throw new Error(`THE GUARD HAS GONE BLIND: no Spacing.${spacingKey[1]}`);
+    return value;
+  }
+  if (/^[A-Z][A-Z0-9_]*$/.test(raw)) {
+    const value = headConstant(raw);
+    if (value === undefined) {
+      throw new Error(
+        `THE GUARD HAS GONE BLIND: ${prop} is \`${raw}\` in ${what}, but no ` +
+          `\`const ${raw} = <number>\` exists in post-head.tsx (${HEAD?.origin}). ` +
+          "Re-derive it rather than inlining a number here — the point is that " +
+          "the number is mobile's.",
+      );
+    }
     return value;
   }
   throw new Error(`THE GUARD HAS GONE BLIND: cannot resolve ${prop}: ${raw} in ${what}`);
@@ -579,7 +857,8 @@ describe("the reel chrome's VALUES are mobile's, not ours", () => {
   });
 
   it("uses mobile's scrim geometry", () => {
-    const block = memberStyle("reelTopScrim");
+    // The scrim itself is still the CARD's style — only the head moved.
+    const block = cardStyle("reelTopScrim").body;
     const top = styleNumber(block, "paddingTop", "reelTopScrim");
     const side = styleNumber(block, "paddingHorizontal", "reelTopScrim");
     const bottom = styleNumber(block, "paddingBottom", "reelTopScrim");
@@ -587,19 +866,32 @@ describe("the reel chrome's VALUES are mobile's, not ours", () => {
     const scrim = adminRule(".reelScrim").replace(/\s+/g, " ");
     expect(scrim).toContain(`padding: ${top}px ${side}px ${bottom}px`);
     expect(scrim).toContain(`gap: ${gap}px`);
+
+    // The meta column's own gutter, which is now the HEAD's (`reelMeta` moved
+    // to post-head.tsx with the rest of the head). Admin copies it as
+    // `padding-right`, and it is what keeps the name off mobile's Follow pill.
+    const meta = styleNumber(headStyle("reelMeta").body, "paddingRight", "reelMeta");
+    expect(adminRule(".reelMeta").replace(/\s+/g, " ")).toContain(`padding-right: ${meta}px`);
   });
 
   it("sets the overlaid name and byline at mobile's sizes and colours", () => {
-    const horse = memberStyle("reelHorse");
-    const byline = memberStyle("reelByline");
+    // `reelHorse` -> `reelName`, and both now live in post-head.tsx (ENG-1271).
+    // Admin's CSS class keeps the `.reelHorse` spelling on purpose, for the
+    // same reason mobile kept `NAME_ID = 'horse'`: it is the selector the
+    // existing admin tests and the e2e specs already reach the name by, and a
+    // repo-wide rename for no behaviour change is churn this ticket does not
+    // buy. The MAPPING is asserted right here, so the misnomer cannot hide a
+    // drift — which is the only thing that made it a misnomer worth keeping.
+    const name = headStyle("reelName").body;
+    const byline = headStyle("reelByline").body;
     const { colors } = memberTokens();
 
-    const adminHorse = adminRule(".reelHorse").replace(/\s+/g, " ");
-    expect(adminHorse).toContain(`font-size: ${styleNumber(horse, "fontSize", "reelHorse")}px`);
-    expect(adminHorse).toContain(`line-height: ${styleNumber(horse, "lineHeight", "reelHorse")}px`);
+    const adminName = adminRule(".reelHorse").replace(/\s+/g, " ");
+    expect(adminName).toContain(`font-size: ${styleNumber(name, "fontSize", "reelName")}px`);
+    expect(adminName).toContain(`line-height: ${styleNumber(name, "lineHeight", "reelName")}px`);
     // Colors.white on mobile; admin spells the same value as its own token.
-    expect(horse).toMatch(/color:\s*Colors\.white/);
-    expect(adminHorse).toContain("color: var(--white)");
+    expect(name).toMatch(/color:\s*Colors\.white/);
+    expect(adminName).toContain("color: var(--white)");
 
     const adminByline = adminRule(".reelByline").replace(/\s+/g, " ");
     expect(adminByline).toContain(`font-size: ${styleNumber(byline, "fontSize", "reelByline")}px`);
@@ -611,8 +903,76 @@ describe("the reel chrome's VALUES are mobile's, not ours", () => {
     expect(adminByline).toContain(`rgba(${rgbOf(colors.white)}, ${bylineAlpha![1]})`);
   });
 
+  it("draws the reel's LABEL PILL at mobile's geometry and type", () => {
+    // ENG-1438. Admin gained a pill on the scrim because mobile slots one into
+    // both heads (see the structural rule above). Its NUMBERS are read out of
+    // mobile for the same reason all the others are: a hand-copied pill is a
+    // hand-copied pill, and this one is brand new so it has had no chance to
+    // drift yet — which is exactly when to pin it.
+    const pill = cardStyle("labelPill").body;
+    // RAW: `alignSelf: 'flex-start'` is a string literal, so it survives only
+    // in the unstripped body. The KEY is matched in the stripped one.
+    const stacked = cardStyle("labelPillStacked");
+    const text = cardStyle("labelPillText").body;
+    const dot = cardStyle("labelDot").body;
+    const { colors } = memberTokens();
+
+    const admin = adminRule(".reelLabelPill").replace(/\s+/g, " ");
+    expect(admin).toContain(`height: ${styleNumber(pill, "height", "labelPill")}px`);
+    expect(admin).toContain(`gap: ${styleNumber(pill, "gap", "labelPill")}px`);
+    expect(admin).toContain(
+      `padding: 0 ${styleNumber(pill, "paddingHorizontal", "labelPill")}px`,
+    );
+    // The STACKED override is what puts it under the byline at full width.
+    expect(admin).toContain(
+      `margin-top: ${styleNumber(stacked.body, "marginTop", "labelPillStacked")}px`,
+    );
+    expect(stacked.body, "labelPillStacked no longer sets alignSelf").toMatch(/alignSelf\s*:/);
+    expect(stacked.rawBody).toMatch(/alignSelf\s*:\s*'flex-start'/);
+    expect(admin).toContain("align-self: flex-start");
+    // The cap is mobile's too, not a number admin chose: `labelPillStacked`
+    // overrides the inline chip's 62% precisely so a long title can use the
+    // whole column. If mobile reverts that, admin must not stay at 100%.
+    const cap = stacked.rawBody.match(/maxWidth\s*:\s*'([0-9]+%)'/);
+    expect(cap, `no maxWidth in labelPillStacked: ${stacked.rawBody}`).not.toBeNull();
+    expect(admin).toContain(`max-width: ${cap![1]}`);
+
+    // Brand green ground, cream type and a cream dot — mobile's tokens, not a
+    // hex admin picked.
+    expect(pill).toMatch(/backgroundColor:\s*Colors\.brandGreen/);
+    expect(admin).toContain("background: var(--brand-green)");
+    expect(text).toMatch(/color:\s*Colors\.cream/);
+    expect(admin).toContain("color: var(--cream)");
+
+    const adminText = adminRule(".reelLabelPillText").replace(/\s+/g, " ");
+    expect(adminText).toContain(`font-size: ${styleNumber(text, "fontSize", "labelPillText")}px`);
+    expect(adminText).toContain(
+      `letter-spacing: ${styleNumber(text, "letterSpacing", "labelPillText")}px`,
+    );
+    expect(adminText).toContain(
+      `line-height: ${styleNumber(text, "lineHeight", "labelPillText")}px`,
+    );
+    // SENTENCE CASE. Justin, 26 Aug: titles are free text, and ALL-CAPS made a
+    // truncated title read as shouting. `textTransform` is simply absent from
+    // mobile's style now, so admin must not re-add one — and if mobile brings
+    // it back, this goes red instead of leaving admin lower-case behind.
+    expect(
+      text,
+      "mobile's label pill text regained a textTransform — admin's reel pill is sentence case",
+    ).not.toMatch(/textTransform/);
+    expect(adminText).not.toContain("text-transform:");
+
+    const adminDot = adminRule(".reelLabelPillDot").replace(/\s+/g, " ");
+    const dotSize = styleNumber(dot, "width", "labelDot");
+    expect(adminDot).toContain(`width: ${dotSize}px`);
+    expect(adminDot).toContain(`height: ${styleNumber(dot, "height", "labelDot")}px`);
+    expect(dot).toMatch(/backgroundColor:\s*Colors\.cream/);
+    expect(colors.cream, "mobile has no Colors.cream").toBeTruthy();
+    expect(adminDot).toContain("background: var(--cream)");
+  });
+
   it("drops the card's top padding by mobile's amount, in BOTH admin scales", () => {
-    const top = styleNumber(memberStyle("reelCard"), "paddingTop", "reelCard");
+    const top = styleNumber(cardStyle("reelCard").body, "paddingTop", "reelCard");
     for (const selector of [".postCardReel", ".previewCompact .postCardReel"]) {
       expect(adminRule(selector)).toMatch(new RegExp(`padding-top:\\s*${top}(px)?`));
     }
@@ -622,8 +982,43 @@ describe("the reel chrome's VALUES are mobile's, not ours", () => {
     // M4: every rule above is about SUPPRESSION. If mobile deleted the reel
     // scrim entirely, admin would keep drawing a header the member card no
     // longer has, and nothing else here would notice.
-    expect(CODE).toContain("styles.reelTopScrim");
-    expect(CODE).toMatch(/styles\.reelHorse/);
-    expect(CODE).toMatch(/styles\.reelByline/);
+    //
+    // ENG-1438: the scrim is still the card's; the name and byline styles it
+    // wraps are the HEAD's, and `variant="reel"` is what selects them. All four
+    // are required — reading them from the wrong file is how this went red in
+    // the first place, and a fallback search would have hidden the move.
+    expect(CODE, "the card stopped drawing its reel scrim").toContain("styles.reelTopScrim");
+
+    // WHICH VARIANTS THE CARD ASKS FOR. `variant="reel"` is a string literal,
+    // so it is blanked out of CODE — but the ATTRIBUTE survives, and the raw
+    // value can be read back at the same offset (see rawAt). Matching the raw
+    // source directly would instead be satisfied by the prose above the JSX,
+    // which discusses `variant="reel"` at length.
+    const variants = [...CODE.matchAll(/variant=/g)].map((m) => {
+      const raw = rawAt(cardSource(), m.index!, 40);
+      const value = raw.match(/^variant=\{?["']([a-z]+)["']/);
+      if (!value) {
+        throw new Error(
+          "THE GUARD HAS GONE BLIND: the card passes a `variant=` this guard " +
+            `cannot read a literal out of: ${JSON.stringify(raw)}. It may now be ` +
+            "computed, which means which head a reel gets is no longer readable here.",
+        );
+      }
+      return value[1];
+    });
+    expect(
+      [...variants].sort(),
+      "the card no longer asks for exactly one classic head and one reel head",
+    ).toEqual(["classic", "reel"]);
+    expect(HEAD_CODE, "post-head.tsx no longer styles the reel name").toMatch(
+      /styles\.reelName(?![A-Za-z])/,
+    );
+    expect(HEAD_CODE, "post-head.tsx no longer styles the reel byline").toMatch(
+      /styles\.reelByline(?![A-Za-z])/,
+    );
+    // And the reel head is genuinely a head: it renders both lines, not just
+    // the name. (`reelName`/`reelByline` are selected by the same ternary.)
+    expect(HEAD_CODE).toMatch(/reel\s*\?\s*styles\.reelName\s*:/);
+    expect(HEAD_CODE).toMatch(/reel\s*\?\s*styles\.reelByline\s*:/);
   });
 });

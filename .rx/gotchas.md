@@ -2041,3 +2041,36 @@ At the 1280px harness viewport the eight columns (after ENG-1194's Comp) fill `.
 the ticket must budget width (and don't wrap the table in `overflow-x:auto` — it breaks the sticky `<th>`).
 Also: running `e2e/subscribers.spec.ts` re-captures every `13-*`/`46-*`/`47-eng1194-*` baseline — expected diffs
 when the table changes, noise otherwise (`git checkout` them).
+
+## The reel-chrome parity guard needs a mobile checkout AND the right contract ref (ENG-1438)
+`app/(dash)/compose/reel-chrome-parity.test.ts` reads the member card out of a SIBLING
+`stablepass-mobile` checkout (it walks up from `process.cwd()`, so a worktree under
+`.claude/worktrees/<ticket>` still finds `stable/stablepass-mobile`). It does NOT read that checkout's
+working tree — it reads `git show <CONTRACT_REF>:<path>`, first ref that exists. So the sibling can sit
+on any branch (ours sits on `android/release`); what matters is that its `origin/feature/release-v1` is
+fetched and current. **`git fetch` in stablepass-mobile before trusting a green run.** Since mobile's
+ENG-1271 the guard reads TWO files at the SAME revision — `src/components/post-card.tsx` AND
+`src/components/post-head.tsx` — and post-head.tsx does not exist on mobile's `origin/main`, so if
+`feature/release-v1` is deleted before it merges the guard goes loudly blind (by design, not a bug).
+
+**Mutation-testing it without touching the shared mobile checkout:** clone mobile into the admin
+worktree as `<worktree>/stablepass-mobile` (found FIRST, at walk-depth 0), then
+`git -C <clone> update-ref refs/remotes/origin/feature/release-v1 <mutated-commit>`. The clone's
+`origin/<branch>` is the local branch, NOT the source's remote-tracking ref, so re-point it at the real
+tip first (`git fetch origin '+refs/remotes/origin/feature/release-v1:refs/remotes/origin/feature/release-v1'`).
+`rm -rf` the clone afterwards. Never edit `stable/stablepass-mobile` itself.
+
+## Reading a string literal out of mobile's source needs BOTH the stripped and the raw text (ENG-1438)
+`stripNonCode()` blanks comments and string literals but is LENGTH-PRESERVING, so an index found in the
+stripped `CODE` addresses the same character in the raw source (`rawAt()`). Anchor on `CODE` (a comment
+can't forge the match — post-card.tsx's prose discusses `variant="reel"` verbatim), then read the VALUE
+from the raw source (the literal only exists there). Matching the raw source directly is how an
+assertion ends up satisfied by the paragraph that documents it.
+
+## e2e/compose-reel-chrome.spec.ts: video-decode flake is ORDER-dependent (ENG-1438)
+The spec is `mode: "serial"` and each case records + decodes its own webm in one browser. Added at the
+END of the file, the trainer case intermittently got `measure: "done"` with NULL dims ("Dimensions
+unavailable") — the decoder giving up under load; the same two cases passed every time in isolation.
+The two ENG-1438 subject cases therefore LEAD the file deliberately. Don't sort them to the end.
+Also: they shoot the RAIL card, not the preview modal — for these subjects the modal's `preview-media`
+never satisfied `settle(page, "modal")`, and the rail is the surface the operator composes against.

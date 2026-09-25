@@ -555,13 +555,17 @@ describe("reel chrome, across the whole portrait range (ENG-769)", () => {
       expect(card.dataset.chrome).toBe(c.reel ? "reel" : "classic");
 
       if (c.reel) {
-        // The white header row stands down, taking the label pill and the race
-        // badge with it — exactly as the member card's `{isReel ? null : ...}`
-        // suppresses the whole head.
+        // The white header row stands down, taking the RACE BADGE with it —
+        // mobile slots that node into the classic head only.
         expect(screen.queryByTestId("preview-label")).toBeNull();
         expect(screen.queryByTestId("preview-race-badge")).toBeNull();
         // ...and the identity is overlaid on the frame instead.
         expect(screen.getByTestId("preview-reel-head")).toBeTruthy();
+        // ENG-1438 — the LABEL PILL does NOT stand down. It moves onto the
+        // scrim, because mobile now slots the same pill into both heads. The
+        // pair above and below is the point: one id disappears, the other
+        // appears, and a revert of either half turns this red.
+        expect(screen.getByTestId("preview-reel-label").textContent).toBe("Trackwork");
       } else {
         expect(screen.getByTestId("preview-label").textContent).toBe("Trackwork");
         expect(screen.queryByTestId("preview-reel-head")).toBeNull();
@@ -572,28 +576,34 @@ describe("reel chrome, across the whole portrait range (ENG-769)", () => {
     });
   }
 
-  it("tells the operator WHY the label vanished, and only on a reel", () => {
-    // The acceptance criterion this ticket turns on: a label picked for a
-    // portrait video reaches no member, and until now nothing said so.
+  it("draws the operator's label on the reel, and nothing when they picked none", () => {
+    // ENG-1438 — replaces "tells the operator WHY the label vanished". The
+    // label no longer vanishes: mobile slots the pill into both heads, so the
+    // preview draws it, and the note that explained its absence is gone. The
+    // note's OWN absence is asserted below so a revert cannot restore a
+    // sentence that is now false.
     renderMeasured(1080, 1920, "video", { label: "Trackwork" });
-    const note = screen.getByTestId("preview-reel-label-note");
-    expect(note.textContent).toContain("Trackwork");
-    expect(note.textContent).toContain("will not appear");
+    expect(screen.getByTestId("preview-reel-label").textContent).toBe("Trackwork");
+    expect(screen.queryByTestId("preview-reel-label-note")).toBeNull();
     cleanup();
 
-    // No label picked: nothing to warn about, so no note.
+    // No label picked: no pill, and still no note.
     renderMeasured(1080, 1920, "video", { label: null });
+    expect(screen.queryByTestId("preview-reel-label")).toBeNull();
     expect(screen.queryByTestId("preview-reel-label-note")).toBeNull();
     cleanup();
 
-    // Label picked on a CLASSIC card: it renders, so again no note.
+    // Label picked on a CLASSIC card: it renders in the header row instead, and
+    // the reel's pill is absent — the two chromes each draw exactly one.
     renderMeasured(1000, 1000, "video", { label: "Trackwork" });
-    expect(screen.queryByTestId("preview-reel-label-note")).toBeNull();
+    expect(screen.getByTestId("preview-label").textContent).toBe("Trackwork");
+    expect(screen.queryByTestId("preview-reel-label")).toBeNull();
   });
 
   it("follows the operator when they swap a square video for a portrait one", () => {
     // The ticket's own edge case: pick a label, then change the media. The
-    // preview has to stop promising the pill, not keep a stale card.
+    // preview has to MOVE the pill from the header row to the scrim (ENG-1438;
+    // it used to have to withdraw it), not keep a stale card either way.
     const { rerender } = render(
       <MeasuringHarness mediaUrl="blob:video" mediaType="video" label="Trackwork" />,
     );
@@ -611,7 +621,9 @@ describe("reel chrome, across the whole portrait range (ENG-769)", () => {
 
     expect(screen.getByTestId("post-preview").dataset.chrome).toBe("reel");
     expect(screen.queryByTestId("preview-label")).toBeNull();
-    expect(screen.getByTestId("preview-reel-label-note")).toBeTruthy();
+    // Moved, not withdrawn — and the note that used to appear here must not.
+    expect(screen.getByTestId("preview-reel-label").textContent).toBe("Trackwork");
+    expect(screen.queryByTestId("preview-reel-label-note")).toBeNull();
   });
 
   it("never reaches reel chrome on a post with no media box", () => {

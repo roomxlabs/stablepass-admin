@@ -237,32 +237,41 @@ describe("reel chrome fidelity (ENG-769)", () => {
     expect(rule(".previewCompact .postCardReel")).toMatch(/padding-top:\s*0/);
   });
 
-  it("draws the label pill in brand green with cream type", () => {
-    const pill = rule(".labelPill");
-    expect(pill).toMatch(/background:\s*var\(--brand-green\)/);
-    expect(pill).toMatch(/color:\s*var\(--cream\)/);
-    expect(pill).toMatch(/text-transform:\s*uppercase/);
-    // Tokens, never eyeballed hex.
-    expect(pill).not.toMatch(/#[0-9a-f]{3,6}/i);
-  });
-
-  it("draws the REEL's label pill on the scrim, stacked under the byline", () => {
-    // ENG-1438 — replaces "styles the note that explains a dropped label".
-    // There is no dropped label any more: mobile slots the same pill into both
-    // heads, so the reel has one and `.previewReelNote` is gone. Keeping the
-    // old assertion would have pinned a note the operator must never see again.
-    const pill = rule(".reelLabelPill");
+  it("draws ONE label pill for both heads, stacked under the byline", () => {
+    // ENG-1438 gave the reel a pill; ENG-1441 deleted the classic head's own.
+    //
+    // There used to be TWO tests here, for two rules: `.labelPill` (the classic
+    // chip — uppercase, 10.5px, above the name) and `.reelLabelPill` (mobile's
+    // current sentence-case stacked pill). Mobile has ONE `labelPill`, built by
+    // one factory and slotted into both heads, so admin has one too and it is
+    // spelled `.headLabelPill` — it is no longer the reel's.
+    const pill = rule(".headLabelPill");
     expect(pill).toMatch(/background:\s*var\(--brand-green\)/);
     expect(pill).toMatch(/color:\s*var\(--cream\)/);
     // `labelPillStacked` — hugs its text under the byline, not centred in the
     // name's row and not stretched to the column's width.
     expect(pill).toMatch(/align-self:\s*flex-start/);
     expect(pill).toMatch(/max-width:\s*100%/);
-    // Sentence case, NOT the classic chip's uppercase (Justin, 26 Aug).
-    expect(rule(".reelLabelPillText")).not.toMatch(/text-transform/);
+    // Sentence case, NOT the old chip's uppercase (Justin, 26 Aug).
+    expect(rule(".headLabelPillText")).not.toMatch(/text-transform/);
     // Tokens, never eyeballed hex.
     expect(pill).not.toMatch(/#[0-9a-f]{3,6}/i);
-    expect(rule(".reelLabelPillDot")).toMatch(/background:\s*var\(--cream\)/);
+    expect(rule(".headLabelPillDot")).toMatch(/background:\s*var\(--cream\)/);
+  });
+
+  it("no longer ships the classic head's separate uppercase chip", () => {
+    // The ABSENCE is the assertable fact, exactly as it is for `.previewReelNote`
+    // below: a revert that restored `.labelPill` would put two pill treatments
+    // back on one screen and quietly un-fix ENG-1441's third drift, with every
+    // other assertion in this file still green.
+    expect(
+      CSS,
+      "`.labelPill` is back — the classic head must draw `.headLabelPill`, the " +
+        "same pill mobile slots into both heads",
+      // Anchored on any selector boundary, not just a line start: a re-add as
+      // `.previewCompact .labelPill {` or `.pill, .labelPill {` is the same
+      // chip coming back, and a `\n`-anchored pattern would not see either.
+    ).not.toMatch(/(^|[\s,>])\.labelPill\s*\{/m);
   });
 
   it("no longer ships the note that told the operator the pill would vanish", () => {

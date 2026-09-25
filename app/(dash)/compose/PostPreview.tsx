@@ -171,6 +171,12 @@ export default function PostPreview({
    * (`stable · location`), and a StablePass post prints the chosen byline
    * alone. `subline` is empty for a trainer with neither stable nor location,
    * and an empty line renders nothing rather than a stray separator.
+   *
+   * KNOWN DRIFT, not mirrored yet: mobile's PostHead renders
+   * `{secondary} · {postedAgo}` for EVERY subject, so a member sees the age on
+   * trainer and StablePass heads too; this preview only appends "· just now"
+   * to the horse card. Unguarded by reel-chrome-parity.test.ts. Tracked by
+   * ENG-1441 — not a deliberate exception.
    */
   const headSubline =
     subject === "trainer"

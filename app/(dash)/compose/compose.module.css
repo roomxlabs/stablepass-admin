@@ -1110,8 +1110,12 @@
   pointer-events: none;
 }
 
-/* The same avatar as the classic head (mobile reuses <Avatar size="sm"> in
-   both), plus a hairline so it separates from a bright frame. */
+/* The same avatar as the classic head, plus a hairline so it separates from a
+   bright frame. KNOWN DRIFT, not mirrored yet: mobile's PostHead now draws a
+   72px ROUNDED BOX in both heads (`HeadAvatar` → <Avatar size="row"
+   shape="rounded">, `HEAD_AVATAR_BOX = 72`, ENG-869); this is still the older
+   small circle, and reel-chrome-parity.test.ts does not guard it. Tracked by
+   ENG-1441 — do not read this as a deliberate exception. */
 .reelAvatar {
   box-shadow: 0 0 0 1.5px rgba(255, 255, 255, 0.35);
 }

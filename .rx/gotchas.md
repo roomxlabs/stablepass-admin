@@ -2098,3 +2098,63 @@ Two non-obvious consequences, both of which bit in review:
 That helper asserts three things; only `state.calls.from.filter(t => t !== "app_user")` needs to change when a
 route legitimately READS another table. `rec.writes` and `state.calls.mutations` are the actual decision-12
 guarantee — keep them exactly as they are, or the guardrail silently stops guarding.
+
+## Mutating mobile to prove the parity guard: move the REF, never the working tree (ENG-1441)
+`reel-chrome-parity.test.ts` resolves mobile through `git show origin/feature/release-v1:<path>` —
+the working tree is a last resort it almost never reaches (the local mobile checkout sits on
+`android/release`). So editing `stablepass-mobile/src/...` to "prove the guard goes red" proves
+nothing: the guard never reads those bytes. Do-this — build the mutated commit off to one side and
+repoint the remote-tracking ref:
+```sh
+ORIG=$(git -C ../stablepass-mobile rev-parse refs/remotes/origin/feature/release-v1)
+git -C ../stablepass-mobile show $ORIG:$P > /tmp/f && sed -i "$EXPR" /tmp/f
+B=$(git -C ../stablepass-mobile hash-object -w /tmp/f)
+GIT_INDEX_FILE=/tmp/idx git -C ../stablepass-mobile read-tree $ORIG
+GIT_INDEX_FILE=/tmp/idx git -C ../stablepass-mobile update-index --cacheinfo "100644,$B,$P"
+T=$(GIT_INDEX_FILE=/tmp/idx git -C ../stablepass-mobile write-tree)
+git -C ../stablepass-mobile update-ref refs/remotes/origin/feature/release-v1 \
+  $(git -C ../stablepass-mobile commit-tree $T -p $ORIG -m probe)
+# ...run the guard...
+git -C ../stablepass-mobile update-ref refs/remotes/origin/feature/release-v1 $ORIG
+```
+Mobile's working tree and index are never touched, so `status --porcelain` stays clean throughout and
+there is nothing to restore if the run dies mid-probe.
+
+## Mutate the guard you just WROTE, not only the drift the ticket named (ENG-1441)
+The ticket's three proofs all went red, and the extended guard still had three holes — each found by
+asking "how else could mobile drift and leave this green?":
+- **A rule read only from `post-head.tsx` can be defeated from `post-card.tsx`.** The head prints
+  whatever `postedAgo` it is handed, so `postedAgo={post.subject === 'horse' ? … : ''}` at the CALL
+  SITE restored the exact drift the ticket fixed, with 30/30 green. When a rule is about a VALUE,
+  guard where it is produced as well as where it is consumed.
+- **`/Colors\.brandGreen/` matches `Colors.brandGreenDark`.** Every mobile-token regex in this repo
+  needs the `(?![A-Za-z])` boundary that `styles\.labelPill(?![A-Za-z])` already had. Same for
+  `Colors.cream` / `creamDark` and `Colors.white` / `whiteDim`.
+- **A value you CHANGE in the same PR is the likeliest one to leave unguarded** — the avatar monogram
+  moved to Inter 500 and only its `font-size` was read back.
+
+## Vitest HASHES CSS-module keys — `styles.foo` is `_foo_7bdfe3`, not `"foo"`
+`compose-css.test.ts`'s header says CSS modules are "stubbed" so `styles.postCard` is the string
+`postCard`. Not quite: a rendered `className` comes back hashed. Assert with `toMatch(/foo/)` plus a
+CLASS COUNT (the count is what catches a chip regaining its `.pill .pillDot` base), never `toEqual`.
+
+## A source-reading test can render too — add `// @vitest-environment jsdom` as line 1
+`reel-chrome-parity.test.ts` reads mobile's source under `node:fs` + `node:child_process` AND renders
+`PostPreview` via testing-library. jsdom costs the fs/exec half nothing. Needed because a rule like
+"the byline shows the age for every subject" is a BRANCH, not a stylesheet value — no amount of
+CSS-reading can see it. Keep the file `.ts` and use `createElement` rather than renaming to `.tsx`.
+
+## Re-baselining screenshots: MEASURE the diff, do not eyeball it
+"Only re-baseline what actually changed" needs a number. There is no `pixelmatch`/`sharp`/ImageMagick
+here, but Playwright's Chromium is: decode both PNGs into a canvas in `page.evaluate`, count pixels
+differing by >24 in summed RGB, and report the bounding box. A box that lands on the changed
+component = real; a low percentage scattered everywhere = font noise, `git checkout` it.
+**Also: `npx playwright test` with no argument re-captures EVERY screenshot in the repo.** One ENG-1441
+run dirtied 51 unrelated baselines. Run only the specs that render what you changed
+(`grep -rln PostPreview e2e/*.spec.ts`), or revert the rest by name afterwards.
+
+## e2e in a worktree: symlink node_modules, and `.env.local` breaks one subscribers spec
+A fresh `.claude/worktrees/<ticket>` has no `node_modules`; symlink the main checkout's rather than
+`npm ci`. Playwright also needs `.env.local` copied in — but that supplies a real
+`REVENUECAT_SECRET_API_KEY`, and `subscribers.spec.ts:402` ("no RevenueCat key → 503") then fails.
+Pre-existing and reproducible on a clean base; delete the copied `.env.local` before committing.

@@ -1,3 +1,15 @@
+// @vitest-environment jsdom
+//
+// ENG-1441 — THIS FILE NOW RENDERS, as well as reads.
+//
+// Every rule below used to be "a value in mobile's source equals a value in
+// admin's stylesheet". That covers the CSS drifts and nothing else, which is
+// how three of this ticket's four findings sat unguarded: the byline's age tail
+// is not a CSS fact, it is a BRANCH in PostPreview.tsx, and no amount of
+// stylesheet-reading can see it. So the head-content rules below render the
+// real component for all three subjects and both chromes, and compare what it
+// prints to the structure read out of mobile's PostHead. jsdom costs this file
+// nothing — node:fs and node:child_process work unchanged under it.
 /**
  * THE DRIFT GUARD (ENG-769 decision 2).
  *
@@ -50,13 +62,18 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { createElement } from "react";
+import { afterEach, describe, expect, it } from "vitest";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import PostPreview, { POSTED_AGO, type PostPreviewData } from "./PostPreview";
 import {
   ASPECT_MIN,
   REEL_ASPECT_MIN,
   isReelPreview,
   resolveAspect,
 } from "./types";
+
+afterEach(cleanup);
 
 // ---------------------------------------------------------------------------
 // Locating mobile
@@ -209,15 +226,62 @@ function readMemberTokens(): string | null {
   const rel = "src/theme/tokens.ts";
   const ref = CARD.origin.split(" @ ")[1];
   if (ref) {
-    const source = showAtRef(rel, ref);
-    if (source !== null) return source;
-    /* fall through to the working tree */
+    // NO FALL-THROUGH TO THE WORKING TREE (tightened by ENG-1441). This used to
+    // drop to the checkout's own copy when `show` failed at the card's ref, and
+    // that is the one asymmetry left in a file whose whole discipline is "blind
+    // loudly, never default": `readMemberHead` and `readMemberAvatar` both
+    // return null there. Spacing, Colors, Radius and FontFamily now decide real
+    // assertions, so resolving them from a DIFFERENT revision than the card
+    // would compare a radius token to a card that never shipped with it.
+    return showAtRef(rel, ref);
   }
   const path = join(MOBILE_REPO, rel);
   return existsSync(path) ? readFileSync(path, "utf8") : null;
 }
 
 const TOKENS = readMemberTokens();
+
+/**
+ * `src/components/ui/avatar.tsx`, at the card's own revision (ENG-1441).
+ *
+ * THE THIRD MOBILE FILE. The head avatar's shape is split across two of them:
+ * post-head.tsx owns the S-mark box (`HEAD_AVATAR_BOX`, `AVATAR_BOX_RADIUS`)
+ * and delegates the photo/monogram case to `<Avatar size="row" shape="rounded">`
+ * — so the 72 and the 14 that admin draws are only HALF readable from the head.
+ * Pinned to the card's ref for the same reason the head is: an avatar from a
+ * different revision would compare a box to a radius that never shipped with it.
+ */
+function readMemberAvatar(): { source: string; origin: string } | null {
+  if (!MOBILE_REPO || !CARD) return null;
+  const rel = "src/components/ui/avatar.tsx";
+  const ref = CARD.origin.split(" @ ")[1];
+  if (ref) {
+    const source = showAtRef(rel, ref);
+    return source === null ? null : { source, origin: `${MOBILE_REPO} @ ${ref}` };
+  }
+  const path = join(MOBILE_REPO, rel);
+  if (!existsSync(path)) return null;
+  return { source: readFileSync(path, "utf8"), origin: `${path} (working tree)` };
+}
+
+const AVATAR = readMemberAvatar();
+
+/** ui/avatar.tsx's source, or a loud failure. Symmetrical with headSource(). */
+function avatarSource(): string {
+  if (!AVATAR) {
+    throw new Error(
+      "THE GUARD HAS GONE BLIND: found the member card " +
+        `(${CARD?.origin}) but not src/components/ui/avatar.tsx at the SAME ` +
+        "revision. The head's photo avatar is an `<Avatar size=\"row\" " +
+        'shape="rounded">`, so its BOX and its RADIUS live in that file — ' +
+        "admin's preview draws both. Re-derive the anchor, do not delete the " +
+        "assertion.",
+    );
+  }
+  return AVATAR.source;
+}
+
+const AVATAR_CODE = AVATAR ? stripNonCode(AVATAR.source) : "";
 
 // ---------------------------------------------------------------------------
 // Extracting rules — every helper THROWS rather than returning a default
@@ -334,6 +398,26 @@ const HEAD_CODE = HEAD ? stripNonCode(HEAD.source) : "";
  */
 function rawAt(source: string, at: number, length: number): string {
   return source.slice(at, at + length);
+}
+
+/**
+ * `codeIndex`, for a mobile file other than the card (ENG-1441).
+ *
+ * The head and the avatar module needed the same "find it in the stripped code,
+ * read its value out of the raw source" treatment the card already had, and a
+ * second hand-rolled indexOf would have been a second chance to get the blind
+ * case wrong. Same contract: throw, never return -1.
+ */
+function codeIndexIn(code: string, needle: string, what: string, origin?: string): number {
+  const at = code.indexOf(needle);
+  if (at === -1) {
+    throw new Error(
+      `THE GUARD HAS GONE BLIND: ${what} — expected to find \`${needle}\` in the ` +
+        `CODE of ${origin}, outside comments and strings. Re-derive the anchor ` +
+        "rather than deleting the assertion.",
+    );
+  }
+  return at;
 }
 
 function codeIndex(needle: string, what: string): number {
@@ -702,8 +786,21 @@ describe("what admin deliberately does NOT mirror", () => {
 // silent redesign behind. (Added after review found M4/M5/M6.)
 // ---------------------------------------------------------------------------
 
-/** `Spacing` / `Colors` from mobile's tokens.ts, at the card's own revision. */
-function memberTokens(): { spacing: Record<string, number>; colors: Record<string, string> } {
+/**
+ * `Spacing` / `Colors` / `Radius` / `FontFamily` from mobile's tokens.ts, at
+ * the card's own revision.
+ *
+ * `Radius` and `FontFamily` were added by ENG-1441: the head avatar's corner is
+ * `Radius.md` and the reel name's face is `FontFamily.sansSemiBold`, and both
+ * were previously unread — admin's `border-radius: 50%` and its `font-weight`
+ * were simply numbers nobody was checking.
+ */
+function memberTokens(): {
+  spacing: Record<string, number>;
+  colors: Record<string, string>;
+  radius: Record<string, number>;
+  fontFamily: Record<string, string>;
+} {
   if (!TOKENS) {
     throw new Error(
       "THE GUARD HAS GONE BLIND: found the member card but not its tokens.ts, " +
@@ -719,7 +816,80 @@ function memberTokens(): { spacing: Record<string, number>; colors: Record<strin
   for (const m of grab("Spacing").matchAll(/(\w+)\s*:\s*([0-9.]+)/g)) spacing[m[1]] = Number(m[2]);
   const colors: Record<string, string> = {};
   for (const m of grab("Colors").matchAll(/(\w+)\s*:\s*'(#[0-9a-fA-F]{3,8})'/g)) colors[m[1]] = m[2];
-  return { spacing, colors };
+  const radius: Record<string, number> = {};
+  for (const m of grab("Radius").matchAll(/(\w+)\s*:\s*([0-9.]+)/g)) radius[m[1]] = Number(m[2]);
+  const fontFamily: Record<string, string> = {};
+  for (const m of grab("FontFamily").matchAll(/(\w+)\s*:\s*'([\w_]+)'/g)) fontFamily[m[1]] = m[2];
+  return { spacing, colors, radius, fontFamily };
+}
+
+/**
+ * One of mobile's `FontFamily.*` tokens, as the CSS admin has to spell.
+ *
+ * The tokens are loaded-font names — `Inter_600SemiBold`, `Inter_400Regular`,
+ * `CormorantGaramond_600SemiBold` — because react-native picks a face by name
+ * and has no numeric weight axis. The web has both, so one mobile token maps to
+ * a (family, weight) PAIR here, and BOTH halves have to be asserted: admin
+ * spelling `var(--font-sans)` with no weight, or weight 600 on the serif, are
+ * each a real drift that reading one half alone would wave through.
+ *
+ * Throws on an unrecognised family rather than guessing a variable name — a new
+ * mobile face is exactly the kind of change that must be re-derived by hand.
+ */
+function cssFaceOf(token: string): { family: string; weight: number } {
+  const name = memberTokens().fontFamily[token];
+  if (!name) {
+    throw new Error(
+      `THE GUARD HAS GONE BLIND: mobile's tokens.ts has no FontFamily.${token} ` +
+        "— the face admin mirrors was renamed or removed. Re-derive it.",
+    );
+  }
+  const weight = name.match(/_(\d{3})/);
+  if (!weight) {
+    throw new Error(
+      `THE GUARD HAS GONE BLIND: cannot read a weight out of FontFamily.${token} ` +
+        `(\`${name}\`). Admin spells this as a numeric font-weight, so the number ` +
+        "has to come from mobile and not from us.",
+    );
+  }
+  const family = name.startsWith("Inter")
+    ? "var(--font-sans)"
+    : name.startsWith("Cormorant")
+      ? "var(--font-serif)"
+      : null;
+  if (!family) {
+    throw new Error(
+      `THE GUARD HAS GONE BLIND: FontFamily.${token} is \`${name}\`, a face this ` +
+        "repo has no CSS variable for. Admin loads Inter and Cormorant via " +
+        "next/font; a third face is a real design change, not a mapping to guess.",
+    );
+  }
+  return { family, weight: Number(weight[1]) };
+}
+
+/** A style's `fontFamily: FontFamily.x` token name, or a loud failure. */
+function fontToken(block: string, what: string): string {
+  const m = block.match(/fontFamily\s*:\s*FontFamily\.(\w+)/);
+  if (!m) {
+    throw new Error(
+      `THE GUARD HAS GONE BLIND: no \`fontFamily: FontFamily.*\` in ${what}. ` +
+        "The face may now be inherited or computed, which means admin's weight " +
+        "is no longer readable from mobile. Re-derive it.",
+    );
+  }
+  return m[1];
+}
+
+/** Assert one admin rule carries the (family, weight) a mobile token names. */
+function expectFace(selector: string, token: string, what: string): void {
+  const { family, weight } = cssFaceOf(token);
+  const css = adminRule(selector).replace(/\s+/g, " ");
+  expect(css, `${selector} should draw ${what} in FontFamily.${token} (${family})`).toContain(
+    `font-family: ${family}`,
+  );
+  expect(css, `${selector} should draw ${what} at FontFamily.${token}'s weight`).toContain(
+    `font-weight: ${weight}`,
+  );
 }
 
 /**
@@ -847,7 +1017,7 @@ describe("the reel chrome's VALUES are mobile's, not ours", () => {
     // `colors={[withAlpha(Colors.ink, 0.55), 'transparent']}` — read the alpha
     // and the token out of the card rather than trusting the CSS comment.
     const alpha = extract(
-      /colors=\{\[withAlpha\(Colors\.ink,\s*([0-9.]+)\)/,
+      /colors=\{\[withAlpha\(Colors\.ink(?![A-Za-z]),\s*([0-9.]+)\)/,
       "mobile's reel scrim gradient",
     );
     const ink = memberTokens().colors.ink;
@@ -887,10 +1057,18 @@ describe("the reel chrome's VALUES are mobile's, not ours", () => {
     const { colors } = memberTokens();
 
     const adminName = adminRule(".reelHorse").replace(/\s+/g, " ");
+    // ENG-1441 — THE FACE, not just the size. `reelName` is the one head style
+    // that names its own `fontFamily` (the classic `name` spreads `Type.name`),
+    // and admin had a hand-typed `font-weight: 600` beside it that nothing
+    // checked: mobile could have dropped to `FontFamily.sans` and admin's reel
+    // would have stayed semibold with every assertion green. That is exactly
+    // the mutation this ticket's second proof runs.
+    expectFace(".reelHorse", fontToken(name, "mobile's reelName"), "the reel's name");
+    expectFace(".reelByline", fontToken(byline, "mobile's reelByline"), "the reel's byline");
     expect(adminName).toContain(`font-size: ${styleNumber(name, "fontSize", "reelName")}px`);
     expect(adminName).toContain(`line-height: ${styleNumber(name, "lineHeight", "reelName")}px`);
     // Colors.white on mobile; admin spells the same value as its own token.
-    expect(name).toMatch(/color:\s*Colors\.white/);
+    expect(name).toMatch(/color:\s*Colors\.white(?![A-Za-z])/);
     expect(adminName).toContain("color: var(--white)");
 
     const adminByline = adminRule(".reelByline").replace(/\s+/g, " ");
@@ -898,7 +1076,7 @@ describe("the reel chrome's VALUES are mobile's, not ours", () => {
     expect(adminByline).toContain(
       `line-height: ${styleNumber(byline, "lineHeight", "reelByline")}px`,
     );
-    const bylineAlpha = byline.match(/color:\s*withAlpha\(Colors\.white,\s*([0-9.]+)\)/);
+    const bylineAlpha = byline.match(/color:\s*withAlpha\(Colors\.white(?![A-Za-z]),\s*([0-9.]+)\)/);
     expect(bylineAlpha, `no alpha colour in reelByline: ${byline}`).not.toBeNull();
     expect(adminByline).toContain(`rgba(${rgbOf(colors.white)}, ${bylineAlpha![1]})`);
   });
@@ -917,7 +1095,7 @@ describe("the reel chrome's VALUES are mobile's, not ours", () => {
     const dot = cardStyle("labelDot").body;
     const { colors } = memberTokens();
 
-    const admin = adminRule(".reelLabelPill").replace(/\s+/g, " ");
+    const admin = adminRule(".headLabelPill").replace(/\s+/g, " ");
     expect(admin).toContain(`height: ${styleNumber(pill, "height", "labelPill")}px`);
     expect(admin).toContain(`gap: ${styleNumber(pill, "gap", "labelPill")}px`);
     expect(admin).toContain(
@@ -939,12 +1117,22 @@ describe("the reel chrome's VALUES are mobile's, not ours", () => {
 
     // Brand green ground, cream type and a cream dot — mobile's tokens, not a
     // hex admin picked.
-    expect(pill).toMatch(/backgroundColor:\s*Colors\.brandGreen/);
+    //
+    // `(?![A-Za-z])` on every token here and above (ENG-1441): without it
+    // `Colors.brandGreen` PREFIX-matches `Colors.brandGreenDark`, and mutating
+    // mobile's pill to the dark green left this green — a visibly different
+    // chip on the member card with the guard clean. Same for `Colors.cream` vs
+    // `Colors.creamDark` and `Colors.white` vs `Colors.whiteDim`. The boundary
+    // is the same one `styles\.labelPill(?![A-Za-z])` already uses a few rules
+    // up; these six had simply never had it.
+    expect(pill).toMatch(/backgroundColor:\s*Colors\.brandGreen(?![A-Za-z])/);
     expect(admin).toContain("background: var(--brand-green)");
-    expect(text).toMatch(/color:\s*Colors\.cream/);
+    expect(text).toMatch(/color:\s*Colors\.cream(?![A-Za-z])/);
     expect(admin).toContain("color: var(--cream)");
 
-    const adminText = adminRule(".reelLabelPillText").replace(/\s+/g, " ");
+    const adminText = adminRule(".headLabelPillText").replace(/\s+/g, " ");
+    // ENG-1441 — the pill's FACE is mobile's too (`FontFamily.sansSemiBold`).
+    expectFace(".headLabelPillText", fontToken(text, "mobile's labelPillText"), "the label");
     expect(adminText).toContain(`font-size: ${styleNumber(text, "fontSize", "labelPillText")}px`);
     expect(adminText).toContain(
       `letter-spacing: ${styleNumber(text, "letterSpacing", "labelPillText")}px`,
@@ -962,11 +1150,11 @@ describe("the reel chrome's VALUES are mobile's, not ours", () => {
     ).not.toMatch(/textTransform/);
     expect(adminText).not.toContain("text-transform:");
 
-    const adminDot = adminRule(".reelLabelPillDot").replace(/\s+/g, " ");
+    const adminDot = adminRule(".headLabelPillDot").replace(/\s+/g, " ");
     const dotSize = styleNumber(dot, "width", "labelDot");
     expect(adminDot).toContain(`width: ${dotSize}px`);
     expect(adminDot).toContain(`height: ${styleNumber(dot, "height", "labelDot")}px`);
-    expect(dot).toMatch(/backgroundColor:\s*Colors\.cream/);
+    expect(dot).toMatch(/backgroundColor:\s*Colors\.cream(?![A-Za-z])/);
     expect(colors.cream, "mobile has no Colors.cream").toBeTruthy();
     expect(adminDot).toContain("background: var(--cream)");
   });
@@ -1020,5 +1208,552 @@ describe("the reel chrome's VALUES are mobile's, not ours", () => {
     // the name. (`reelName`/`reelByline` are selected by the same ternary.)
     expect(HEAD_CODE).toMatch(/reel\s*\?\s*styles\.reelName\s*:/);
     expect(HEAD_CODE).toMatch(/reel\s*\?\s*styles\.reelByline\s*:/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ENG-1441 — THE HEAD ITSELF
+//
+// Everything above this line guards the REEL's chrome. The head that sits in it
+// was almost entirely unguarded, and the independent review of admin#109 found
+// three drifts hiding in that gap — a 44px circle where mobile draws a 72px
+// rounded box, a byline age tail on one subject out of three, and a classic
+// label chip two design generations old. All three had survived every prior
+// round of this file, and all three were proved to survive it: mutating mobile
+// left the suite green.
+//
+// So these rules read the head's shape out of mobile the way the chrome's
+// values already were, and — where the rule is a BRANCH rather than a number —
+// render admin's real component and read what it prints.
+// ---------------------------------------------------------------------------
+
+describe("the head AVATAR is mobile's box, not our circle", () => {
+  it("found ui/avatar.tsx at the SAME revision — half the shape lives there", () => {
+    // Symmetrical with the post-head.tsx check: a missing avatar module is as
+    // blinding as a missing head, because `AVATAR_BOX_RADIUS` and the `row`
+    // box are the two numbers admin's `.postAvatar` is made of.
+    expect(AVATAR, "stablepass-mobile's ui/avatar.tsx not found — see avatarSource()").not.toBeNull();
+    expect(avatarSource().length).toBeGreaterThan(500);
+    expect(AVATAR!.origin).toBe(CARD!.origin);
+  });
+
+  it("draws BOTH heads at HEAD_AVATAR_BOX, with AVATAR_BOX_RADIUS corners", () => {
+    // `HEAD_AVATAR_BOX` is post-head.tsx's own constant (it sizes the S-mark
+    // box directly). `headConstant` is the same resolver `styleNumber` uses for
+    // `HEAD_NAME_SIZE`, so a constant that stops being a plain number throws
+    // rather than defaulting.
+    const box = headConstant("HEAD_AVATAR_BOX");
+    expect(
+      box,
+      "post-head.tsx no longer declares `const HEAD_AVATAR_BOX = <number>` — the " +
+        "head avatar's size is admin's to guess again. Re-derive it.",
+    ).toBeDefined();
+
+    // THE PHOTO AVATAR TAKES THE SAME BOX BY A DIFFERENT ROUTE: the head asks
+    // for `<Avatar size="row">` and avatar.tsx's SIZES table says what `row`
+    // is. Both numbers are required to agree — if they ever stop, mobile draws
+    // two different head sizes and admin cannot mirror one of them.
+    const rowSize = AVATAR_CODE.match(/\brow\s*:\s*\{([^}]*)\}/);
+    if (!rowSize) {
+      throw new Error(
+        "THE GUARD HAS GONE BLIND: no `row: { box, font }` entry in mobile's " +
+          `avatar SIZES table (${AVATAR?.origin}). The head asks for size "row"; ` +
+          "without that entry its box is unreadable. Re-derive the anchor.",
+      );
+    }
+    const rowBox = Number(rowSize[1].match(/box\s*:\s*([0-9.]+)/)?.[1]);
+    const rowFont = Number(rowSize[1].match(/font\s*:\s*([0-9.]+)/)?.[1]);
+    expect(Number.isFinite(rowBox), `no box in SIZES.row: ${rowSize[1]}`).toBe(true);
+    expect(Number.isFinite(rowFont), `no font in SIZES.row: ${rowSize[1]}`).toBe(true);
+    expect(
+      rowBox,
+      "mobile's SIZES.row.box and post-head.tsx's HEAD_AVATAR_BOX disagree — the " +
+        "photo head and the StablePass disc are now different sizes on mobile, " +
+        "and admin draws one box for both",
+    ).toBe(box);
+
+    // THE STABLEPASS BOX IS DRAWN FROM THE SAME TWO CONSTANTS. Reading the value
+    // of HEAD_AVATAR_BOX proves nothing if `sMarkBox` stops using it: mobile
+    // could shrink the S-mark box to 44, or round it to `HEAD_AVATAR_BOX / 2`,
+    // and admin's single `.postAvatar` would still pass everything above
+    // (review of admin PR 110, mutations C and D).
+    const sMark = headStyle("sMarkBox").body.replace(/\s+/g, " ");
+    expect(sMark, "mobile's sMarkBox is no longer HEAD_AVATAR_BOX wide").toMatch(
+      /(?:^|[{,])\s*width\s*:\s*HEAD_AVATAR_BOX\s*(?:,|$)/,
+    );
+    expect(sMark, "mobile's sMarkBox is no longer HEAD_AVATAR_BOX tall").toMatch(
+      /(?:^|[{,])\s*height\s*:\s*HEAD_AVATAR_BOX\s*(?:,|$)/,
+    );
+    expect(sMark, "mobile's sMarkBox corners are no longer AVATAR_BOX_RADIUS").toMatch(
+      /(?:^|[{,])\s*borderRadius\s*:\s*AVATAR_BOX_RADIUS\s*(?:,|$)/,
+    );
+
+    // THE HEAD REALLY ASKS FOR THE ROUNDED BOX. Without this, mobile could
+    // switch `shape` back to the default circle and every NUMBER below would
+    // still match while the two products drew different silhouettes.
+    //
+    // Found in the CODE (where a paragraph cannot forge a JSX tag) and read
+    // back out of the RAW source at the same offset, because `"row"` and
+    // `"rounded"` are string literals and `stripNonCode` blanks them. Exactly
+    // the rawAt dance the `variant=` rule already does, and for the same reason.
+    const avatarTag = codeIndexIn(HEAD_CODE, "<Avatar ", "mobile's head Avatar element", HEAD?.origin);
+    expect(
+      rawAt(headSource(), avatarTag, 160),
+      'mobile\'s HeadAvatar stopped asking for <Avatar size="row" shape="rounded"> ' +
+        "— re-read what shape the head draws before trusting the radius below",
+    ).toMatch(/size=\{?["']row["']\}?[\s\S]{0,40}shape=\{?["']rounded["']\}?/);
+
+    // ...and `rounded` really resolves to AVATAR_BOX_RADIUS rather than to
+    // `box / 2`, which is the circle this drift was.
+    expect(
+      AVATAR_CODE,
+      "mobile's Avatar no longer maps shape=rounded to AVATAR_BOX_RADIUS",
+    ).toMatch(/borderRadius\s*:\s*shape\s*===\s*\s*\?\s*AVATAR_BOX_RADIUS\s*:\s*box\s*\/\s*2/);
+
+    // The radius itself, through the token it is declared as.
+    const radiusToken = avatarSource().match(
+      /export const AVATAR_BOX_RADIUS\s*=\s*Radius\.(\w+)/,
+    );
+    if (!radiusToken) {
+      throw new Error(
+        "THE GUARD HAS GONE BLIND: `export const AVATAR_BOX_RADIUS = Radius.*` is " +
+          `no longer in ${AVATAR?.origin}. Admin spells this corner as a literal ` +
+          "px, so the token is the only thing tying the two together.",
+      );
+    }
+    const radius = memberTokens().radius[radiusToken[1]];
+    expect(radius, `mobile has no Radius.${radiusToken[1]}`).toBeDefined();
+
+    // ADMIN. One rule serves both chromes (the reel avatar only adds a ring),
+    // so the box is asserted once and the reel is checked for NOT re-rounding
+    // it — a `border-radius: 50%` reintroduced on `.reelAvatar` would put the
+    // circle back on exactly the screenshot this ticket came from.
+    const avatar = adminRule(".postAvatar").replace(/\s+/g, " ");
+    expect(avatar).toContain(`width: ${box}px`);
+    expect(avatar).toContain(`height: ${box}px`);
+    expect(avatar).toContain(`border-radius: ${radius}px`);
+    expect(
+      avatar,
+      "admin's head avatar is a circle again — mobile draws a rounded BOX",
+    ).not.toMatch(/border-radius:\s*50%/);
+    // The monogram is sized from mobile's own SIZES.row.font for the same
+    // reason: a 72px box with the old 18px initial is not the head mobile draws.
+    expect(avatar).toContain(`font-size: ${rowFont}px`);
+
+    // ...AND ITS FACE. This diff moved the monogram off Cormorant/600 onto
+    // Inter/500 because mobile's `initial` style spreads `Type.name` — "the
+    // initial stands in for the name, so it follows the name face" — and for a
+    // while that was the one number here NOT read back out of mobile: retuning
+    // `Type.name` to semibold left admin at 500 with this test green. Resolved
+    // through the SPREAD rather than by spelling `sansMedium`, so mobile
+    // repointing `Type.name` moves admin with it.
+    const initial = styleIn(
+      AVATAR_CODE,
+      avatarSource(),
+      "initial",
+      "ui/avatar.tsx",
+      AVATAR?.origin,
+    ).body;
+    const spread = initial.match(/\.\.\.Type\.(\w+)/);
+    if (!spread) {
+      throw new Error(
+        "THE GUARD HAS GONE BLIND: mobile's avatar `initial` style no longer " +
+          `spreads a \`Type.*\` (${AVATAR?.origin}), so the monogram's face is ` +
+          "unreadable. Admin spells it as a family + weight; re-derive it.",
+      );
+    }
+    const typeEntry = styleIn(
+      stripNonCode(TOKENS ?? ""),
+      TOKENS ?? "",
+      spread[1],
+      "tokens.ts",
+      "mobile tokens.ts",
+    ).body;
+    expectFace(".postAvatar", fontToken(typeEntry, `mobile's Type.${spread[1]}`), "the monogram");
+    expect(
+      adminRule(".reelAvatar").replace(/\s+/g, " "),
+      "the reel avatar re-rounds the box — both heads share one shape on mobile",
+    ).not.toMatch(/border-radius/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Rendering admin's head — the rules that are BRANCHES, not numbers
+// ---------------------------------------------------------------------------
+
+const PREVIEW_BASE: PostPreviewData = {
+  horseName: "Mahogany",
+  byline: "Chris Waller",
+  caption: "Last fast gallop before Saturday.",
+  mediaType: "video",
+  mediaUrl: "blob:local-file",
+  racesToday: false,
+  dims: null,
+  measure: "off",
+};
+
+/** The three subjects, each with the data its head needs. */
+const SUBJECTS: { name: string; data: Partial<PostPreviewData>; secondary: string }[] = [
+  { name: "horse", data: {}, secondary: "Chris Waller" },
+  {
+    name: "trainer",
+    data: {
+      subject: "trainer",
+      trainer: { name: "Chris Waller", photoUrl: null, subline: "Rosehill · NSW" },
+    },
+    secondary: "Rosehill · NSW",
+  },
+  {
+    name: "stablepass",
+    data: { subject: "stablepass", byline: "Racing TV" },
+    secondary: "Racing TV",
+  },
+];
+
+/**
+ * A CLASSIC card (square video) or a REEL (9:16), for one subject.
+ *
+ * `createElement` rather than JSX so this file stays `reel-chrome-parity.test.ts`
+ * — the name every ticket, PR and comment in this chain refers to it by, and a
+ * rename for one call site is churn. It is the only JSX this guard needs.
+ */
+function renderHead(over: Partial<PostPreviewData>, reel: boolean) {
+  return render(
+    createElement(PostPreview, {
+      data: {
+        ...PREVIEW_BASE,
+        ...over,
+        dims: reel ? { width: 1080, height: 1920 } : { width: 1000, height: 1000 },
+      },
+    }),
+  );
+}
+
+describe("the byline's AGE TAIL runs on every subject, as mobile's does", () => {
+  /**
+   * The separator mobile prints between the secondary and the age.
+   *
+   * Read out of the head rather than spelled here: it is a string literal, so
+   * it survives only in the RAW source (CODE blanks it), and it is the one
+   * character that makes "Rosehill · NSW · just now" a sentence rather than a
+   * run-on.
+   */
+  /**
+   * The BYLINE ELEMENT's span in HEAD_CODE — the one `<Text>` that prints the
+   * secondary run, the separator and the age.
+   *
+   * Anchored on `numberOfLines={reel`, which is the byline's own attribute and
+   * appears nowhere else in the head, then widened back to the `<Text` that
+   * opens it and forward to the age it closes on. Bounding the subject-gate
+   * rules to this element is what keeps them pointed at the byline rather than
+   * at the head at large.
+   */
+  function bylineSpan(): string {
+    const attr = codeIndexIn(
+      HEAD_CODE,
+      "numberOfLines={reel",
+      "mobile's byline element",
+      HEAD?.origin,
+    );
+    const open = HEAD_CODE.lastIndexOf("<Text", attr);
+    // Closed on `{below}` — the label-pill slot that follows the byline —
+    // rather than on `{postedAgo}` itself. Deliberate: a span that ended AT the
+    // age would go BLIND the moment the age moved, reporting "the anchor is
+    // gone" for what is actually "the age is gated now". Bounding it on the
+    // next sibling keeps the span readable under exactly the mutation these
+    // rules exist to catch, and keeps the failure message a byline rather than
+    // the whole file.
+    const end = HEAD_CODE.indexOf("{below}", attr);
+    if (open === -1 || end === -1) {
+      throw new Error(
+        "THE GUARD HAS GONE BLIND: located mobile's byline attribute but not the " +
+          `<Text> around it, or the {below} slot that follows it (${HEAD?.origin}). ` +
+          "The byline's shape changed; re-derive the anchor.",
+      );
+    }
+    return HEAD_CODE.slice(open, end);
+  }
+
+  /**
+   * "<mobile's separator> <admin's age>", anchored to the end of the byline.
+   *
+   * Both halves come from somewhere real: the separator is read out of mobile,
+   * and the age is `POSTED_AGO` IMPORTED from PostPreview rather than the
+   * string "just now" re-typed here — re-typing it would be a hand-copied
+   * constant in the file that exists to abolish hand-copied constants.
+   *
+   * Both are escaped before they become a pattern. `·` needs none today, but a
+   * separator that ever contained a regex metachar would otherwise quietly
+   * assert something other than what mobile prints — a silent mis-assert is the
+   * one failure this file may not have.
+   */
+  function ageTail(): RegExp {
+    const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    return new RegExp(`${esc(separator().trim())}\\s*${esc(POSTED_AGO)}$`);
+  }
+
+  function separator(): string {
+    const m = headSource().match(/\{model\.secondary\}\s*<\/Text>\s*\{('[^']*')\}/);
+    if (!m) {
+      throw new Error(
+        "THE GUARD HAS GONE BLIND: could not read the separator mobile prints " +
+          `between the byline's secondary run and its age (${HEAD?.origin}). The ` +
+          "byline's shape changed; re-derive it.",
+      );
+    }
+    return m[1].slice(1, -1);
+  }
+
+  it("mobile prints {postedAgo} OUTSIDE the secondary conditional", () => {
+    // THE RULE ITSELF, and the reason admin's three-way split was wrong. The
+    // age is not part of the `model.secondary ? (...) : null` branch — it
+    // follows it, unconditionally — so a head with no secondary prints the age
+    // alone and EVERY subject gets the tail. Nothing here is gated on
+    // `model.subject`; if mobile ever does gate it, this goes red rather than
+    // leaving admin's copy of the rule the accidental truth.
+    //
+    // Matched against the BYLINE's span, not the whole head: the received value
+    // is what a reader sees when this goes red, and 500 lines of post-head.tsx
+    // is not a diagnosis.
+    expect(
+      bylineSpan(),
+      "mobile's byline no longer prints {postedAgo} straight after the secondary " +
+        "conditional — the age may now be gated on who posted. Re-derive whether " +
+        "it is still unconditional before changing admin's heads",
+    ).toMatch(/\)\s*:\s*null\}\s*\{postedAgo\}/);
+
+    // `postedAgo` is a REQUIRED prop of the head, not an optional one a caller
+    // can withhold per subject.
+    expect(
+      HEAD_CODE,
+      "mobile's PostHead no longer takes a required `postedAgo: string`",
+    ).toMatch(/postedAgo\s*:\s*string\s*;/);
+
+    // ...and the head prints the prop it was handed, untouched. The byline
+    // regex above only reads the markup, so `postedAgo = model.subject ===
+    // 'trainer' ? '' : postedAgo` one statement earlier would gate the tail
+    // while the markup stayed identical (review of admin PR 110, mutation A).
+    // Exactly three mentions: the destructure, the prop type, and `{postedAgo}`.
+    // Any reassignment or alias adds a fourth.
+    const agoRefs = HEAD_CODE.match(/\bpostedAgo\b/g) ?? [];
+    expect(
+      agoRefs.length,
+      `mobile's PostHead mentions \`postedAgo\` ${agoRefs.length} times; expected ` +
+        "exactly 3 (destructure, prop type, render). Something now reads or " +
+        "rewrites the age before the byline prints it — re-read whether it is gated.",
+    ).toBe(3);
+    expect(HEAD_CODE, "mobile's PostHead reassigns postedAgo").not.toMatch(/\bpostedAgo\s*=(?!=)/);
+
+    // AND THE CARD PASSES THE SAME AGE TO BOTH HEADS.
+    //
+    // THIS IS THE HOLE THE RULES ABOVE LEFT, and it is this ticket's own drift
+    // wearing a different hat. Everything above lives inside post-head.tsx —
+    // the head prints whatever `postedAgo` it is handed, unconditionally. The
+    // SUBJECT GATE can therefore be moved one level up, into the card:
+    //
+    //     postedAgo={post.subject === 'horse' ? post.postedAgo : ''}
+    //
+    // and the head's source is untouched, so every assertion above stays green
+    // while a member sees the age on the horse head alone — exactly the drift
+    // admin just fixed, restored invisibly. Found by mutation-testing this
+    // guard, which is the only reason any of these rules are trustworthy.
+    //
+    // So: exactly two call sites (one per head, matching the `variant=` count
+    // asserted elsewhere), the same expression in both, and that expression
+    // carries no conditional and no subject test.
+    const ages = [...CODE.matchAll(/postedAgo=/g)].map((m) =>
+      rawAt(cardSource(), m.index!, 120).match(/^postedAgo=\{([^}]*)\}/)?.[1],
+    );
+    expect(
+      ages.length,
+      `mobile's card passes postedAgo to ${ages.length} heads; expected exactly ` +
+        "two (one classic, one reel). A head that stopped receiving it shows no " +
+        "age at all, and admin would keep drawing one.",
+    ).toBe(2);
+    for (const age of ages) {
+      if (age === undefined) {
+        throw new Error(
+          "THE GUARD HAS GONE BLIND: the card passes a `postedAgo=` this guard " +
+            `cannot read an expression out of (${CARD?.origin}). Whether the age ` +
+            "is subject-gated is no longer readable here — re-derive the anchor.",
+        );
+      }
+      expect(
+        age,
+        `mobile's card hands one head \`${age}\`, not the plain \`post.postedAgo\`. ` +
+          "Any other expression — a ternary, or an indirection like `agoFor(post)` " +
+          "(review of admin PR 110, mutation B) — can gate the tail per subject. The head " +
+          "prints whatever it is given, so a gate here is a gate on the tail, and " +
+          "admin's three heads would be wrong again. Re-read which subjects get it.",
+      ).toBe("post.postedAgo");
+    }
+    expect(
+      new Set(ages).size,
+      `mobile's two heads are handed different ages (${[...new Set(ages)].join(" vs ")}) ` +
+        "— admin draws one value in both chromes",
+    ).toBe(1);
+
+    // AND THE AGE IS NOT SUBJECT-GATED. The regex above pins the age to the
+    // position straight after the conditional; this pins the only `subject`
+    // test in the byline to a position BEFORE it, so the tail cannot acquire
+    // one. Scoped to the byline element rather than counted file-wide: the head
+    // also asks `model.subject` in `postMediaA11yLabel`, which has nothing to do
+    // with this rule, and a whole-file count would go red on that instead — a
+    // guard that cries at the wrong change is how anchors get deleted.
+    const span = bylineSpan();
+    const subjectTests = [...span.matchAll(/model\.subject/g)].map((m) => m.index!);
+    expect(
+      subjectTests.length,
+      `mobile's byline tests model.subject ${subjectTests.length} times; only the ` +
+        "green run on the classic horse head should. A second test is very likely " +
+        "a gate on the age tail — re-read it before leaving admin's heads alone.",
+    ).toBe(1);
+    const closes = span.indexOf(") : null}");
+    expect(closes, "could not find the end of the secondary conditional").toBeGreaterThan(-1);
+    expect(
+      subjectTests[0],
+      "mobile's byline now tests model.subject AFTER the secondary conditional — " +
+        "the age tail may be gated on who posted, which is the drift admin just fixed",
+    ).toBeLessThan(closes);
+  });
+
+  for (const { name, data, secondary } of SUBJECTS) {
+    it(`admin's CLASSIC ${name} head ends its byline with the age`, () => {
+      renderHead(data, false);
+      const sub = screen.getByTestId("preview-head-sub").textContent ?? "";
+      // The secondary is still there...
+      expect(sub, `the ${name} head lost its secondary run`).toContain(secondary);
+      // ...and the age closes the line, after mobile's separator.
+      expect(
+        sub,
+        `admin's ${name} head prints "${sub}" where a member sees the age tail`,
+      ).toMatch(ageTail());
+    });
+
+    it(`admin's REEL ${name} head ends its byline with the age`, () => {
+      renderHead(data, true);
+      // The reel head is the one the ticket's screenshot caught: a trainer reel
+      // read "Chris Waller Racing · Rosehill, NSW" with no age at all.
+      const scrim = screen.getByTestId("preview-reel-head");
+      const sub = scrim.textContent ?? "";
+      expect(sub, `the ${name} reel head lost its secondary run`).toContain(secondary);
+      expect(
+        sub,
+        `admin's ${name} reel head prints "${sub}" where a member sees the age tail`,
+      ).toMatch(ageTail());
+    });
+  }
+});
+
+describe("the reel byline is ONE line; the classic one is not", () => {
+  it("mirrors mobile's numberOfLines={reel ? 1 : undefined}", () => {
+    // A TWO-SIDED RULE, which is why it is asserted as a ternary and not as
+    // "the reel byline has numberOfLines". Mobile caps the reel at one line
+    // because it sits on a scrim beside a Follow pill, and deliberately leaves
+    // the classic byline unlimited. Admin spells the cap as nowrap + ellipsis,
+    // so BOTH halves have to be checked or a nowrap creeping onto the classic
+    // byline would silently truncate a line mobile wraps.
+    expect(
+      HEAD_CODE,
+      "mobile's byline no longer caps the REEL at one line — re-derive whether " +
+        "admin should still clip it",
+    ).toMatch(/numberOfLines=\{reel\s*\?\s*1\s*:\s*undefined\}/);
+
+    const reelByline = adminRule(".reelByline").replace(/\s+/g, " ");
+    expect(reelByline).toContain("white-space: nowrap");
+    expect(reelByline).toContain("text-overflow: ellipsis");
+    expect(reelByline).toContain("overflow: hidden");
+
+    expect(
+      adminRule(".postByline").replace(/\s+/g, " "),
+      "admin's CLASSIC byline is clipped to one line; mobile leaves it unlimited",
+    ).not.toContain("white-space: nowrap");
+  });
+});
+
+describe("ONE label pill, stacked under the byline, on BOTH admin heads", () => {
+  // The structural half ("mobile slots renderLabelPill into both heads") is
+  // asserted further up. This is admin's side of it: before ENG-1441 the
+  // classic head drew a DIFFERENT pill — `.labelPill`, uppercase, 10.5px, above
+  // the name — and nothing compared the two, so admin's own two chromes
+  // disagreed as loudly as admin and mobile did.
+  it("draws the same pill markup in both chromes", () => {
+    for (const reel of [false, true]) {
+      cleanup();
+      renderHead({ label: "Trackwork" }, reel);
+      const pill = screen.getByTestId(reel ? "preview-reel-label" : "preview-label");
+      expect(pill.textContent).toBe("Trackwork");
+      // ONE class, and it is the head pill's.
+      //
+      // Vitest HASHES CSS-module keys (`_headLabelPill_7bdfe3`), so the class is
+      // matched by the key it contains rather than compared literally — found by
+      // running this, which is why the value is not spelled out here.
+      //
+      // The COUNT is the load-bearing half: the classic chip used to be
+      // `.pill .pillDot .labelPill`, i.e. the dashboard's status-chip treatment
+      // with an override on top, and mobile's head draws no such thing. A pill
+      // that grew a second class again would be that chip coming back.
+      const classes = pill.className.split(/\s+/).filter(Boolean);
+      expect(
+        classes.length,
+        `a head's label pill carries ${classes.length} classes (${pill.className}) — ` +
+          "mobile builds one pill from one style; the extras are the dashboard's " +
+          "status-chip treatment creeping back in",
+      ).toBe(1);
+      expect(classes[0]).toMatch(/headLabelPill/);
+      // The dot is a real element, as it is on mobile (`labelDot`), not a
+      // `::before` glyph borrowed from `.pillDot`.
+      expect(pill.querySelector("span[aria-hidden]")).not.toBeNull();
+    }
+  });
+
+  it("stacks the pill AFTER the byline in both chromes", () => {
+    // Mobile's `labelPillStacked` closes the head's column, under the byline.
+    // Asserted structurally rather than by CSS, because "above the name" was a
+    // DOM-order fact in this file, not a style one.
+    renderHead({ label: "Trackwork" }, false);
+    const sub = screen.getByTestId("preview-head-sub");
+    const pill = screen.getByTestId("preview-label");
+    expect(
+      sub.compareDocumentPosition(pill) & Node.DOCUMENT_POSITION_FOLLOWING,
+      "admin's classic label pill is back above the name — mobile stacks it under the byline",
+    ).toBeTruthy();
+
+    cleanup();
+    renderHead({ label: "Trackwork" }, true);
+    const reelHead = screen.getByTestId("preview-reel-head");
+    const reelPill = screen.getByTestId("preview-reel-label");
+    expect(
+      reelHead.textContent?.endsWith("Trackwork"),
+      "admin's reel label pill no longer closes the head stack",
+    ).toBe(true);
+    expect(reelPill).toBeTruthy();
+  });
+});
+
+describe("a trainer photo that fails to load falls back to the initial", () => {
+  it("swaps the broken <img> for the monogram", () => {
+    // ENG-1441 finding 4: `e2e/__screenshots__/eng769/06-reel-trainer.png`
+    // showed the browser's broken-image glyph in the head, because the only
+    // fallback was the `photoUrl === null` branch and a signed URL can expire.
+    renderHead(
+      {
+        subject: "trainer",
+        trainer: { name: "Chris Waller", photoUrl: "https://x/gone.jpg", subline: "Rosehill · NSW" },
+      },
+      true,
+    );
+    const photo = screen.getByTestId("preview-avatar-photo");
+    const img = photo.querySelector("img")!;
+    expect(img).not.toBeNull();
+
+    // jsdom never loads the image, so fire the event the browser would.
+    fireEvent.error(img);
+
+    expect(
+      screen.queryByTestId("preview-avatar-photo"),
+      "a dead trainer photo still leaves a broken <img> in the head",
+    ).toBeNull();
+    expect(screen.getByTestId("preview-avatar-initial").textContent).toBe("C");
   });
 });

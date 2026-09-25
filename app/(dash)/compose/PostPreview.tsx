@@ -23,6 +23,17 @@ import {
 import HlsVideo from "./HlsVideo";
 import styles from "./compose.module.css";
 
+/**
+ * Mobile's `postedAgo`, for a post that does not exist yet.
+ *
+ * The member card formats a real `created_at` ("2h ago"); a composed post has
+ * no timestamp, so the preview shows what a member would see the instant it
+ * published. ONE constant because the tail now runs on both chromes and all
+ * three subjects (ENG-1441) — six places that must agree, which is five too
+ * many to spell by hand.
+ */
+export const POSTED_AGO = "just now";
+
 export type PostPreviewData = {
   /**
    * ENG-1268 — WHO the post is posted as, which is what decides the head.
@@ -172,11 +183,14 @@ export default function PostPreview({
    * alone. `subline` is empty for a trainer with neither stable nor location,
    * and an empty line renders nothing rather than a stray separator.
    *
-   * KNOWN DRIFT, not mirrored yet: mobile's PostHead renders
-   * `{secondary} · {postedAgo}` for EVERY subject, so a member sees the age on
-   * trainer and StablePass heads too; this preview only appends "· just now"
-   * to the horse card. Unguarded by reel-chrome-parity.test.ts. Tracked by
-   * ENG-1441 — not a deliberate exception.
+   * THE AGE TAIL IS ON ALL THREE NOW (ENG-1441). Mobile's `PostHead` renders
+   * `{secondary} · {postedAgo}` for EVERY subject — `postedAgo` sits OUTSIDE
+   * the `model.secondary` conditional, so a null secondary prints the age alone
+   * rather than a dangling separator, and nothing about the tail is gated on
+   * who posted. This preview used to append "· just now" to the horse card
+   * only, so a trainer reel read "Chris Waller Racing · Rosehill, NSW" where a
+   * member sees "… · 2h ago". reel-chrome-parity.test.ts now reads that rule
+   * out of post-head.tsx and renders all three heads here to check it.
    */
   const headSubline =
     subject === "trainer"
@@ -237,6 +251,48 @@ export default function PostPreview({
   // and the classic one being able to disagree about the label's text.
   const labelText = label?.trim() ? label.trim() : null;
 
+  /**
+   * THE PILL, BUILT ONCE AND SLOTTED INTO BOTH HEADS.
+   *
+   * Mobile's `renderLabelPill(styles.labelPillStacked)`, one level down: the
+   * card builds ONE pill and passes it to `PostHead`'s `below` on the classic
+   * head and on the reel head, so the two chromes cannot show different
+   * geometry, different case or different copy for one chosen label.
+   *
+   * Before ENG-1441 this file had two: an uppercase 10.5px chip ABOVE the name
+   * on the classic card (the pre-ENG-869 treatment mobile has since dropped)
+   * and the sentence-case stacked pill on the reel. The `testID` differs per
+   * head purely so the existing specs keep their selectors; the MARKUP is the
+   * same node built by the same expression.
+   */
+  const labelPill = (testId: string) =>
+    labelText ? (
+      <span className={styles.headLabelPill} data-testid={testId}>
+        <span className={styles.headLabelPillDot} aria-hidden="true" />
+        <span className={styles.headLabelPillText}>{labelText}</span>
+      </span>
+    ) : null;
+
+  /**
+   * The reel byline's text — `{secondary} · {postedAgo}` for every subject.
+   *
+   * Derived from the SAME values the classic head reads, so a portrait video
+   * and a landscape one can never disagree about who posted it or when. No
+   * leading "by" and no green run: mobile's reel byline is plain white-85%
+   * (brand green on a dark scrim is barely legible), while the classic horse
+   * head keeps both.
+   */
+  const reelBylineText =
+    subject === "horse"
+      ? byline
+        ? `${byline} · ${POSTED_AGO}`
+        : POSTED_AGO
+      : headSubline
+        ? `${headSubline} · ${POSTED_AGO}`
+        : subject === "stablepass"
+          ? "Choose a byline"
+          : POSTED_AGO;
+
   return (
     <div className={`${styles.previewBlock} ${compact ? styles.previewCompact : ""}`}>
       {/* Detected, never chosen. Absent entirely until a file is picked, and
@@ -287,48 +343,78 @@ export default function PostPreview({
               className={styles.postAvatar}
             />
             <div className={styles.postMetaWrap}>
-              {/* ABOVE the horse name, never in its slot (mobile ENG-750: the
-                  earlier hardcoded badge displaced the name and took its tap
-                  target with it). Null label = no pill and no gap. */}
-              {labelText ? (
-                <span
-                  className={`${styles.pill} ${styles.pillDot} ${styles.labelPill}`}
-                  data-testid="preview-label"
-                >
-                  {labelText}
-                </span>
-              ) : null}
               <p className={styles.postHorse} data-testid="preview-head-name">
                 {shownName}
               </p>
+              {/* TWO DRIFTS SURVIVE IN THIS BLOCK, both found while closing
+                  ENG-1441's four and both deliberately left for a follow-up
+                  rather than folded in silently. Recorded here so the next
+                  reader does not mistake either for a decision:
+
+                  (a) THE "by" PREFIX. Mobile's PostHead prints
+                      `{secondary} · {postedAgo}` with NO preposition — its own
+                      comment cites the client, 18 Aug 2026, "just the trainer
+                      name straight away". This preview still says "by Chris
+                      Waller". Unguarded.
+                  (b) THE GREEN ON A TRAINER / STABLEPASS SECONDARY. Mobile
+                      gates `secondaryLink` on `!reel && subject === 'horse'`
+                      and says why: that run is a stable/location or an
+                      editorial source — a description, not a link — and a
+                      second green run would turn the byline into a row of
+                      links. This preview paints all three green. Unguarded.
+
+                  Neither is in ENG-1441's drift list, and both change copy the
+                  operator reads, so they are named rather than guessed at. */}
               <div className={styles.postByline} data-testid="preview-head-sub">
                 {subject === "horse" ? (
                   byline ? (
                     <>
-                      by <span className={styles.postByTrainer}>{byline}</span> · just now
+                      by <span className={styles.postByTrainer}>{byline}</span> ·{" "}
+                      {POSTED_AGO}
                     </>
                   ) : (
-                    "just now"
+                    POSTED_AGO
                   )
                 ) : headSubline ? (
-                  // Trainer: `stable · location`. StablePass: the byline. Both
-                  // in the same green the horse head gives the trainer's name,
-                  // because in both cases this line IS the attribution — the
-                  // muted "· just now" tail belongs to the horse card's
-                  // "posted by someone else" sentence and would read as noise
-                  // under a head that is already the author.
-                  <span className={styles.postByTrainer} data-testid="preview-head-subline">
-                    {headSubline}
-                  </span>
+                  // Trainer: `stable · location`. StablePass: the byline. See
+                  // drift (b) above for the green — the rationale this comment
+                  // used to give ("in both cases this line IS the attribution")
+                  // is the argument mobile's own source considers and rejects,
+                  // so it is not repeated here as though it were settled.
+                  //
+                  // THE AGE TAIL RUNS HERE TOO (ENG-1441). It used to stop at
+                  // the horse card on the reasoning that "· just now" belonged
+                  // to the "posted by someone else" sentence — but mobile puts
+                  // `{postedAgo}` outside the secondary conditional for every
+                  // subject, so a member reads the age under a trainer and a
+                  // StablePass head as well, and withholding it here left the
+                  // operator previewing a line no member sees.
+                  <>
+                    <span className={styles.postByTrainer} data-testid="preview-head-subline">
+                      {headSubline}
+                    </span>{" "}
+                    · {POSTED_AGO}
+                  </>
                 ) : (
                   // A trainer with neither stable nor location, or a
                   // StablePass post before a byline is chosen. Never a bare
-                  // separator, and never "just now" — see above.
+                  // separator: mobile's null secondary prints the age alone,
+                  // which is what a photoless trainer gets. StablePass keeps
+                  // the compose PROMPT instead — it is an operator affordance
+                  // ("pick one"), not a claim about the member's card, and the
+                  // byline is required before this post can publish.
                   <span className={styles.postBylineEmpty}>
-                    {subject === "stablepass" ? "Choose a byline" : "just now"}
+                    {subject === "stablepass" ? "Choose a byline" : POSTED_AGO}
                   </span>
                 )}
               </div>
+              {/* THE LABEL PILL — BELOW the byline, closing the stack, which is
+                  where mobile's `labelPillStacked` puts it on BOTH heads. It sat
+                  ABOVE the name here until ENG-1441, in the pre-ENG-869 chip
+                  treatment; that placement is mobile's old one and it put
+                  admin's classic head at odds with admin's own reel as well as
+                  with the member card. Same node as the reel's — see labelPill. */}
+              {labelPill("preview-label")}
             </div>
             {showRaceBadge ? (
               <span
@@ -432,38 +518,30 @@ export default function PostPreview({
                   />
                   <div className={styles.reelMeta}>
                     <p className={styles.reelHorse}>{shownName}</p>
-                    {/* No leading "by" — mobile's reel byline is
-                        `trainerName · postedAgo`, where the classic card's
-                        reads "by <trainer> · just now". Matching the member
-                        card, not this file's other byline.
+                    {/* No leading "by" — mobile's byline is
+                        `secondary · postedAgo` on BOTH heads, with no
+                        preposition anywhere. This reel head matches it; the
+                        classic head above still prints "by <trainer>", which is
+                        drift (a) recorded there, not a member-card rule.
 
-                        ENG-1268: the same three-subject split as the classic
-                        head above, reading the SAME derived values, so a
-                        portrait video and a landscape one can never disagree
-                        about who posted it. Only the horse card appends
-                        "· just now" — the other two heads are the author. */}
-                    <div className={styles.reelByline}>
-                      {subject === "horse"
-                        ? byline
-                          ? `${byline} · just now`
-                          : "just now"
-                        : headSubline || (subject === "stablepass" ? "Choose a byline" : "")}
-                    </div>
+                        ENG-1268 split it three ways; ENG-1441 gave all three
+                        the age tail, because mobile does (`{postedAgo}` sits
+                        outside the secondary conditional in `PostHead`). One
+                        derived string, built beside the classic head's values,
+                        so a portrait video and a landscape one can never
+                        disagree about who posted it or when.
+
+                        ONE LINE, always: mobile passes
+                        `numberOfLines={reel ? 1 : undefined}`, which is the
+                        nowrap + ellipsis on `.reelByline`. The classic head is
+                        deliberately unlimited. */}
+                    <div className={styles.reelByline}>{reelBylineText}</div>
                     {/* THE REEL'S LABEL PILL (ENG-1438) — BELOW the byline,
                         closing the stack, which is where mobile's
-                        `labelPillStacked` puts it on both heads. Not above the
-                        name: that is the classic card's older placement in this
-                        file, and copying it here would put admin's two chromes
-                        at odds with each other as well as with mobile.
-
-                        Same `labelText` the classic head renders, so the two
-                        can never show different copy for one chosen label. */}
-                    {labelText ? (
-                      <span className={styles.reelLabelPill} data-testid="preview-reel-label">
-                        <span className={styles.reelLabelPillDot} aria-hidden="true" />
-                        <span className={styles.reelLabelPillText}>{labelText}</span>
-                      </span>
-                    ) : null}
+                        `labelPillStacked` puts it on both heads. The very same
+                        node the classic head slots, so the two can never show
+                        different copy or different geometry for one label. */}
+                    {labelPill("preview-reel-label")}
                   </div>
                 </div>
               ) : null}
@@ -561,9 +639,19 @@ export default function PostPreview({
  * - horse → the initial on the green gradient (unchanged; the member card has
  *   never shown the horse's own photo here).
  * - trainer → the trainer's photo, falling back to the initial when they have
- *   none or the signed URL failed — the existing avatar fallback, not a new one.
+ *   none AND when the <img> fails to load.
+ *
+ *   THE SECOND HALF IS NEW (ENG-1441). The fallback was only ever the `null`
+ *   branch, so a signed URL that had expired — or any 404 — left the browser's
+ *   broken-image glyph sitting in the head, which is what
+ *   `e2e/__screenshots__/eng769/06-reel-trainer.png` captured. `onError` is the
+ *   only signal a plain <img> gives, so the component holds one bit of state
+ *   and re-renders as the photoless case. That bit holds the URL THAT FAILED,
+ *   not a boolean, and the render simply compares it to the current one — no
+ *   effect, no `key` at the call sites: switching to another trainer re-tries
+ *   their photo rather than inheriting the previous one's failure.
  * - stablepass → the S-mark. The asset is ALREADY the mark on `--brand-green`
- *   (#285D50, the exact token), so it fills the circle rather than sitting on a
+ *   (#285D50, the exact token), so it fills the box rather than sitting on a
  *   tinted background that would double the green.
  *
  * `aria-hidden` throughout: the name is right beside it in text, so announcing
@@ -580,6 +668,9 @@ function PreviewAvatar({
   photoUrl: string | null;
   className: string;
 }) {
+  // The url that failed, not a boolean — see the note above.
+  const [broken, setBroken] = useState<string | null>(null);
+
   if (subject === "stablepass") {
     return (
       <div
@@ -587,20 +678,20 @@ function PreviewAvatar({
         data-testid="preview-avatar-mark"
         aria-hidden="true"
       >
-        {/* eslint-disable-next-line @next/next/no-img-element -- static brand asset in /public, fixed 44px box */}
+        {/* eslint-disable-next-line @next/next/no-img-element -- static brand asset in /public, fixed 72px box */}
         <img src="/brand/mark.png" alt="" />
       </div>
     );
   }
-  if (subject === "trainer" && photoUrl) {
+  if (subject === "trainer" && photoUrl && photoUrl !== broken) {
     return (
       <div
         className={`${className} ${styles.photoAvatar}`}
         data-testid="preview-avatar-photo"
         aria-hidden="true"
       >
-        {/* eslint-disable-next-line @next/next/no-img-element -- signed trainer photo, fixed 44px box */}
-        <img src={photoUrl} alt="" />
+        {/* eslint-disable-next-line @next/next/no-img-element -- signed trainer photo, fixed 72px box */}
+        <img src={photoUrl} alt="" onError={() => setBroken(photoUrl)} />
       </div>
     );
   }

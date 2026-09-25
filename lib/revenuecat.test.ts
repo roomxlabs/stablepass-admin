@@ -4,6 +4,7 @@ import { join, relative } from "node:path";
 import {
   addMonthsUtc,
   COMP_DURATIONS,
+  ensureSubscriber,
   grantPromotional,
   isCompDuration,
   revokePromotional,
@@ -116,6 +117,164 @@ describe("grantPromotional", () => {
     expect(f.mock.calls[0][0]).toBe(
       "https://api.revenuecat.com/v1/subscribers/..%2F..%2Fprojects/entitlements/content/promotional",
     );
+  });
+});
+
+describe("grantPromotional — unknown subscriber (ENG-1436)", () => {
+  it("404 → ensure → retry → success", async () => {
+    const f = vi
+      .fn<FetchImpl>()
+      .mockResolvedValueOnce(new Response("{}", { status: 404 }))
+      .mockResolvedValueOnce(new Response("{}", { status: 201 }))
+      .mockResolvedValueOnce(new Response("{}", { status: 201 }));
+
+    const out = await grantPromotional(UID, "monthly", f, { now: NOW });
+    expect(out.ensured).toBe(true);
+    expect(f).toHaveBeenCalledTimes(3);
+
+    const [url0, init0] = f.mock.calls[0];
+    expect(url0).toBe(`https://api.revenuecat.com/v1/subscribers/${UID}/entitlements/content/promotional`);
+    expect(init0?.method).toBe("POST");
+
+    const [url1, init1] = f.mock.calls[1];
+    expect(url1).toBe(`https://api.revenuecat.com/v1/subscribers/${UID}`);
+    expect(init1?.method).toBe("GET");
+    expect((init1?.headers as Record<string, string>).Authorization).toBe("Bearer sk_test_secret");
+    expect(init1?.body).toBeUndefined();
+
+    const [url2, init2] = f.mock.calls[2];
+    expect(url2).toBe(url0);
+    expect(init2?.method).toBe("POST");
+    expect(JSON.parse(String(init2?.body))).toEqual(JSON.parse(String(init0?.body)));
+  });
+
+  it("already-known subscriber → exactly one call, no create", async () => {
+    const f = okFetch(201);
+    const out = await grantPromotional(UID, "monthly", f, { now: NOW });
+    expect(out.ensured).toBe(false);
+    expect(f).toHaveBeenCalledTimes(1);
+    expect(f.mock.calls.some(([url]) => url === `https://api.revenuecat.com/v1/subscribers/${UID}`)).toBe(false);
+  });
+
+  it("5xx does not retry", async () => {
+    const f = okFetch(500);
+    await expect(grantPromotional(UID, "monthly", f)).rejects.toMatchObject({ kind: "unavailable", status: 500 });
+    expect(f).toHaveBeenCalledTimes(1);
+  });
+
+  it("times out on the first grant and does not retry", async () => {
+    vi.useFakeTimers();
+    const f = vi.fn<FetchImpl>(
+      (_url, init) =>
+        new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")));
+        }),
+    );
+    const p = grantPromotional(UID, "monthly", f, { timeoutMs: 5000 }).catch((e) => e);
+    await vi.advanceTimersByTimeAsync(4999);
+    expect(f.mock.calls[0][1]?.signal?.aborted).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    const err = await p;
+    expect(err).toBeInstanceOf(RevenueCatError);
+    expect(err.kind).toBe("unavailable");
+    expect(f).toHaveBeenCalledTimes(1);
+  });
+
+  it("401 does not retry", async () => {
+    const f = okFetch(401);
+    await expect(grantPromotional(UID, "monthly", f)).rejects.toMatchObject({ kind: "unavailable", status: 401 });
+    expect(f).toHaveBeenCalledTimes(1);
+  });
+
+  it("a 404 that survives the retry → unavailable, no loop", async () => {
+    // grant → 404, ensure → 201 (subscriber now exists), retried grant → 404
+    // again (still rejected upstream for some other reason). At most two grant
+    // calls, ever: no second ensure/retry cycle.
+    const f = vi
+      .fn<FetchImpl>()
+      .mockResolvedValueOnce(new Response("{}", { status: 404 }))
+      .mockResolvedValueOnce(new Response("{}", { status: 201 }))
+      .mockResolvedValueOnce(new Response("{}", { status: 404 }));
+
+    await expect(grantPromotional(UID, "monthly", f)).rejects.toMatchObject({ kind: "unavailable", status: 404 });
+    expect(f).toHaveBeenCalledTimes(3);
+  });
+
+  it("err.ensured is true only when the RETRIED grant fails, false for a plain first-call failure", async () => {
+    // 404 → ensure 201 → retried grant 500: the subscriber now exists in
+    // RevenueCat, so the caller must be told via `ensured`.
+    const retried = vi
+      .fn<FetchImpl>()
+      .mockResolvedValueOnce(new Response("{}", { status: 404 }))
+      .mockResolvedValueOnce(new Response("{}", { status: 201 }))
+      .mockResolvedValueOnce(new Response("{}", { status: 500 }));
+    const retriedErr = await grantPromotional(UID, "monthly", retried).catch((e) => e);
+    expect(retriedErr).toMatchObject({ kind: "unavailable", status: 500 });
+    expect(retriedErr.ensured).toBe(true);
+
+    // A plain first-call 500 never creates a subscriber.
+    const plainErr = await grantPromotional(UID, "monthly", okFetch(500)).catch((e) => e);
+    expect(plainErr).toMatchObject({ kind: "unavailable", status: 500 });
+    expect(plainErr.ensured).toBe(false);
+  });
+
+  it("timeoutMs is the budget for the WHOLE grant, not per leg (shared deadline)", async () => {
+    vi.useFakeTimers();
+    // The first grant (unknown subscriber) answers 404, but only after 2000ms
+    // of fake time — burning into the shared budget BEFORE the ensure leg
+    // even starts. The ensure GET then hangs forever: it only ever settles via
+    // its own abort signal, so how long it is allowed to hang is exactly what
+    // proves whether the deadline is shared or reset per leg.
+    const f = vi.fn<FetchImpl>((_url, init) => {
+      if (f.mock.calls.length === 1) {
+        return new Promise<Response>((resolve) => {
+          setTimeout(() => resolve(new Response("{}", { status: 404 })), 2000);
+        });
+      }
+      return new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")));
+      });
+    });
+
+    const p = grantPromotional(UID, "monthly", f, { timeoutMs: 5000 }).catch((e) => e);
+
+    // 2000ms for the first (404) leg to resolve and the ensure leg to start.
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(f).toHaveBeenCalledTimes(2);
+
+    // A SHARED deadline gives the ensure leg only the ~3000ms left in the
+    // budget (2000 + 3000 = 5000ms TOTAL) — not a fresh 5000ms of its own,
+    // which would push the total to 7000ms (and a naive independent
+    // 5000ms-per-leg budget to 10000ms). Just short of the shared total:
+    await vi.advanceTimersByTimeAsync(2998);
+    expect(f.mock.calls[1][1]?.signal?.aborted).toBe(false);
+
+    // Cross the shared 5000ms TOTAL budget — well before 10000ms of fake time.
+    await vi.advanceTimersByTimeAsync(2);
+    const err = await p;
+    expect(err).toBeInstanceOf(RevenueCatError);
+    expect(err.kind).toBe("unavailable");
+    expect(err.message).toMatch(/timed out after \d+ms/);
+  });
+});
+
+describe("ensureSubscriber", () => {
+  it("throws not_configured without the key, and sends nothing", async () => {
+    vi.stubEnv("REVENUECAT_SECRET_API_KEY", "");
+    const f = okFetch();
+    await expect(ensureSubscriber(UID, f)).rejects.toMatchObject({ kind: "not_configured" });
+    expect(f).not.toHaveBeenCalled();
+  });
+
+  it("a non-2xx answer throws a typed unavailable error carrying the status", async () => {
+    const f = okFetch(500);
+    await expect(ensureSubscriber(UID, f)).rejects.toMatchObject({ kind: "unavailable", status: 500 });
+  });
+
+  it("percent-encodes the uid so a path cannot be smuggled into the URL", async () => {
+    const f = okFetch();
+    await ensureSubscriber("../../projects", f);
+    expect(f.mock.calls[0][0]).toBe("https://api.revenuecat.com/v1/subscribers/..%2F..%2Fprojects");
   });
 });
 

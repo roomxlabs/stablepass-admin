@@ -75,7 +75,7 @@ export async function POST(req: Request, { params }: Ctx) {
   // accident, so the check has to be explicit.
   //
   // `subscription` is the right table: `handle_new_user` gives EVERY signup a
-  // row (stablepass-be `20260905120000_delete_account.sql`), including the web
+  // row (stablepass-be `20260905120001_paid_only_subscription.sql`), including the web
   // signup who never paid and never opened the app — exactly the member this
   // ticket is about. This is a READ under the admin's own RLS client; the route
   // still never WRITES `subscription` (epic ENG-1183 decision 12).

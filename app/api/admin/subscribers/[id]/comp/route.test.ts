@@ -141,6 +141,10 @@ describe("POST /api/admin/subscribers/:id/comp — grant", () => {
     expect(r.status).toBe(200);
     expect(await r.json()).toEqual({ data: { granted: true, duration: "three_month" } });
 
+    // The existence check is keyed on THIS route's id — not any row the admin
+    // can see. Without the filter, any well-formed uuid would pass it.
+    expect(rec.filters).toContain(`subscription.user_id=${MEMBER}`);
+
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(fetchMock.mock.calls[0][0]).toBe(
       `https://api.revenuecat.com/v1/subscribers/${MEMBER}/entitlements/content/promotional`,
@@ -171,6 +175,7 @@ describe("POST /api/admin/subscribers/:id/comp — grant", () => {
     expect(r.status).toBe(200);
     expect(await r.json()).toEqual({ data: { granted: true, duration: "monthly" } });
 
+    expect(rec.filters).toContain(`subscription.user_id=${MEMBER}`);
     expect(fetchMock).toHaveBeenCalledTimes(3);
     expect(fetchMock.mock.calls[0][0]).toBe(
       `https://api.revenuecat.com/v1/subscribers/${MEMBER}/entitlements/content/promotional`,
@@ -210,6 +215,19 @@ describe("POST /api/admin/subscribers/:id/comp — grant", () => {
     });
     // No retry loop on a real outage: exactly one grant call.
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([400, 403])("a %i on the grant is NOT treated as an unknown subscriber: no ensure, no retry", async (status) => {
+    // Only the unknown-subscriber 404 is recoverable (ENG-1436). Any other 4xx
+    // must fail on the first call — never create a subscriber, never retry.
+    asAdmin();
+    withMember();
+    fetchMock.mockResolvedValueOnce(new Response("{}", { status }));
+    const r = await POST(postReq({ duration: "monthly" }), ctx());
+    expect(r.status).toBe(502);
+    expect((await r.json()).error.code).toBe("revenuecat_unavailable");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(String(warn.mock.calls[0][0]))).toMatchObject({ status, ensured: false });
   });
 
   it("admin_comp_failed logs ensured: true when the RETRIED grant fails (ENG-1436)", async () => {

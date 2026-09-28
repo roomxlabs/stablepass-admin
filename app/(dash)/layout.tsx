@@ -1,12 +1,15 @@
 import { requireAdminPage } from "@/lib/auth/admin";
 import { signOut } from "@/app/signin/actions";
 import AdminNav from "./AdminNav";
+import SidebarDrawer from "./SidebarDrawer";
 import { Icon } from "./icons";
 import ToastRegion from "./Toast";
 
 // Shell + gate for every dashboard page. requireAdminPage() runs first, so a
 // non-admin never reaches any (dash) child: no session -> /signin, non-admin
 // -> /signin?error=forbidden. Renders the left nav; children own their topbar.
+// Below 768px SidebarDrawer turns that nav into an off-canvas drawer behind a
+// slim brand bar (ENG-1585); the nav's content is still rendered here.
 export default async function DashLayout({
   children,
 }: Readonly<{ children: React.ReactNode }>) {
@@ -16,7 +19,7 @@ export default async function DashLayout({
 
   return (
     <div className="admin-shell">
-      <aside className="admin-sidebar">
+      <SidebarDrawer>
         <div className="admin-sidebar-logo">
           {/* eslint-disable-next-line @next/next/no-img-element -- fixed-height brand lockup, CSS-scaled */}
           <img src="/brand/wordmark-white.png" alt="stablepass." />
@@ -35,7 +38,7 @@ export default async function DashLayout({
             <Icon name="logOut" />
           </button>
         </form>
-      </aside>
+      </SidebarDrawer>
 
       <main className="admin-main">{children}</main>
 

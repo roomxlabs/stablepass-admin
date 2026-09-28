@@ -333,6 +333,140 @@ a { color: inherit; text-decoration: none; }
 .admin-topbar .search .ic { width: 16px; height: 16px; }
 .admin-content { padding: 32px 40px; }
 
+/* ====================================================================
+   PHONE SHELL (ENG-1585) — below 768px the sidebar becomes a drawer.
+
+   No mockup draws a phone shell, so this reuses the sidebar's own tokens:
+   the drawer IS `.admin-sidebar`, unchanged inside, just moved off-canvas,
+   opened from a slim `--brand-green-darker` bar carrying the same wordmark +
+   "Admin" badge. Markup + open/close state: app/(dash)/SidebarDrawer.tsx.
+
+   `--admin-mobilebar-h` is 0 on desktop, so the page topbar and the sticky
+   table header (which park under it) are unchanged there.
+   ==================================================================== */
+:root { --admin-mobilebar-h: 0px; }
+.admin-mobilebar,
+.admin-drawer-scrim,
+.admin-drawer-close { display: none; }
+.admin-topbar { top: var(--admin-mobilebar-h); }
+
+@media (max-width: 767px) {
+  :root { --admin-mobilebar-h: 56px; }
+
+  .admin-shell { grid-template-columns: minmax(0, 1fr); align-content: start; }
+
+  .admin-mobilebar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    height: var(--admin-mobilebar-h);
+    padding: 0 8px 0 16px;
+    background: var(--brand-green-darker);
+    color: var(--cream);
+    position: sticky;
+    top: 0;
+    z-index: 20;
+  }
+  .admin-mobilebar img { height: 26px; display: block; }
+  .admin-mobilebar .badge {
+    font-size: 9.5px;
+    font-weight: 700;
+    letter-spacing: 0.14em;
+    background: rgba(250, 247, 242, 0.14);
+    color: var(--cream);
+    padding: 3px 8px;
+    border-radius: 4px;
+    text-transform: uppercase;
+  }
+  .admin-mobilebar-toggle,
+  .admin-drawer-close {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 44px; height: 44px; /* iOS minimum touch target */
+    border: none;
+    border-radius: 8px;
+    background: transparent;
+    color: var(--cream);
+    cursor: pointer;
+  }
+  .admin-mobilebar-toggle { margin-left: auto; }
+  .admin-mobilebar-toggle:hover,
+  .admin-drawer-close:hover { background: rgba(250, 247, 242, 0.08); }
+  .admin-mobilebar-toggle .ic,
+  .admin-drawer-close .ic { width: 22px; height: 22px; }
+
+  .admin-sidebar {
+    position: fixed;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    height: auto;
+    width: min(280px, 85vw);
+    z-index: 40;
+    overflow-y: auto;
+    padding-top: max(24px, env(safe-area-inset-top));
+    padding-bottom: max(24px, env(safe-area-inset-bottom));
+    box-shadow: 0 24px 60px rgba(0, 0, 0, 0.25);
+    transform: translateX(-100%);
+    /* Closed = hidden, so the off-canvas links leave the tab order. The
+       visibility flip waits for the slide-out to finish. */
+    visibility: hidden;
+    transition: transform 0.22s ease, visibility 0s linear 0.22s;
+  }
+  .admin-sidebar[data-open] {
+    transform: none;
+    visibility: visible;
+    transition: transform 0.22s ease;
+  }
+  .admin-drawer-close { position: absolute; top: 12px; right: 8px; }
+  /* The foot follows the nav instead of pinning to the drawer's bottom edge.
+     `bottom: 0` resolves against the LAYOUT viewport, and mobile browsers
+     grow that past the screen while any page content is wider than the
+     phone (the tables/grids ENG-1590 fixes), which pushed a bottom-pinned
+     sign-out off-screen. Following the nav it is always in view. */
+  .admin-sidebar-foot { margin-top: 20px; }
+  .signout-btn { width: 44px; height: 44px; }
+
+  .admin-drawer-scrim {
+    display: block;
+    position: fixed;
+    inset: 0;
+    z-index: 30;
+    background: rgba(0, 0, 0, 0.45);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.22s ease;
+  }
+  .admin-drawer-scrim[data-open] { opacity: 1; pointer-events: auto; }
+
+  /* Page chrome at phone width: tighter gutters, and let a screen's topbar
+     actions wrap under its title instead of pushing the page sideways. */
+  .admin-topbar { padding: 12px 16px; flex-wrap: wrap; gap: 10px; }
+  .admin-topbar h1 { font-size: 21px; }
+  .admin-topbar .actions { flex-wrap: wrap; }
+  .admin-topbar .search { min-width: 0; }
+  .admin-content { padding: 20px 16px; }
+
+  /* The ENG-964 sticky table header parks at `--admin-topbar-h` (72px), but a
+     phone topbar WRAPS (title, then search, then actions) and is ~150px tall,
+     so the header would tuck under it and be painted over. Unstick it here;
+     ENG-1590 (A3b) owns tables at phone width and can re-pin it once the
+     phone topbar has a known height. (0,2,2) outranks the base (0,1,2) rule,
+     which sits later in the file. */
+  .admin-main .adm-table thead th { position: static; }
+
+  /* Sign-in (ENG-370 two-step card) — the 44px desktop padding leaves a
+     270px column on a 390px phone; give the fields their width back. */
+  .admin-signin-card { padding: 32px 22px; }
+}
+
+@media (max-width: 767px) and (prefers-reduced-motion: reduce) {
+  .admin-sidebar,
+  .admin-sidebar[data-open],
+  .admin-drawer-scrim { transition: none; }
+}
+
 /* Placeholder landing (real content lands in ENG-174/T4) ------------ */
 .dash-placeholder {
   background: var(--white);

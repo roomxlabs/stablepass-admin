@@ -4,7 +4,7 @@
 // badge, omitting the reaction bar, putting the caption in the wrong place and
 // cropping every reel to 16:9. These tests pin each of those.
 import { useState } from "react";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import PostPreview, { type PostPreviewData } from "./PostPreview";
 import PreviewModal from "./PreviewModal";
@@ -717,5 +717,52 @@ describe("head by subject (ENG-1268)", () => {
   it("ONE PREVIEW COMPONENT: exactly one post-preview renders for a stablepass post", () => {
     renderPreview({ subject: "stablepass", byline: "Racing TV" });
     expect(screen.getAllByTestId("post-preview")).toHaveLength(1);
+  });
+});
+
+// ENG-1584 — the preview sat on frame 0 whatever frame was picked, which read
+// as "Use this frame does nothing".
+describe("the video preview parks on the picked poster frame (ENG-1584)", () => {
+  function stubSeek(video: HTMLVideoElement, readyState: number) {
+    const seek = vi.fn();
+    Object.defineProperty(video, "readyState", { configurable: true, get: () => readyState });
+    Object.defineProperty(video, "currentTime", { configurable: true, get: () => 0, set: seek });
+    return seek;
+  }
+
+  it("seeks to posterTimeS once metadata loads", () => {
+    renderPreview({ posterTimeS: 3.2 });
+    const video = screen.getByTestId("preview-video") as HTMLVideoElement;
+    const seek = stubSeek(video, 0);
+    fireEvent.loadedMetadata(video);
+    expect(seek).toHaveBeenCalledWith(3.2);
+  });
+
+  it("seeks when the pick lands after the video already loaded", () => {
+    const { rerender } = render(<PostPreview data={BASE} />);
+    const video = screen.getByTestId("preview-video") as HTMLVideoElement;
+    const seek = stubSeek(video, 1);
+    rerender(<PostPreview data={{ ...BASE, posterTimeS: 8 }} />);
+    expect(seek).toHaveBeenCalledWith(8);
+  });
+
+  it("never seeks without a pick, or for a photo", () => {
+    renderPreview({ posterTimeS: null });
+    const video = screen.getByTestId("preview-video") as HTMLVideoElement;
+    const seek = stubSeek(video, 1);
+    fireEvent.loadedMetadata(video);
+    expect(seek).not.toHaveBeenCalled();
+    cleanup();
+    renderPreview({ mediaType: "photo", posterTimeS: 2 });
+    expect(screen.queryByTestId("preview-video")).toBeNull();
+  });
+
+  it("leaves a playing video alone", () => {
+    render(<PostPreview data={{ ...BASE, posterTimeS: 1 }} />);
+    const video = screen.getByTestId("preview-video") as HTMLVideoElement;
+    const seek = stubSeek(video, 1);
+    fireEvent.play(video);
+    fireEvent.loadedMetadata(video);
+    expect(seek).not.toHaveBeenCalled();
   });
 });

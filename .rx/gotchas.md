@@ -2158,3 +2158,13 @@ A fresh `.claude/worktrees/<ticket>` has no `node_modules`; symlink the main che
 `npm ci`. Playwright also needs `.env.local` copied in — but that supplies a real
 `REVENUECAT_SECRET_API_KEY`, and `subscribers.spec.ts:402` ("no RevenueCat key → 503") then fails.
 Pre-existing and reproducible on a clean base; delete the copied `.env.local` before committing.
+
+## A MediaRecorder webm cannot drive the poster scrubber — use `e2e/fixtures/poster-frame.webm` (ENG-1584)
+**Symptom:** the compose `PosterScrubber` stays on "Loading preview…" and "Use this frame" is disabled
+in Playwright. **Cause:** Chrome's MediaRecorder webm (compose.spec.ts's `recordVideo`) has no duration
+header, so `video.duration` is `Infinity` and the scrubber treats it as 0. **Do-this:** use the committed
+gstreamer fixture (`videotestsrc pattern=ball ! timeoverlay`, 360x640, 8s, every frame prints its own
+timestamp — regenerate with `gst-launch-1.0`; there is no ffmpeg on the box, but gst is). Also: the
+compose "Use this frame" pick only stores `poster_time_s`; the mux webhook bakes once (`poster_url is
+null` guard), so anything that picks a frame must also call the poster re-bake route (compose does it in
+`runAction`; 404 = asset not ready yet, which is fine — the webhook then reads the stored time).

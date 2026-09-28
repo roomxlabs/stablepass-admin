@@ -317,3 +317,30 @@ export async function retireLabel(id: string): Promise<void> {
   const res = await fetch(`/api/admin/post-labels/${id}`, { method: "DELETE" });
   await readData(res);
 }
+
+/**
+ * ENG-1584 — bake the operator's chosen frame into the poster via
+ * `POST /api/admin/posts/:id/poster` (the same BFF route the posts library
+ * re-bake uses; it invokes BE `rebake-poster`).
+ *
+ * WHY COMPOSE CALLS THIS AT ALL: Mux's `asset.ready` webhook bakes the poster
+ * from whatever `poster_time_s` the row holds AT THAT MOMENT, and it records
+ * `poster_url` only while it is still null. Mux usually fires `asset.ready`
+ * while the operator is still scrubbing, so the default frame won and the later
+ * pick only ever reached `poster_time_s` — never the image members see.
+ *
+ * Resolves `"not_ready"` on a 404: the asset has no playback id yet, so
+ * `asset.ready` has NOT fired, and when it does it will read the
+ * `poster_time_s` compose already PATCHed and bake the chosen frame itself.
+ * Any other failure throws (a readable message from the route).
+ */
+export async function rebakeDraftPoster(id: string, time: number): Promise<"baked" | "not_ready"> {
+  const res = await fetch(`/api/admin/posts/${id}/poster`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ time }),
+  });
+  if (res.status === 404) return "not_ready";
+  await readData(res);
+  return "baked";
+}

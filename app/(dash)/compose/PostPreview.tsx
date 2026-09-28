@@ -10,7 +10,7 @@
 // 06-stage1-design/mockups/web/admin/screens/03-compose.html (round 5 re-cut).
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { MeasureState, MediaDimensions, MediaType, Subject } from "./types";
 import {
   describeOrientation,
@@ -93,6 +93,15 @@ export type PostPreviewData = {
    * through to the single-image path below, unchanged.
    */
   photos?: string[];
+  /**
+   * ENG-1584 — the poster frame the operator picked with "Use this frame", in
+   * seconds, or null/absent for none (the member then gets Mux's default).
+   *
+   * Video only. The preview's `<video>` is paused on this frame so the card
+   * shows the poster a member will actually see — before this it sat on frame
+   * 0 whatever was picked, which read as "the pick did nothing".
+   */
+  posterTimeS?: number | null;
 };
 
 export default function PostPreview({
@@ -118,6 +127,7 @@ export default function PostPreview({
     photos,
     label,
     trainer,
+    posterTimeS,
   } = data;
   const subject: Subject = data.subject ?? "horse";
 
@@ -141,6 +151,31 @@ export default function PostPreview({
   // visible. It appears once the operator actually starts playback — before
   // that the frame is unobstructed and the preview is honest about framing.
   const [played, setPlayed] = useState(false);
+
+  // ENG-1584 — park the (paused) preview video on the picked poster frame.
+  // Seeked in two places because the pick and the metadata race: an effect
+  // for a pick made after the video loaded, and `onLoadedMetadata` below for a
+  // video that (re)loads after the pick. Once the operator starts playback in
+  // the modal the frame is theirs — never yank it back mid-play.
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const hasPosterTime =
+    mediaType === "video" && typeof posterTimeS === "number" && Number.isFinite(posterTimeS);
+  function seekToPoster(v: HTMLVideoElement | null) {
+    if (!v || !hasPosterTime || played) return;
+    try {
+      v.currentTime = posterTimeS as number;
+    } catch {
+      /* mid-load seek can throw; onLoadedMetadata retries */
+    }
+  }
+  useEffect(() => {
+    const v = videoRef.current;
+    // readyState ≥ HAVE_METADATA — before that a seek is dropped, and
+    // onLoadedMetadata will do it.
+    if (v && v.readyState >= 1) seekToPoster(v);
+    // seekToPoster reads only these; listing the fn would re-run every render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [posterTimeS, hasPosterTime]);
 
   // ---------------------------------------------------------------------
   // THE HEAD, BY SUBJECT (ENG-1268) — derived once, rendered once.
@@ -464,7 +499,9 @@ export default function PostPreview({
                 // from the outset: the considered look is the one that most needs
                 // an unobstructed frame.
                 <HlsVideo
+                  ref={videoRef}
                   src={mediaUrl}
+                  data-poster-time={hasPosterTime ? String(posterTimeS) : undefined}
                   controls={!compact && played}
                   muted={compact}
                   playsInline
@@ -480,12 +517,13 @@ export default function PostPreview({
                         }
                   }
                   onPlay={() => setPlayed(true)}
-                  onLoadedMetadata={(e) =>
+                  onLoadedMetadata={(e) => {
+                    seekToPoster(e.currentTarget);
                     onMeasure?.({
                       width: e.currentTarget.videoWidth,
                       height: e.currentTarget.videoHeight,
-                    })
-                  }
+                    });
+                  }}
                   onError={() => onMeasure?.(null)}
                 />
               ) : (

@@ -28,6 +28,8 @@ const api = vi.hoisted(() => ({
   createByline: vi.fn(),
   retireByline: vi.fn(),
   retireLabel: vi.fn(),
+  // ENG-1584 — compose bakes the picked poster frame.
+  rebakeDraftPoster: vi.fn(),
 }));
 vi.mock("./api", () => api);
 
@@ -39,8 +41,10 @@ vi.mock("next/link", () => ({
 }));
 
 // next/navigation → stub router so useRouter() works in the test renderer.
+// ENG-1584 hoists the spies so a test can assert whether compose navigated.
+const nav = vi.hoisted(() => ({ push: vi.fn(), refresh: vi.fn() }));
 vi.mock("next/navigation", () => ({
-  useRouter: () => ({ push: vi.fn(), refresh: vi.fn() }),
+  useRouter: () => nav,
 }));
 
 const TRAINERS: TrainerOption[] = [
@@ -2120,6 +2124,119 @@ describe("ENG-748 · multi-photo compose", () => {
         (c: unknown[]) => c[0] === "v-bad" && (c[1] as { body?: string }).body !== undefined,
       );
       expect(patch?.[1]).not.toHaveProperty("poster_time_s");
+    });
+
+    // --- ENG-1584: the picked frame actually becomes the poster --------------
+
+    describe("ENG-1584 — the picked frame reaches the poster and the preview", () => {
+      function mockVideoDraft(id: string) {
+        api.createDraft.mockResolvedValue({
+          id,
+          status: "draft",
+          type: "video",
+          watermarked: false,
+          uploadUrl: "https://storage.mux.com/one-time-upload",
+          muxUploadId: `mux-${id}`,
+        });
+        api.uploadVideoToMux.mockResolvedValue(undefined);
+        api.patchPost.mockResolvedValue(undefined);
+        api.publishPost.mockResolvedValue(undefined);
+      }
+
+      async function pickFrameAndPublish(id: string, timeS: number) {
+        renderScreen();
+        pickHorse("horse-opt-h1");
+        pickVideo();
+        await screen.findByTestId("upload-done");
+        readyScrubber(timeS);
+        fireEvent.click(screen.getByTestId("poster-use-frame"));
+        fireEvent.click(screen.getByTestId("primary-action"));
+        await waitFor(() => expect(api.publishPost).toHaveBeenCalledWith(id));
+      }
+
+      it("asset.ready BEFORE the pick: publish re-bakes the poster at the picked time", async () => {
+        // The webhook already baked the default frame and its null guard will
+        // never bake again — so compose must. "baked" = the asset was ready.
+        mockVideoDraft("v-ready");
+        api.rebakeDraftPoster.mockResolvedValue("baked");
+
+        await pickFrameAndPublish("v-ready", 4.25);
+
+        expect(api.rebakeDraftPoster).toHaveBeenCalledTimes(1);
+        expect(api.rebakeDraftPoster).toHaveBeenCalledWith("v-ready", 4.25);
+        // The re-bake happens after the time is stored and before publish, so
+        // the post goes live with the chosen poster already in place.
+        const rebakeOrder = api.rebakeDraftPoster.mock.invocationCallOrder[0];
+        const patchOrder = Math.max(...api.patchPost.mock.invocationCallOrder);
+        expect(patchOrder).toBeLessThan(rebakeOrder);
+        expect(rebakeOrder).toBeLessThan(api.publishPost.mock.invocationCallOrder[0]);
+        await waitFor(() => expect(nav.push).toHaveBeenCalledWith("/posts"));
+      });
+
+      it("asset.ready AFTER the pick: a not-ready asset is fine — the stored poster_time_s is what the webhook bakes", async () => {
+        mockVideoDraft("v-late");
+        api.rebakeDraftPoster.mockResolvedValue("not_ready");
+
+        await pickFrameAndPublish("v-late", 1.5);
+
+        // The time is on the row (early PATCH + publish PATCH) before the bake
+        // attempt, which is what the webhook reads when asset.ready arrives.
+        expect(api.patchPost).toHaveBeenCalledWith("v-late", { poster_time_s: 1.5 });
+        expect(api.patchPost).toHaveBeenCalledWith(
+          "v-late",
+          expect.objectContaining({ poster_time_s: 1.5 }),
+        );
+        expect(api.rebakeDraftPoster).toHaveBeenCalledWith("v-late", 1.5);
+        await waitFor(() => expect(nav.push).toHaveBeenCalledWith("/posts"));
+      });
+
+      it("a failed bake still publishes, but says so and stays on the page", async () => {
+        mockVideoDraft("v-fail");
+        api.rebakeDraftPoster.mockRejectedValue(new Error("Poster re-bake failed."));
+
+        await pickFrameAndPublish("v-fail", 2);
+
+        expect(
+          await screen.findByText(/^Published — but the chosen preview frame couldn't be set as the poster/),
+        ).toBeTruthy();
+        expect(screen.getByText(/Poster re-bake failed\./)).toBeTruthy();
+        expect(nav.push).not.toHaveBeenCalled();
+      });
+
+      it("no pick → no re-bake (the webhook's default frame stands)", async () => {
+        mockVideoDraft("v-none");
+        renderScreen();
+        pickHorse("horse-opt-h1");
+        pickVideo();
+        await screen.findByTestId("upload-done");
+        fireEvent.click(screen.getByTestId("primary-action"));
+        await waitFor(() => expect(api.publishPost).toHaveBeenCalledWith("v-none"));
+        expect(api.rebakeDraftPoster).not.toHaveBeenCalled();
+      });
+
+      it("the right-hand preview parks on the picked frame as soon as it is picked", async () => {
+        mockVideoDraft("v-prev");
+        renderScreen();
+        pickHorse("horse-opt-h1");
+        pickVideo();
+        await screen.findByTestId("upload-done");
+
+        const preview = screen.getByTestId("preview-video") as HTMLVideoElement;
+        const seek = vi.fn();
+        Object.defineProperty(preview, "readyState", { configurable: true, get: () => 1 });
+        Object.defineProperty(preview, "currentTime", {
+          configurable: true,
+          get: () => 0,
+          set: seek,
+        });
+        expect(preview.dataset.posterTime).toBeUndefined();
+
+        readyScrubber(6.75);
+        fireEvent.click(screen.getByTestId("poster-use-frame"));
+
+        await waitFor(() => expect(seek).toHaveBeenCalledWith(6.75));
+        expect(screen.getByTestId("preview-video").dataset.posterTime).toBe("6.75");
+      });
     });
   });
 

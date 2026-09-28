@@ -16,6 +16,7 @@ import {
   discardDraft,
   patchPost,
   publishPost,
+  rebakeDraftPoster,
   requestPhotoUploads,
   retireByline,
   retireLabel,
@@ -1470,6 +1471,31 @@ export default function ComposeScreen({
         ...posterTimePatch,
       });
 
+      // ENG-1584 — the PATCH above only stores the chosen time. If Mux's
+      // `asset.ready` already fired (the usual case: it lands while the
+      // operator is still on Step 3), the webhook baked the DEFAULT frame and
+      // its `poster_url is null` guard means it never bakes again, so the pick
+      // would stop at the column. Bake it explicitly. "not_ready" (no playback
+      // id yet) is the other order, and it is fine: `asset.ready` will read
+      // the `poster_time_s` just PATCHed and bake the chosen frame itself.
+      //
+      // Cosmetic, so it never blocks the lifecycle action (ENG-824: publish is
+      // never forced) — but it is no longer silent either.
+      let posterWarning: string | null = null;
+      if (postType === "video" && posterTimeS !== null) {
+        try {
+          await rebakeDraftPoster(current.id, posterTimeS);
+        } catch (e) {
+          const done =
+            next === "publish" ? "Published" : next === "schedule" ? "Scheduled" : "Saved as draft";
+          // Lead with what DID happen: this replaces the success note, and an
+          // operator reading only "poster failed" would think the post did too.
+          posterWarning =
+            `${done} — but the chosen preview frame couldn't be set as the poster, so members ` +
+            `see the default frame. Re-pick it from the Posts library. ${(e as Error).message}`;
+        }
+      }
+
       if (next === "publish") {
         await publishPost(current.id);
         setAction({ kind: "ok", message: "Published to subscribers." });
@@ -1484,6 +1510,12 @@ export default function ComposeScreen({
       // now-PUBLISHED post; the endpoint refuses it (409, draft-only), but the
       // client swallowed that silently. Clearing it means we never ask.
       setDraft(null);
+      if (posterWarning) {
+        // Stay put so the operator actually reads it — /posts would bury it.
+        // The post itself went through; only the poster is on the default.
+        setAction({ kind: "error", message: posterWarning });
+        return;
+      }
       // Any successful action (publish / schedule / draft) → land on Posts
       // (refresh so the new/updated post shows in the library).
       router.push("/posts");
@@ -1874,6 +1906,9 @@ export default function ComposeScreen({
      * "" is the picker's "No label" option; the card takes null for that.
      */
     label: label || null,
+    // ENG-1584 — the frame picked with "Use this frame", so the preview's
+    // video sits on the poster a member will see instead of frame 0.
+    posterTimeS: postType === "video" ? posterTimeS : null,
     dims,
     measure,
   };

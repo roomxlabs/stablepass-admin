@@ -75,6 +75,11 @@ describe("Horses loading — grid, not table", () => {
     expect(container.querySelector(".sk-grid")).not.toBeNull();
     expect(container.querySelector(".sk-card")).toBeNull();
   });
+
+  it("renders two full rows of the 6-column grid (ENG-1583)", () => {
+    const { container } = render(<HorsesLoading />);
+    expect(container.querySelectorAll(".sk-grid .sk-tile")).toHaveLength(12);
+  });
 });
 
 describe("Stat tile counts", () => {

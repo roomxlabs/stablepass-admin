@@ -2168,3 +2168,11 @@ timestamp — regenerate with `gst-launch-1.0`; there is no ffmpeg on the box, b
 compose "Use this frame" pick only stores `poster_time_s`; the mux webhook bakes once (`poster_url is
 null` guard), so anything that picks a frame must also call the poster re-bake route (compose does it in
 `runAction`; 404 = asset not ready yet, which is fine — the webhook then reads the stored time).
+
+## Phone shell (ENG-1585): overflowing page content grows the LAYOUT viewport
+Under Playwright `isMobile` (and real mobile browsers), while any page content is wider than the phone,
+`innerHeight` grows past the screen (390×844 measured `innerHeight` 1189) — so a `position: fixed; bottom: 0`
+element lands off-screen. The drawer's sign-out foot therefore follows the nav instead of pinning to the bottom.
+Also: `Toast.test.tsx` regex-pins `.adm-table thead th { top: var(--admin-topbar-h) }` — don't edit that rule's
+text; override at phone width with a higher-specificity selector (`.admin-main .adm-table thead th`). Any
+`e2e` run also rewrites `02-dashboard.png` / `18-*.png` baselines — `git checkout` them before committing.

@@ -2182,3 +2182,8 @@ text; override at phone width with a higher-specificity selector (`.admin-main .
 embedded PNG frames are 8-bit RGB. Do this: when regenerating icons with PIL, `.convert("RGBA")` before `save(..., sizes=[...])`.
 The admin icon set (navy + cream S + gold dot + ADMIN) lives in `app/icon.png`, `app/apple-icon.png`, `app/favicon.ico` and
 `public/icons/*`. Regenerate them together, and keep them distinct from the member app's green "S.".
+
+## e2e: `toHaveCount` passes before streamed markup is laid out (ENG-1583)
+`expect(locator).toHaveCount(n)` can be met while the server page's streamed markup is still in the
+DOM but not yet revealed, so every `getBoundingClientRect()` is `0,0,0` and layout assertions (cards
+per row, widths) fail nonsensically. Wait on `toBeVisible()` for the last item before measuring layout.

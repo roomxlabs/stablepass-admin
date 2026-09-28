@@ -2176,3 +2176,9 @@ element lands off-screen. The drawer's sign-out foot therefore follows the nav i
 Also: `Toast.test.tsx` regex-pins `.adm-table thead th { top: var(--admin-topbar-h) }` — don't edit that rule's
 text; override at phone width with a higher-specificity selector (`.admin-main .adm-table thead th`). Any
 `e2e` run also rewrites `02-dashboard.png` / `18-*.png` baselines — `git checkout` them before committing.
+
+## `app/favicon.ico` frames must be RGBA PNGs or Turbopack's build fails (ENG-1591)
+`next build` dies with "Processing image failed … Format error decoding Ico: The PNG is not in RGBA format!" if the ICO's
+embedded PNG frames are 8-bit RGB. Do this: when regenerating icons with PIL, `.convert("RGBA")` before `save(..., sizes=[...])`.
+The admin icon set (navy + cream S + gold dot + ADMIN) lives in `app/icon.png`, `app/apple-icon.png`, `app/favicon.ico` and
+`public/icons/*`. Regenerate them together, and keep them distinct from the member app's green "S.".

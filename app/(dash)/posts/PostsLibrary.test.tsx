@@ -335,3 +335,40 @@ describe("ENG-1269 · the subject cell renders horse / trainer / stablepass", ()
     expect(stablepassCell.textContent).toContain("Racing TV");
   });
 });
+
+// ---------------------------------------------------------------------------
+// ENG-1590 — the table opts into the phone-stacking CSS (app/globals.css),
+// and the cells that need it carry the caption/hide markers.
+// ---------------------------------------------------------------------------
+describe("ENG-1590 · phone-stacking hooks", () => {
+  it("the table carries stack-phone, and every subject cell carries stack-full + its data-label", () => {
+    const { container } = renderLib();
+    expect(container.querySelector("table")?.className).toContain("stack-phone");
+
+    const subjectCells = screen.getAllByTestId("post-subject");
+    expect(subjectCells.length).toBeGreaterThan(0);
+    for (const cell of subjectCells) {
+      expect(cell.className).toContain("stack-full");
+      expect(cell.getAttribute("data-label")).toBe("Posted as");
+    }
+  });
+
+  it("hides the Published/likes cells on a draft (no timestamp, no likes), but not on a published row with likes", () => {
+    const { container } = renderLib();
+    // `posts` renders in order [pub, sch, dft, unp] — see the fixture above.
+    const rows = container.querySelectorAll("tbody tr");
+    const pubCells = rows[0].querySelectorAll("td");
+    const draftCells = rows[2].querySelectorAll("td");
+    // Cell order in <PostRow>: thumb, subject, type, status, published, likes, actions.
+    const [, , , , pubWhen, pubLikes] = Array.from(pubCells);
+    const [, , , , draftWhen, draftLikes] = Array.from(draftCells);
+
+    expect(pubWhen.className).not.toContain("stack-hide");
+    expect(pubWhen.getAttribute("data-label")).toBe("Published");
+    expect(pubLikes.className).not.toContain("stack-hide");
+
+    expect(draftWhen.className).toContain("stack-hide");
+    expect(draftWhen.getAttribute("data-label")).toBe("Published");
+    expect(draftLikes.className).toContain("stack-hide");
+  });
+});

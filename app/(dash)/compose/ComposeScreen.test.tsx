@@ -3957,4 +3957,154 @@ describe("ENG-1598 · multi-video compose", () => {
       expect(fireBeforeUnload().defaultPrevented).toBe(true);
     });
   });
+
+  // -------------------------------------------------------------------------
+  // ENG-1611 — pins for the poll effect (neither guard had a test that went
+  // red when it was removed) and the `video_set_stale` reload.
+  // -------------------------------------------------------------------------
+  describe("ENG-1611 · the processing poll", () => {
+    // A published 2-video post whose second video is still processing.
+    const processingInitial = (): EditInitial => ({
+      ...editInitial(),
+      videos: [
+        { id: IDS[0], sortOrder: 0, status: "ready", posterUrl: null, playbackUrl: "https://signed.example/v0.m3u8" },
+        { id: IDS[1], sortOrder: 1, status: "uploading", posterUrl: null, playbackUrl: null },
+      ],
+    });
+    const advance = (ms: number) =>
+      act(async () => {
+        await vi.advanceTimersByTimeAsync(ms);
+      });
+
+    it("backs off (x2) between polls that change nothing", async () => {
+      vi.useFakeTimers();
+      api.fetchPostVideos.mockResolvedValue([
+        { id: IDS[0], sortOrder: 0, status: "ready", posterUrl: null, playbackUrl: null },
+        { id: IDS[1], sortOrder: 1, status: "uploading", posterUrl: null, playbackUrl: null },
+      ]);
+      render(<ComposeScreen horses={HORSES} trainers={TRAINERS} initial={processingInitial()} />);
+      const calls = () => api.fetchPostVideos.mock.calls.length;
+
+      await advance(2999);
+      expect(calls()).toBe(0);
+      await advance(1); // t=3000: first poll (base cadence)
+      expect(calls()).toBe(1);
+      expect(api.fetchPostVideos).toHaveBeenLastCalledWith("post-mv");
+      await advance(3000); // t=6000: the first answer was news, so still 3s
+      expect(calls()).toBe(2);
+      // Same answer twice → 6s.
+      await advance(3000); // t=9000
+      expect(calls()).toBe(2);
+      await advance(3000); // t=12000
+      expect(calls()).toBe(3);
+      // Same again → 12s.
+      await advance(6000); // t=18000
+      expect(calls()).toBe(3);
+      await advance(6000); // t=24000
+      expect(calls()).toBe(4);
+    });
+
+    it("never fires a second request while one is in flight", async () => {
+      vi.useFakeTimers();
+      api.fetchPostVideos.mockImplementation(() => new Promise(() => {}));
+      render(<ComposeScreen horses={HORSES} trainers={TRAINERS} initial={processingInitial()} />);
+      await advance(3000);
+      expect(api.fetchPostVideos).toHaveBeenCalledTimes(1);
+      // A minute of a hung route: an interval would have stacked ~20 requests.
+      await advance(60_000);
+      expect(api.fetchPostVideos).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe("ENG-1611 · 409 video_set_stale reloads the server set", () => {
+    const stale = () =>
+      Object.assign(new Error("The video set changed. Reload and try again."), {
+        code: "video_set_stale",
+        status: 409,
+      });
+    // Another admin appended IDS[2] and removed IDS[1] meanwhile.
+    const serverSet = [
+      { id: IDS[0], sortOrder: 0, status: "ready", posterUrl: "https://p/0.jpg", playbackUrl: "https://signed.example/v0.m3u8" },
+      { id: IDS[2], sortOrder: 1, status: "ready", posterUrl: "https://p/2.jpg", playbackUrl: "https://signed.example/v2.m3u8" },
+    ];
+
+    it("edit save: refetches GET /:id/videos, replaces the tiles, explains, and the next save sends the new known set", async () => {
+      api.patchPost.mockRejectedValueOnce(stale());
+      api.fetchPostVideos.mockResolvedValue(serverSet);
+      render(<ComposeScreen horses={HORSES} trainers={TRAINERS} initial={editInitial()} />);
+      // Swap the two — a change the server set no longer describes.
+      fireEvent.click(screen.getByTestId("video-up-1"));
+      expect(tileIds()).toEqual([IDS[1], IDS[0]]);
+
+      fireEvent.click(screen.getByTestId("primary-action"));
+      await waitFor(() =>
+        expect(screen.getByTestId("action-note").textContent).toBe(
+          "This post's videos changed elsewhere — reloaded",
+        ),
+      );
+      expect(api.fetchPostVideos).toHaveBeenCalledWith("post-mv");
+      expect(tileIds()).toEqual([IDS[0], IDS[2]]);
+      expect(nav.push).not.toHaveBeenCalled();
+
+      // The reloaded set IS the server's, so a re-save sends no `videos` at all…
+      api.patchPost.mockResolvedValue(undefined);
+      fireEvent.click(screen.getByTestId("primary-action"));
+      await waitFor(() => expect(api.patchPost).toHaveBeenCalledTimes(2));
+      expect(api.patchPost.mock.calls[1][1]).not.toHaveProperty("videos");
+    });
+
+    it("edit save after a reload: a reorder is diffed against the RELOADED server set", async () => {
+      api.patchPost.mockRejectedValueOnce(stale());
+      api.fetchPostVideos.mockResolvedValue(serverSet);
+      render(<ComposeScreen horses={HORSES} trainers={TRAINERS} initial={editInitial()} />);
+      fireEvent.click(screen.getByTestId("video-up-1"));
+      fireEvent.click(screen.getByTestId("primary-action"));
+      await waitFor(() => expect(tileIds()).toEqual([IDS[0], IDS[2]]));
+
+      api.patchPost.mockResolvedValue(undefined);
+      fireEvent.click(screen.getByTestId("video-up-1"));
+      fireEvent.click(screen.getByTestId("primary-action"));
+      await waitFor(() => expect(api.patchPost).toHaveBeenCalledTimes(2));
+      expect(api.patchPost.mock.calls[1][1]).toMatchObject({
+        videos: [IDS[2], IDS[0]],
+        knownVideos: [IDS[0], IDS[2]],
+      });
+    });
+
+    it("create-flow publish: the same reload + message, and nothing publishes", async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      await pickThree();
+      api.fetchPostVideos.mockResolvedValue(statusRows("ready"));
+      await act(async () => {
+        vi.advanceTimersByTime(3100);
+      });
+      await waitFor(() => expect(publishBtn().disabled).toBe(false));
+      fireEvent.click(screen.getByTestId("video-remove-2"));
+
+      api.patchPost.mockRejectedValueOnce(stale());
+      api.fetchPostVideos.mockResolvedValue(statusRows("ready", [IDS[1], IDS[0]]));
+      fireEvent.click(publishBtn());
+      await waitFor(() =>
+        expect(screen.getByTestId("action-note").textContent).toBe(
+          "This post's videos changed elsewhere — reloaded",
+        ),
+      );
+      expect(tileIds()).toEqual([IDS[1], IDS[0]]);
+      expect(api.publishPost).not.toHaveBeenCalled();
+    });
+
+    it("a failed refetch still explains, without touching the tiles", async () => {
+      api.patchPost.mockRejectedValueOnce(stale());
+      api.fetchPostVideos.mockRejectedValue(new Error("network"));
+      render(<ComposeScreen horses={HORSES} trainers={TRAINERS} initial={editInitial()} />);
+      fireEvent.click(screen.getByTestId("video-up-1"));
+      fireEvent.click(screen.getByTestId("primary-action"));
+      await waitFor(() =>
+        expect(screen.getByTestId("action-note").textContent).toBe(
+          "This post's videos changed elsewhere. Reload the page to see the current set.",
+        ),
+      );
+      expect(tileIds()).toEqual([IDS[1], IDS[0]]);
+    });
+  });
 });

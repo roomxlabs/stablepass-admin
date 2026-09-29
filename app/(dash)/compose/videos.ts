@@ -271,6 +271,44 @@ export function videoOrderPatch(
   return same ? {} : { videos: ids, knownVideos: [...serverIds] };
 }
 
+/**
+ * ENG-1611 — the MV-A1 PATCH refuses a set whose `knownVideos` no longer
+ * matches the server (another admin added or removed a video meanwhile) with
+ * `409 video_set_stale`. Structural, like `videosNotReadyMessage`.
+ */
+export function isVideoSetStale(e: unknown): boolean {
+  return !!e && typeof e === "object" && (e as { code?: unknown }).code === "video_set_stale";
+}
+
+/** What the operator reads once the server set has been reloaded into the tiles. */
+export const VIDEO_SET_STALE_MESSAGE = "This post's videos changed elsewhere — reloaded";
+/** …and when the reload itself failed: the tiles are left as they were. */
+export const VIDEO_SET_STALE_RELOAD_FAILED =
+  "This post's videos changed elsewhere. Reload the page to see the current set.";
+
+/**
+ * ENG-1611 — replace the tiles with the SERVER's set after a `video_set_stale`,
+ * in the server's slot order. A tile the server still holds keeps its key and
+ * local media (no remount, the blob keeps playing) and takes the server's
+ * status by the same rules as the poll; a row this screen never saw becomes a
+ * fresh tile. `dropped` is every local tile the server no longer holds
+ * (including a legacy id-less one), for the caller to abort + revoke.
+ */
+export function reloadVideoSet(
+  list: readonly ComposeVideo[],
+  rows: readonly VideoStatusRow[],
+): { tiles: ComposeVideo[]; dropped: ComposeVideo[] } {
+  const ordered = [...rows].sort((a, b) => a.sortOrder - b.sortOrder);
+  const byId = new Map(list.flatMap((v) => (v.id ? [[v.id, v] as const] : [])));
+  const tiles = ordered.map((row) => {
+    const mine = byId.get(row.id);
+    return mine ? applyServerStatus([mine], [row])[0] : tileFromRow(row);
+  });
+  const kept = new Set(ordered.map((r) => r.id));
+  const dropped = list.filter((v) => !v.id || !kept.has(v.id));
+  return { tiles, dropped };
+}
+
 /** An existing `post_video` row → a tile (edit mode). */
 export function tileFromRow(row: VideoStatusRow): ComposeVideo {
   const state: VideoTileState =

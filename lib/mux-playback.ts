@@ -122,9 +122,18 @@ export type ReconcileVideoRow = {
  */
 export const LEGACY_FALLBACK_MIN_AGE_MS = 10 * 60_000;
 
-/** The guarded write the reconcile needs; `.select("id")` says whether a row actually changed. */
+/**
+ * The guarded write the reconcile needs; `.select("id")` says whether a row
+ * actually changed. Plus the one read the legacy branch makes: the post's own
+ * video columns (ENG-1611, "post wins").
+ */
 export interface PostVideoWriteDb {
   from(table: string): {
+    select(columns: string): {
+      eq(column: string, value: string): {
+        maybeSingle(): PromiseLike<{ data: unknown; error: { message: string } | null }>;
+      };
+    };
     update(values: Record<string, unknown>): {
       eq(column: string, value: string): {
         is(column: string, value: null): {
@@ -138,6 +147,29 @@ export interface PostVideoWriteDb {
 /** What the reconcile WROTE for a row: it is now `ready` with this playback id. */
 export type ReconciledVideo = { playbackId: string };
 
+/** The `post` columns the slot-0 mirror overwrites — the legacy branch preserves them. */
+type LegacyPostVideo = {
+  mux_asset_id: string | null;
+  mux_playback_id: string | null;
+  poster_url: string | null;
+  poster_time_s: number | null;
+  aspect_ratio: number | null;
+};
+
+// ONE string literal (see `.rx/gotchas.md` on `.select()` constants).
+const LEGACY_POST_COLUMNS = "mux_asset_id,mux_playback_id,poster_url,poster_time_s,aspect_ratio";
+
+/** Read the post's video columns; null on any error (the fallback is then skipped). */
+async function readLegacyPost(db: PostVideoWriteDb, postId: string): Promise<LegacyPostVideo | null> {
+  try {
+    const { data, error } = await db.from("post").select(LEGACY_POST_COLUMNS).eq("id", postId).maybeSingle();
+    if (error || !data) return null;
+    return data as LegacyPostVideo;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * ENG-1598 review (must-fix 1 + 2) — reconcile a post's `post_video` rows
  * against Mux when the be `mux-webhook` has not delivered (local dev, webhook
@@ -149,7 +181,15 @@ export type ReconciledVideo = { playbackId: string };
  *   passthrough = `post.id` — the legacy upload's passthrough. Without this the
  *   legacy asset was only ever written to `post`, the row stayed NULL, and the
  *   next `post_video` write mirrored that NULL back over `post`, erasing the
- *   video.
+ *   video. At most ONE row per post may claim it.
+ *
+ * ENG-1611 — "post wins" for that legacy row. The slot-0 mirror copies the
+ * row's `poster_url` / `poster_time_s` / `aspect_ratio` onto `post` when its
+ * `mux_playback_id` changes, so the legacy write carries the post's own values
+ * in the SAME update as the ids (else the old webhook's baked poster and the
+ * operator's chosen frame are erased). When `post.mux_playback_id` is already
+ * set, all five columns come from `post` and Mux is not asked. A failed `post`
+ * read skips the legacy fallback rather than write a row that would blank it.
  *
  * A match is written to the ROW, never to `post` (the deferred SECURITY
  * DEFINER mirror carries slot 0 onto `post`), with the webhook's own
@@ -167,33 +207,75 @@ export async function reconcilePostVideos(
   const pending = rows.filter((r) => !r.mux_playback_id && r.status !== "errored");
   if (pending.length === 0) return out;
 
-  const assets = await listReadyMuxAssets().catch(() => null);
-  if (!assets) return out;
+  const isLegacy = (r: ReconcileVideoRow) =>
+    r.mux_upload_id === null &&
+    !!r.created_at &&
+    now - Date.parse(r.created_at) >= LEGACY_FALLBACK_MIN_AGE_MS;
 
-  // Never hand one asset to two rows (post_video.mux_asset_id is unique anyway).
-  const used = new Set<string>();
+  const legacyPost = pending.some(isLegacy) ? await readLegacyPost(db, postId) : null;
   let legacyClaimed = false;
-  for (const r of pending) {
-    let asset = assets.find((a) => a.passthrough === r.id && !used.has(a.assetId));
-    const oldEnough =
-      !!r.created_at && now - Date.parse(r.created_at) >= LEGACY_FALLBACK_MIN_AGE_MS;
-    if (!asset && r.mux_upload_id === null && oldEnough && !legacyClaimed) {
-      asset = assets.find((a) => a.passthrough === postId && !used.has(a.assetId));
-      if (asset) legacyClaimed = true;
-    }
-    if (!asset) continue;
-    used.add(asset.assetId);
+  const writes: { row: ReconcileVideoRow; values: Record<string, unknown>; playbackId: string }[] = [];
 
-    const values: Record<string, unknown> = {
-      mux_asset_id: asset.assetId,
-      mux_playback_id: asset.playbackId,
-      status: "ready",
-    };
-    if (asset.aspectRatio !== null) values.aspect_ratio = asset.aspectRatio;
+  // The post already holds the legacy video (the old webhook set it): copy it
+  // down onto the first legacy row verbatim — no Mux lookup needed.
+  if (legacyPost?.mux_playback_id) {
+    const r = pending.find(isLegacy)!;
+    legacyClaimed = true;
+    writes.push({
+      row: r,
+      playbackId: legacyPost.mux_playback_id,
+      values: {
+        mux_asset_id: legacyPost.mux_asset_id,
+        mux_playback_id: legacyPost.mux_playback_id,
+        status: "ready",
+        poster_url: legacyPost.poster_url,
+        poster_time_s: legacyPost.poster_time_s,
+        aspect_ratio: legacyPost.aspect_ratio,
+      },
+    });
+  }
+
+  const rest = pending.filter((r) => !writes.some((w) => w.row.id === r.id));
+  if (rest.length > 0) {
+    const assets = await listReadyMuxAssets().catch(() => null);
+    // Never hand one asset to two rows (post_video.mux_asset_id is unique anyway).
+    const used = new Set<string>();
+    for (const r of assets ? rest : []) {
+      let asset = assets!.find((a) => a.passthrough === r.id && !used.has(a.assetId));
+      let fromLegacy = false;
+      if (!asset && isLegacy(r) && !legacyClaimed && legacyPost) {
+        asset = assets!.find((a) => a.passthrough === postId && !used.has(a.assetId));
+        if (asset) {
+          legacyClaimed = true;
+          fromLegacy = true;
+        }
+      }
+      if (!asset) continue;
+      used.add(asset.assetId);
+
+      const values: Record<string, unknown> = {
+        mux_asset_id: asset.assetId,
+        mux_playback_id: asset.playbackId,
+        status: "ready",
+      };
+      if (fromLegacy && legacyPost) {
+        // post wins: keep what the old webhook baked and the operator chose.
+        values.poster_url = legacyPost.poster_url;
+        values.poster_time_s = legacyPost.poster_time_s;
+        const aspect = legacyPost.aspect_ratio ?? asset.aspectRatio;
+        if (aspect !== null) values.aspect_ratio = aspect;
+      } else if (asset.aspectRatio !== null) {
+        values.aspect_ratio = asset.aspectRatio;
+      }
+      writes.push({ row: r, values, playbackId: asset.playbackId });
+    }
+  }
+
+  for (const w of writes) {
     const { data, error } = await db
       .from("post_video")
-      .update(values)
-      .eq("id", r.id)
+      .update(w.values)
+      .eq("id", w.row.id)
       .is("mux_playback_id", null)
       .select("id");
     if (error) {
@@ -203,7 +285,7 @@ export async function reconcilePostVideos(
     // 0 rows = the webhook won the race or RLS refused: do not claim "ready";
     // the next read shows whatever the row really holds.
     if (!data || data.length === 0) continue;
-    out.set(r.id, { playbackId: asset.playbackId });
+    out.set(w.row.id, { playbackId: w.playbackId });
   }
   return out;
 }

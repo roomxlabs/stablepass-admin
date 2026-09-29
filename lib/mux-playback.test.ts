@@ -63,10 +63,29 @@ type WriteCall = { table: string; values: Record<string, unknown>; eq: unknown[]
  * race) can be told apart from a genuine write. Defaults every row to a
  * 1-row success; `resolveRow` overrides one row's `{data, error}` by id.
  */
-function makeWriteDb(resolveRow?: (rowId: string) => { data: unknown[] | null; error: { message: string } | null } | undefined) {
+/** What the legacy branch reads off `post` (ENG-1611 — "post wins"). */
+type PostRead = { data: Record<string, unknown> | null; error: { message: string } | null };
+const BLANK_POST: PostRead = {
+  data: { mux_asset_id: null, mux_playback_id: null, poster_url: null, poster_time_s: null, aspect_ratio: null },
+  error: null,
+};
+
+function makeWriteDb(
+  resolveRow?: (rowId: string) => { data: unknown[] | null; error: { message: string } | null } | undefined,
+  post: PostRead = BLANK_POST,
+) {
   const calls: WriteCall[] = [];
+  const reads: { table: string; columns: string; eq: unknown[] }[] = [];
   const db: PostVideoWriteDb = {
     from: (table) => ({
+      select: (columns: string) => ({
+        eq: (...eq: unknown[]) => ({
+          maybeSingle: () => {
+            reads.push({ table, columns, eq });
+            return Promise.resolve(table === "post" ? post : { data: null, error: null });
+          },
+        }),
+      }),
       update: (values) => ({
         eq: (...eq: unknown[]) => ({
           is: (...is: unknown[]) => ({
@@ -81,7 +100,7 @@ function makeWriteDb(resolveRow?: (rowId: string) => { data: unknown[] | null; e
       }),
     }),
   };
-  return { db, calls };
+  return { db, calls, reads };
 }
 
 /** A write DB whose update for `failingRowId` errors. */
@@ -371,5 +390,141 @@ describe("reconcilePostVideos — ENG-1598 review", () => {
     expect(out.size).toBe(1);
     expect(out.has("pv_a")).toBe(true);
     expect(out.has("pv_b")).toBe(false);
+  });
+
+  // -------------------------------------------------------------------------
+  // ENG-1611 — "post wins": the legacy branch must carry the post's baked
+  // poster + chosen frame + aspect onto the row in the SAME update as the ids.
+  // The slot-0 mirror copies the row onto `post` when `mux_playback_id`
+  // changes, so a write without them erased `post.poster_url` /
+  // `poster_time_s` (and `aspect_ratio` when Mux returned none).
+  // -------------------------------------------------------------------------
+  const legacyRow = (id = "pv_legacy") => row({ id, mux_upload_id: null, created_at: oldEnoughAt });
+
+  it("legacy match copies post's poster_url, poster_time_s and aspect_ratio onto the row, in the same guarded update", async () => {
+    listReadyMuxAssets.mockResolvedValue([asset({ passthrough: "post_1", aspectRatio: 16 / 9 })]);
+    const { db, calls, reads } = makeWriteDb(undefined, {
+      data: {
+        mux_asset_id: null,
+        mux_playback_id: null,
+        poster_url: "posters/post_1.jpg",
+        poster_time_s: 2.5,
+        aspect_ratio: 0.5625,
+      },
+      error: null,
+    });
+    const out = await reconcilePostVideos(db, "post_1", [legacyRow()], NOW);
+    expect(reads).toEqual([
+      {
+        table: "post",
+        columns: "mux_asset_id,mux_playback_id,poster_url,poster_time_s,aspect_ratio",
+        eq: ["id", "post_1"],
+      },
+    ]);
+    expect(calls).toEqual([
+      {
+        table: "post_video",
+        values: {
+          mux_asset_id: "as_post_1",
+          mux_playback_id: "pb_post_1",
+          status: "ready",
+          poster_url: "posters/post_1.jpg",
+          poster_time_s: 2.5,
+          // post wins over Mux's own ratio
+          aspect_ratio: 0.5625,
+        },
+        eq: ["id", "pv_legacy"],
+        is: ["mux_playback_id", null],
+      },
+    ]);
+    expect(out.get("pv_legacy")).toEqual({ playbackId: "pb_post_1" });
+  });
+
+  it("legacy match: a post with no aspect_ratio takes Mux's", async () => {
+    listReadyMuxAssets.mockResolvedValue([asset({ passthrough: "post_1", aspectRatio: 16 / 9 })]);
+    const { db, calls } = makeWriteDb();
+    await reconcilePostVideos(db, "post_1", [legacyRow()], NOW);
+    expect(calls[0].values).toMatchObject({ aspect_ratio: 16 / 9, poster_url: null, poster_time_s: null });
+  });
+
+  it("legacy row when post already holds the video: copies all five columns from post and skips the Mux lookup", async () => {
+    const { db, calls } = makeWriteDb(undefined, {
+      data: {
+        mux_asset_id: "as_webhook",
+        mux_playback_id: "pb_webhook",
+        poster_url: "posters/post_1.jpg",
+        poster_time_s: 4,
+        aspect_ratio: 1.7778,
+      },
+      error: null,
+    });
+    const out = await reconcilePostVideos(db, "post_1", [legacyRow()], NOW);
+    expect(listReadyMuxAssets).not.toHaveBeenCalled();
+    expect(calls).toEqual([
+      {
+        table: "post_video",
+        values: {
+          mux_asset_id: "as_webhook",
+          mux_playback_id: "pb_webhook",
+          status: "ready",
+          poster_url: "posters/post_1.jpg",
+          poster_time_s: 4,
+          aspect_ratio: 1.7778,
+        },
+        eq: ["id", "pv_legacy"],
+        is: ["mux_playback_id", null],
+      },
+    ]);
+    expect(out.get("pv_legacy")).toEqual({ playbackId: "pb_webhook" });
+  });
+
+  it("legacy row: a failed post read skips the fallback (never writes a row that would blank post)", async () => {
+    listReadyMuxAssets.mockResolvedValue([asset({ passthrough: "post_1" })]);
+    const { db, calls } = makeWriteDb(undefined, { data: null, error: { message: "boom" } });
+    const out = await reconcilePostVideos(db, "post_1", [legacyRow()], NOW);
+    expect(calls).toHaveLength(0);
+    expect(out.size).toBe(0);
+  });
+
+  it("a non-legacy row never reads post", async () => {
+    listReadyMuxAssets.mockResolvedValue([asset({ passthrough: "pv_1" })]);
+    const { db, reads } = makeWriteDb();
+    await reconcilePostVideos(db, "post_1", [row({ id: "pv_1" })], NOW);
+    expect(reads).toHaveLength(0);
+  });
+
+  it("a row with a non-null mux_upload_id, older than 10 min, is NOT legacy-matched", async () => {
+    listReadyMuxAssets.mockResolvedValue([asset({ passthrough: "post_1" })]);
+    const { db, calls } = makeWriteDb();
+    const out = await reconcilePostVideos(
+      db,
+      "post_1",
+      [row({ id: "pv_mv", mux_upload_id: "up_1", created_at: oldEnoughAt })],
+      NOW,
+    );
+    expect(calls).toHaveLength(0);
+    expect(out.size).toBe(0);
+  });
+
+  it("a second null-upload-id row does not claim once one has — even with a second post.id asset listed", async () => {
+    listReadyMuxAssets.mockResolvedValue([
+      asset({ passthrough: "post_1", assetId: "as_first", playbackId: "pb_first" }),
+      asset({ passthrough: "post_1", assetId: "as_second", playbackId: "pb_second" }),
+    ]);
+    const { db, calls } = makeWriteDb();
+    const out = await reconcilePostVideos(db, "post_1", [legacyRow("pv_a"), legacyRow("pv_b")], NOW);
+    expect(calls).toHaveLength(1);
+    expect(calls[0].eq).toEqual(["id", "pv_a"]);
+    expect(out.has("pv_b")).toBe(false);
+  });
+
+  it("a second null-upload-id row does not claim once one was copied from post", async () => {
+    listReadyMuxAssets.mockResolvedValue([asset({ passthrough: "post_1" })]);
+    const { db, calls } = makeWriteDb(undefined, {
+      data: { mux_asset_id: "as_w", mux_playback_id: "pb_w", poster_url: null, poster_time_s: null, aspect_ratio: null },
+      error: null,
+    });
+    await reconcilePostVideos(db, "post_1", [legacyRow("pv_a"), legacyRow("pv_b")], NOW);
+    expect(calls.map((c) => c.eq)).toEqual([["id", "pv_a"]]);
   });
 });

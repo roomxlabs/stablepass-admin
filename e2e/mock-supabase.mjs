@@ -742,6 +742,8 @@ const COMPOSE_EDIT_POSTS = [
   // edit-mode strip load + reorder + save e2e. `media_url` mirrors row 0 of
   // POST_MEDIA_FIXTURES.ce3, exactly as the real writer keeps them in step.
   { id: "ce3", type: "photo", status: "draft", title: null, body: "Two from this morning's session.", label: null, subject: "horse", byline: null, source_trainer_id: "t1", source_trainer: null, scheduled_for: null, media_url: "ce3/original", mux_playback_id: null, horse: HORSE_EMBED },
+  // ENG-1598 — a published 2-video post for the multi-video edit spec.
+  { id: "ce4", type: "video", status: "published", title: null, body: "Three angles from this morning's gallop.", label: null, subject: "horse", byline: null, source_trainer_id: "t1", source_trainer: null, scheduled_for: null, media_url: null, mux_playback_id: null, horse: HORSE_EMBED },
 ];
 
 // ENG-1266 — `post_media` rows behind the compose EDIT loader's multi-photo
@@ -781,6 +783,54 @@ function makePostVideoRow(partial) {
     updated_at: now,
   };
 }
+
+// ENG-1598 — seed fixture rows (after both `POST_VIDEO_ROWS` and
+// `makePostVideoRow` exist, per that const's declaration order): three READY
+// rows for the posts-library "p1" video post (so its "N videos" badge and
+// status poll have real rows to read), and two READY rows for a NEW
+// compose-edit fixture post "ce4" (the multi-video edit spec, below).
+POST_VIDEO_ROWS.push(
+  makePostVideoRow({
+    id: "00000000-0000-4000-8000-0000000001a0",
+    post_id: "p1",
+    sort_order: 0,
+    status: "ready",
+    mux_playback_id: null,
+    poster_url: null,
+  }),
+  makePostVideoRow({
+    id: "00000000-0000-4000-8000-0000000001a1",
+    post_id: "p1",
+    sort_order: 1,
+    status: "ready",
+    mux_playback_id: null,
+    poster_url: null,
+  }),
+  makePostVideoRow({
+    id: "00000000-0000-4000-8000-0000000001a2",
+    post_id: "p1",
+    sort_order: 2,
+    status: "ready",
+    mux_playback_id: null,
+    poster_url: null,
+  }),
+  makePostVideoRow({
+    id: "00000000-0000-4000-8000-0000000004a0",
+    post_id: "ce4",
+    sort_order: 0,
+    status: "ready",
+    mux_playback_id: null,
+    poster_url: null,
+  }),
+  makePostVideoRow({
+    id: "00000000-0000-4000-8000-0000000004a1",
+    post_id: "ce4",
+    sort_order: 1,
+    status: "ready",
+    mux_playback_id: null,
+    poster_url: null,
+  }),
+);
 
 // Active horses for the quiet-horse check. h1 posted this week (loud); h2/h3
 // stale; h5 never posted — so three quiet horses, one retired (matches mockup).
@@ -1528,6 +1578,16 @@ export function startMockSupabase() {
         } else if (postIdParam && postIdParam.startsWith("eq.")) {
           const wanted = postIdParam.slice(3);
           rows = rows.filter((r) => r.post_id === wanted);
+        } else if (postIdParam && postIdParam.startsWith("in.")) {
+          // ENG-1598 — the posts-library "N videos" badge tally:
+          // `.select("post_id").in("post_id", ids)`. Parsed the same way the
+          // DELETE branch below parses its own `id=in.(...)`.
+          const wantedIds = postIdParam
+            .slice(3)
+            .replace(/^\(|\)$/g, "")
+            .split(",")
+            .filter(Boolean);
+          rows = rows.filter((r) => wantedIds.includes(r.post_id));
         }
         const sorted = [...rows].sort((a, b) => a.sort_order - b.sort_order);
         if (accept.includes("pgrst.object")) {

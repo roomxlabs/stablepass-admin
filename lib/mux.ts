@@ -74,16 +74,37 @@ type MuxAssetRow = {
   status?: string;
   passthrough?: string;
   playback_ids?: Array<{ id?: string }>;
+  /** Mux sends a ratio STRING ("16:9"); parsed by `parseMuxAspectRatio`. */
+  aspect_ratio?: unknown;
 };
 
+/** A ready asset from the recent-assets listing, keyed by its passthrough. */
+export type MuxListedAsset = MuxReadyAsset & { passthrough: string; aspectRatio: number | null };
+
 /**
- * Find a **ready** Mux asset whose `passthrough` equals the given post id.
- * The webhook (BE `mux-webhook`) is the primary reconciler; this is the
- * read-time fallback for environments where it isn't configured (local dev)
- * or hasn't delivered yet. Scans the most recent page of assets — uploads we
- * care about are always recent.
+ * "16:9" → 1.777…; anything malformed / non-positive → null. Same rule as the
+ * be `mux-webhook` (post_video.aspect_ratio is `numeric` with a `> 0` check).
  */
-export async function findMuxAssetByPassthrough(passthrough: string): Promise<MuxReadyAsset | null> {
+export function parseMuxAspectRatio(raw: unknown): number | null {
+  if (typeof raw !== "string") return null;
+  const m = /^\s*(\d+(?:\.\d+)?)\s*:\s*(\d+(?:\.\d+)?)\s*$/.exec(raw);
+  if (!m) return null;
+  const w = Number(m[1]);
+  const h = Number(m[2]);
+  const r = w / h;
+  return Number.isFinite(r) && r > 0 ? r : null;
+}
+
+/**
+ * ONE listing of the most recent page of Mux assets, keeping only the READY
+ * ones that carry a passthrough + playback id. The webhook (BE `mux-webhook`)
+ * is the primary reconciler; this is the read-time fallback for environments
+ * where it isn't configured (local dev) or hasn't delivered yet. Uploads we
+ * care about are always recent. Callers reconciling several videos call this
+ * once and match every row against it (ENG-1598 review) instead of listing
+ * per row.
+ */
+export async function listReadyMuxAssets(): Promise<MuxListedAsset[]> {
   const auth = muxAuthHeader();
 
   let res: Response;
@@ -98,9 +119,24 @@ export async function findMuxAssetByPassthrough(passthrough: string): Promise<Mu
   if (!res.ok) throw new MuxError(`Mux asset list failed (${res.status}).`);
 
   const json = (await res.json().catch(() => null)) as { data?: MuxAssetRow[] } | null;
-  const asset = json?.data?.find((a) => a.passthrough === passthrough && a.status === "ready");
-  const playbackId = asset?.playback_ids?.[0]?.id;
-  return asset?.id && playbackId ? { assetId: asset.id, playbackId } : null;
+  const out: MuxListedAsset[] = [];
+  for (const a of json?.data ?? []) {
+    const playbackId = a.playback_ids?.[0]?.id;
+    if (a.status !== "ready" || !a.id || !playbackId || typeof a.passthrough !== "string") continue;
+    out.push({
+      assetId: a.id,
+      playbackId,
+      passthrough: a.passthrough,
+      aspectRatio: parseMuxAspectRatio(a.aspect_ratio),
+    });
+  }
+  return out;
+}
+
+/** Find a **ready** Mux asset whose `passthrough` equals the given id (post or post_video). */
+export async function findMuxAssetByPassthrough(passthrough: string): Promise<MuxReadyAsset | null> {
+  const asset = (await listReadyMuxAssets()).find((a) => a.passthrough === passthrough);
+  return asset ? { assetId: asset.assetId, playbackId: asset.playbackId } : null;
 }
 
 const MUX_UPLOAD_ID_URL = (uploadId: string) => `${MUX_UPLOADS_URL}/${encodeURIComponent(uploadId)}`;

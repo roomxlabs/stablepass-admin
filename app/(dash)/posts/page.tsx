@@ -136,6 +136,25 @@ export default async function PostsPage({
   const rows = (data ?? []) as unknown as PostRow[];
   const total = count ?? rows.length;
 
+  // ENG-1598 — "N videos" badge: how many `post_video` rows each video post
+  // has. Best-effort only: skipped entirely when there is no video post on
+  // the page, and any error (including `post_video` not existing yet) just
+  // omits the counts (no badges) rather than throwing — this tally is
+  // decoration, not something the library's render should ever depend on.
+  const videoPostIds = rows.filter((r) => r.type === "video").map((r) => r.id);
+  const videoCounts = new Map<string, number>();
+  if (videoPostIds.length) {
+    const { data: videoRows, error: videoCountErr } = await sb
+      .from("post_video")
+      .select("post_id")
+      .in("post_id", videoPostIds);
+    if (!videoCountErr) {
+      for (const v of (videoRows ?? []) as { post_id: string }[]) {
+        videoCounts.set(v.post_id, (videoCounts.get(v.post_id) ?? 0) + 1);
+      }
+    }
+  }
+
   // Chip counts: a status tally within the same horse/search scope (but
   // status-agnostic), so each chip shows how many posts it would reveal.
   //
@@ -187,6 +206,7 @@ export default async function PostsPage({
       ...p,
       thumbUrl: mediaThumb ?? (p.thumbUrl ? horseThumbs.get(p.thumbUrl) ?? null : null),
       playbackUrl,
+      videoCount: r.type === "video" ? videoCounts.get(r.id) : undefined,
     };
   });
 

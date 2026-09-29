@@ -7,13 +7,24 @@
 // (photo). Every BFF call is admin-gated server-side by `requireAdmin()`.
 import { supabaseBrowser } from "@/lib/supabase/client";
 import type { CreateDraftResponse, MediaType, PhotoUploadTarget, Subject } from "./types";
+import { videoUploadTargets, type VideoStatusRow, type VideoUploadTarget } from "./videos";
 
 async function readData<T>(res: Response): Promise<T> {
   const json = (await res.json().catch(() => null)) as
-    | { data?: T; error?: { message?: string } }
+    | { data?: T; error?: { message?: string; code?: string; notReady?: unknown } }
     | null;
   if (!res.ok) {
-    throw new Error(json?.error?.message ?? `Request failed (${res.status}).`);
+    // ENG-1598 — an ApiError (still an Error, so every `(e as Error).message`
+    // caller reads the same text) carrying the envelope `code`, so Compose can
+    // turn a publish `409 videos_not_ready` into "Waiting for N videos…"
+    // instead of the route's generic sentence.
+    const err = new ApiError(
+      json?.error?.message ?? `Request failed (${res.status}).`,
+      res.status,
+      json?.error?.code,
+    );
+    if (Array.isArray(json?.error?.notReady)) err.notReady = json.error.notReady as string[];
+    throw err;
   }
   return (json?.data ?? null) as T;
 }
@@ -63,6 +74,12 @@ export async function createDraft(input: {
    * a video post ever sends it.
    */
   poster_time_s?: number | null;
+  /**
+   * ENG-1598 — how many video slots (and Mux direct-upload targets) to mint,
+   * 1..5. Video posts only; sent ONLY for a genuine multi-pick so a
+   * single-video create stays byte-identical to the request before MV-A1.
+   */
+  videoCount?: number;
 }): Promise<CreateDraftResponse> {
   const res = await fetch("/api/admin/posts", {
     method: "POST",
@@ -113,6 +130,15 @@ export async function patchPost(
      * picked time reaches the row before Mux `asset.ready`.
      */
     poster_time_s?: number | null;
+    /**
+     * ENG-1598 — the post's WHOLE ordered `post_video` id set (MV-A1). Ids
+     * left out are removed (row + Mux asset); the rest are renumbered from 0
+     * and a new slot 0 has its `poster_time_s` cleared. Omit to leave the set
+     * alone. `knownVideos` is the set this session last loaded, so a set
+     * another admin changed meanwhile 409s `video_set_stale`.
+     */
+    videos?: string[];
+    knownVideos?: string[];
   },
 ): Promise<void> {
   const res = await fetch(`/api/admin/posts/${id}`, {
@@ -176,6 +202,8 @@ export async function publishPost(id: string): Promise<void> {
 export class ApiError extends Error {
   code?: string;
   status: number;
+  /** ENG-1598 — `409 videos_not_ready`'s list of the rows still processing. */
+  notReady?: string[];
   constructor(message: string, status: number, code?: string) {
     super(message);
     this.name = "ApiError";
@@ -218,23 +246,54 @@ export async function discardDraft(id: string): Promise<void> {
   }
 }
 
-/** PUT the finished video straight to the Mux one-time upload URL. */
+/** The rejection an aborted `uploadVideoToMux` settles with. */
+export class UploadAbortedError extends Error {
+  constructor() {
+    super("Upload cancelled.");
+    this.name = "AbortError";
+  }
+}
+
+/**
+ * PUT the finished video straight to the Mux one-time upload URL.
+ *
+ * ENG-1598 review — abortable: a removed tile, a replaced set or a cancelled
+ * edit aborts its PUT via `signal`, so no orphaned multi-GB upload keeps
+ * running (and lands a video the operator threw away). An abort rejects with
+ * `UploadAbortedError`.
+ */
 export function uploadVideoToMux(
   uploadUrl: string,
   file: File,
   onProgress?: (pct: number) => void,
+  signal?: AbortSignal,
 ): Promise<void> {
   return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new UploadAbortedError());
+      return;
+    }
     const xhr = new XMLHttpRequest();
+    const onAbort = () => xhr.abort();
+    signal?.addEventListener("abort", onAbort, { once: true });
+    const settle = () => signal?.removeEventListener("abort", onAbort);
     xhr.open("PUT", uploadUrl);
     xhr.upload.onprogress = (e) => {
       if (e.lengthComputable && onProgress) onProgress(Math.round((e.loaded / e.total) * 100));
     };
-    xhr.onload = () =>
-      xhr.status >= 200 && xhr.status < 300
-        ? resolve()
-        : reject(new Error(`Upload failed (${xhr.status}).`));
-    xhr.onerror = () => reject(new Error("Upload failed — check your connection."));
+    xhr.onload = () => {
+      settle();
+      if (xhr.status >= 200 && xhr.status < 300) resolve();
+      else reject(new Error(`Upload failed (${xhr.status}).`));
+    };
+    xhr.onerror = () => {
+      settle();
+      reject(new Error("Upload failed — check your connection."));
+    };
+    xhr.onabort = () => {
+      settle();
+      reject(new UploadAbortedError());
+    };
     xhr.send(file);
   });
 }
@@ -343,4 +402,33 @@ export async function rebakeDraftPoster(id: string, time: number): Promise<"bake
   if (res.status === 404) return "not_ready";
   await readData(res);
   return "baked";
+}
+
+/**
+ * ENG-1598 — mint `count` MORE video slots on an existing video post (draft or
+ * published), `POST /api/admin/posts/:id/video-uploads` → 201 `{uploads}`.
+ * The client sends a COUNT only; the route creates the `post_video` rows and
+ * the Mux direct-upload targets. No Mux ids ever come back.
+ */
+export async function requestVideoUploads(postId: string, count: number): Promise<VideoUploadTarget[]> {
+  const res = await fetch(`/api/admin/posts/${postId}/video-uploads`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ count }),
+  });
+  const data = await readData<{ uploads?: unknown }>(res);
+  return videoUploadTargets({ uploads: data?.uploads }).filter((t) => t.videoId !== null);
+}
+
+/**
+ * ENG-1598 — the post's videos and their processing state,
+ * `GET /api/admin/posts/:id/videos`. Polled while any tile is processing.
+ * Resolves null when the backend has no `post_video` table yet (503
+ * `videos_unavailable`) — the caller then stops polling.
+ */
+export async function fetchPostVideos(postId: string): Promise<VideoStatusRow[] | null> {
+  const res = await fetch(`/api/admin/posts/${postId}/videos`, { cache: "no-store" });
+  if (res.status === 503) return null;
+  const data = await readData<{ videos?: VideoStatusRow[] }>(res);
+  return data?.videos ?? [];
 }

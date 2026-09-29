@@ -89,6 +89,8 @@ export type PostView = {
   playbackUrl: string | null;
   /** Current poster frame seconds, or null. */
   posterTimeS: number | null;
+  /** ENG-1598: number of `post_video` rows, only set for video posts. */
+  videoCount?: number;
 };
 
 export type StatusCounts = Record<StatusFilter, number>;

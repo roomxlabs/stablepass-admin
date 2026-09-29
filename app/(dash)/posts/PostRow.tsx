@@ -96,6 +96,17 @@ export default function PostRow({ post: p }: { post: PostView }) {
       </td>
       <td className="nowrap">
         <span className="pill">{p.typeLabel}</span>
+        {/* ENG-1598 — "N videos", only when a video post has more than one
+            `post_video` row. On its OWN LINE under the pill, never beside it:
+            inline, the nowrap cell's min-content grew by a second pill and
+            `table-layout: auto` took that width out of the Post column,
+            wrapping every excerpt to 5-6 lines (the ENG-1269 subject-tag trap,
+            caught in the library screenshot). */}
+        {p.type === "video" && (p.videoCount ?? 0) > 1 ? (
+          <div className="row-sub" data-testid="post-video-count">
+            {p.videoCount} videos
+          </div>
+        ) : null}
       </td>
       <td className="nowrap">
         <span className={p.statusPillClass}>{p.statusLabel}</span>

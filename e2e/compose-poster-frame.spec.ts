@@ -59,6 +59,28 @@ async function mockBff(page: Page): Promise<Calls> {
     });
   });
   await page.route("**/mock-upload/**", (route) => route.fulfill({ status: 200, body: "" }));
+  // ENG-1598 — the create above returns a post_video id, so compose now waits
+  // for that video to be READY before Publish enables (MV-A1's gate). Mux is
+  // "done" here straight away.
+  await page.route("**/api/admin/posts/p-e2e/videos", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        data: {
+          videos: [
+            {
+              id: "00000000-0000-4000-8000-0000000000e2",
+              sortOrder: 0,
+              status: "ready",
+              posterUrl: null,
+              playbackUrl: null,
+            },
+          ],
+        },
+      }),
+    }),
+  );
   await page.route("**/api/admin/posts/p-e2e", async (route) => {
     if (route.request().method() === "PATCH") calls.patches.push(route.request().postDataJSON());
     await route.fulfill({ status: 200, contentType: "application/json", body: '{"data":{}}' });

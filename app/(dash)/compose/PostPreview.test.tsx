@@ -766,3 +766,41 @@ describe("the video preview parks on the picked poster frame (ENG-1584)", () => 
     expect(seek).not.toHaveBeenCalled();
   });
 });
+
+describe("ENG-1598 · the video carousel", () => {
+  const SET = [
+    { posterUrl: null, localUrl: "blob:v0", ready: true },
+    { posterUrl: "https://p/1.jpg", localUrl: null, ready: true },
+    { posterUrl: null, localUrl: "blob:v2", ready: false },
+  ];
+
+  it("one video is the single-video card: no dots, no count", () => {
+    renderPreview({ videos: [SET[0]] });
+    expect(screen.queryByTestId("preview-dots")).toBeNull();
+    expect(screen.queryByTestId("preview-count")).toBeNull();
+    expect(screen.getByTestId("preview-video")).toBeTruthy();
+  });
+
+  it("2+ videos: dots + n/m, slide 1 is the cover video parked on the picked frame", () => {
+    renderPreview({ videos: SET, posterTimeS: 2.5 });
+    expect(screen.getAllByTestId(/^preview-dot-\d+$/)).toHaveLength(3);
+    expect(screen.getByTestId("preview-count").textContent).toBe("1/3");
+    expect(screen.getByTestId("preview-video").dataset.posterTime).toBe("2.5");
+    expect(screen.getByLabelText("Show video 2 of 3")).toBeTruthy();
+  });
+
+  it("later slides show their poster once ready, and say so while processing", () => {
+    renderPreview({ videos: SET });
+    fireEvent.click(screen.getByTestId("preview-dot-1"));
+    expect(screen.getByTestId("preview-video-poster").getAttribute("src")).toBe("https://p/1.jpg");
+    expect(screen.queryByTestId("preview-video")).toBeNull();
+    fireEvent.click(screen.getByTestId("preview-dot-2"));
+    expect(screen.getByTestId("preview-video-processing").textContent).toBe("Processing video 3…");
+    expect(screen.getByTestId("preview-count").textContent).toBe("3/3");
+  });
+
+  it("a photo post ignores `videos` entirely", () => {
+    renderPreview({ mediaType: "photo", mediaUrl: "blob:p", videos: SET });
+    expect(screen.queryByTestId("preview-dots")).toBeNull();
+  });
+});

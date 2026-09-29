@@ -598,6 +598,20 @@ export default function ComposeScreen({
   /** Cap breach, mixed pick and append failures — shown under the video strip. */
   const [videoError, setVideoError] = useState<string | null>(null);
   /**
+   * An append's mint request is in flight. "Add more videos" is disabled for
+   * it: two overlapping appends would each count against a stale strip.
+   */
+  const [appending, setAppending] = useState(false);
+  /**
+   * The frame picked for each video while it was the cover, by tile key. A
+   * reorder that brings a video BACK to the server's slot 0 restores its pick
+   * — the server never cleared it — so the chooser cannot claim "no frame"
+   * while members get the old one.
+   */
+  const posterPicks = useRef(new Map<string, number>());
+  /** The status route is not deployed (503): stop asking. */
+  const [pollOff, setPollOff] = useState(false);
+  /**
    * The post type is CHOSEN up front (step 2), never inferred from the picked
    * file. Inference is what left `text` unauthorable — it has no file to sniff.
    * Video is the default: it is the common post, and it is what the mockup
@@ -848,7 +862,7 @@ export default function ComposeScreen({
    * (the set-state-in-effect lint, gotcha :812). The be mux-webhook is what
    * flips a row; this only reads it.
    */
-  const pollKey = usesVideoSet && uploadPostId ? pollableIds(videos).join(",") : "";
+  const pollKey = usesVideoSet && uploadPostId && !pollOff ? pollableIds(videos).join(",") : "";
   useEffect(() => {
     if (!pollKey || !uploadPostId) return;
     const postId = uploadPostId;
@@ -856,7 +870,11 @@ export default function ComposeScreen({
     const timer = setInterval(() => {
       void fetchPostVideos(postId)
         .then((rows) => {
-          if (cancelled || !rows) return;
+          if (cancelled) return;
+          if (!rows) {
+            setPollOff(true);
+            return;
+          }
           setVideos((prev) => applyServerStatus(prev, rows));
         })
         .catch(() => {
@@ -1096,6 +1114,7 @@ export default function ComposeScreen({
     revokePhotoUrls(photos);
     setPhotos([]);
     // ENG-1598 — the video set belongs to the same draft, and so goes with it.
+    posterPicks.current.clear();
     revokeVideoUrls(videos);
     setVideos([]);
     setServerVideoIds([]);
@@ -1150,6 +1169,7 @@ export default function ComposeScreen({
    */
   function onPickPosterFrame(timeS: number) {
     setPosterTimeS(timeS);
+    if (coverVideo) posterPicks.current.set(coverVideo.key, timeS);
     // ENG-1598 — the early write lands on the server's slot 0. If the operator
     // has reordered since the last save, that is a DIFFERENT video from the
     // one they just picked a frame of, so skip it: the save/publish PATCH
@@ -1591,7 +1611,9 @@ export default function ComposeScreen({
    * for the new slot 0 (MV-A1); the measurement is redone for the new clip.
    */
   function onCoverChanged(next: ComposeVideo | undefined) {
-    setPosterTimeS(null);
+    const restored =
+      next && next.id && next.id === serverVideoIds[0] ? posterPicks.current.get(next.key) : undefined;
+    setPosterTimeS(restored ?? null);
     setDims(null);
     setMeasure(next?.file ? "measuring" : "off");
   }
@@ -1696,7 +1718,11 @@ export default function ComposeScreen({
         return;
       }
       const targets = videoUploadTargets(created);
-      if (targets.length < picked.length) throw new Error("No upload target was returned.");
+      if (targets.length < picked.length) {
+        // Nothing uploads against a half-minted set; bin the draft it made.
+        void discardDraft(created.id).catch(() => {});
+        throw new Error("No upload target was returned.");
+      }
       setDraft(created);
       const seeded = seedTiles(created.id, picked, targets);
       setVideos(seeded);
@@ -1769,12 +1795,15 @@ export default function ComposeScreen({
     }
 
     let targets: VideoUploadTarget[];
+    setAppending(true);
     try {
       targets = await requestVideoUploads(postId, picked.length);
     } catch (e) {
       if (stale()) return;
       setVideoError((e as Error).message);
       return;
+    } finally {
+      setAppending(false);
     }
     if (stale()) return;
     if (targets.length < picked.length) {
@@ -1783,7 +1812,8 @@ export default function ComposeScreen({
     }
     const added = seedTiles(postId, picked, targets);
     const addedIds = added.flatMap((v) => (v.id ? [v.id] : []));
-    setServerVideoIds([...known, ...addedIds]);
+    // Functional: the server's set is whatever the LATEST write left it.
+    setServerVideoIds((prev) => [...prev, ...addedIds]);
     setVideos((prev) => [...prev, ...added]);
     await uploadVideoSet(added, targets, stale);
   }
@@ -1806,7 +1836,10 @@ export default function ComposeScreen({
     const next = removeVideoAt(videos, index);
     if (next === videos) return;
     if (slot0Changed(videos, next)) onCoverChanged(next[0]);
-    setVideos((prev) => removeVideoAt(prev, prev.indexOf(gone)));
+    // By KEY, never by object identity: a progress tick or a poll replaces the
+    // tile object, and one queued but not yet rendered would make an
+    // identity lookup miss and the remove silently do nothing.
+    setVideos((prev) => prev.filter((v) => v.key !== gone.key));
     if (gone) revokeVideoUrls([gone]);
     setVideoError(null);
   }
@@ -3142,7 +3175,7 @@ export default function ComposeScreen({
               {usesVideoSet && (isEdit || videos.length > 0) ? (
                 <VideoStrip
                   videos={videos}
-                  canAdd={!!uploadPostId && videos.length < MAX_VIDEOS}
+                  canAdd={!!uploadPostId && videos.length < MAX_VIDEOS && !appending}
                   onMove={reorderVideo}
                   onRemove={dropVideo}
                   onAdd={() => {

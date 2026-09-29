@@ -2220,3 +2220,18 @@ columns are simply clipped — assert every element's right edge ≤ viewport, n
 - A status-scoped delete that matches 0 rows returns NO error. Gate side effects (Mux cleanup) on `.select("id")` rows.
 - Mux `passthrough` is now the `post_video.id`, NOT the post id. `lib/mux-playback.ts`'s
   `findMuxAssetByPassthrough(post.id)` fallback no longer matches new uploads (MV-A2's surface).
+## Multi-video compose (ENG-1598)
+- Compose learns a video is READY only by polling `GET /api/admin/posts/:id/videos` (read-only, never calls
+  Mux; the be mux-webhook, ENG-1595, flips `post_video.status`). Any e2e that creates a video with a
+  `uploads:[{videoId}]` response must also mock that route to `ready`, or Publish never enables. A create
+  mock with only a top-level `uploadUrl` (no `videoId`) is the legacy shape: the tile is ready once its PUT lands.
+- `next build` in a worktree under `.claude/worktrees/` warns it inferred the MAIN checkout as the workspace
+  root (two lockfiles), but env files still load from the worktree only — the worktree has no `.env.local`, so
+  e2e never sees the main checkout's MUX keys (checked: no "Environments:" line in the build output).
+- Full-page Playwright shots stitch the sticky top bar mid-page; for tall compose shots use a tall viewport
+  and `scrollIntoView({block:"center"})`. After resizing across 767px wait ~400ms or the ENG-1585 drawer is
+  caught mid-slide.
+- A second inline pill in a `nowrap` Posts-library cell steals width from the Post column (same trap as the
+  ENG-1269 subject tag) — stack extra badges on their own line.
+- Running the e2e suite rewrites the committed baselines of OTHER specs (`e2e/__screenshots__/*.png`); revert
+  those before committing so a ticket's diff carries only its own screenshots.

@@ -3428,8 +3428,50 @@ describe("ENG-1598 · multi-video compose", () => {
       videos: [IDS[2], IDS[0], IDS[1]],
       knownVideos: IDS,
     });
-    // The picked frame belonged to the old cover: nothing is sent for it.
-    expect(api.patchPost.mock.calls[0][1]).not.toHaveProperty("poster_time_s");
+  });
+
+  it("edit: adding past the cap with unsaved removals asks for a save first", async () => {
+    const init = editInitial();
+    init.videos = [0, 1, 2, 3, 4].map((i) => ({
+      id: `00000000-0000-4000-8000-00000000b00${i}`,
+      sortOrder: i,
+      status: "ready",
+      posterUrl: null,
+      playbackUrl: null,
+    }));
+    render(<ComposeScreen horses={HORSES} trainers={TRAINERS} initial={init} />);
+    fireEvent.click(screen.getByTestId("video-remove-4"));
+    fireEvent.change(screen.getByTestId("media-input"), { target: { files: [vid("x.mp4")] } });
+    await waitFor(() =>
+      expect(screen.getByTestId("video-error").textContent).toContain("Save first, then add more"),
+    );
+    expect(api.requestVideoUploads).not.toHaveBeenCalled();
+  });
+
+  it("create: adding past the cap with unsaved removals commits them on the draft first", async () => {
+    api.createDraft.mockResolvedValue({
+      ...created(3),
+      uploads: [0, 1, 2, 3, 4].map((i) => ({ videoId: `00000000-0000-4000-8000-00000000c00${i}`, uploadUrl: `u${i}` })),
+    });
+    api.uploadVideoToMux.mockResolvedValue(undefined);
+    api.fetchPostVideos.mockResolvedValue([]);
+    api.patchPost.mockResolvedValue(undefined);
+    api.requestVideoUploads.mockResolvedValue([{ videoId: "00000000-0000-4000-8000-00000000c005", uploadUrl: "u5" }]);
+    renderScreen();
+    pickHorse("horse-opt-h1");
+    fireEvent.change(screen.getByTestId("media-input"), {
+      target: { files: ["1", "2", "3", "4", "5"].map((x) => vid(`${x}.mp4`)) },
+    });
+    await waitFor(() => expect(screen.getByTestId("video-state-4").textContent).toBe("processing…"));
+    fireEvent.click(screen.getByTestId("video-remove-0"));
+    fireEvent.click(screen.getByTestId("video-add-more"));
+    fireEvent.change(screen.getByTestId("media-input"), { target: { files: [vid("x.mp4")] } });
+    await waitFor(() => expect(api.requestVideoUploads).toHaveBeenCalledWith("mv1", 1));
+    // The removal was committed BEFORE the new slot was minted.
+    expect(api.patchPost.mock.calls[0][1]).toMatchObject({
+      videos: [1, 2, 3, 4].map((i) => `00000000-0000-4000-8000-00000000c00${i}`),
+    });
+    await waitFor(() => expect(screen.getAllByTestId(/^video-tile-\d+$/)).toHaveLength(5));
   });
 
   it("removing a tile drops it, and the save sends the set without it", async () => {

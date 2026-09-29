@@ -6,6 +6,8 @@ import {
   cancelMuxUpload,
   getMuxUploadAssetId,
   cleanupMuxVideo,
+  parseMuxAspectRatio,
+  listReadyMuxAssets,
 } from "./mux";
 
 const fetchMock = vi.fn();
@@ -58,6 +60,80 @@ describe("findMuxAssetByPassthrough", () => {
   it("returns null when nothing matches", async () => {
     fetchMock.mockResolvedValue(jsonResponse({ data: [] }));
     expect(await findMuxAssetByPassthrough("post_1")).toBeNull();
+  });
+});
+
+describe("parseMuxAspectRatio — ENG-1598 review", () => {
+  it("parses a well-formed ratio string", () => {
+    expect(parseMuxAspectRatio("16:9")).toBeCloseTo(16 / 9);
+    expect(parseMuxAspectRatio("1:1")).toBe(1);
+    expect(parseMuxAspectRatio("9:16")).toBeCloseTo(9 / 16);
+  });
+
+  it("tolerates surrounding whitespace and decimal components", () => {
+    expect(parseMuxAspectRatio(" 4.5 : 3 ")).toBeCloseTo(4.5 / 3);
+  });
+
+  it("returns null for non-string input", () => {
+    expect(parseMuxAspectRatio(undefined)).toBeNull();
+    expect(parseMuxAspectRatio(null)).toBeNull();
+    expect(parseMuxAspectRatio(1.777)).toBeNull();
+  });
+
+  it("returns null for malformed strings", () => {
+    expect(parseMuxAspectRatio("")).toBeNull();
+    expect(parseMuxAspectRatio("sixteen:nine")).toBeNull();
+    expect(parseMuxAspectRatio("16-9")).toBeNull();
+    expect(parseMuxAspectRatio("16:9:1")).toBeNull();
+  });
+
+  it("returns null for non-positive ratios", () => {
+    expect(parseMuxAspectRatio("0:9")).toBeNull();
+    expect(parseMuxAspectRatio("16:0")).toBeNull();
+  });
+});
+
+describe("listReadyMuxAssets — ENG-1598 review", () => {
+  it("keeps only ready assets that carry a passthrough + playback id, and parses the aspect ratio", async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse({
+        data: [
+          // ready, no passthrough — never one of ours (skip).
+          { id: "as_nopt", status: "ready", playback_ids: [{ id: "pb_x" }], aspect_ratio: "16:9" },
+          // ready, no playback id yet — skip.
+          { id: "as_nopb", status: "ready", passthrough: "pv_1", playback_ids: [] },
+          // not ready — skip.
+          { id: "as_prep", status: "preparing", passthrough: "pv_2", playback_ids: [{ id: "pb_2" }] },
+          {
+            id: "as_1",
+            status: "ready",
+            passthrough: "pv_3",
+            playback_ids: [{ id: "pb_3" }],
+            aspect_ratio: "16:9",
+          },
+          // malformed aspect ratio → aspectRatio null, asset still kept.
+          {
+            id: "as_2",
+            status: "ready",
+            passthrough: "pv_4",
+            playback_ids: [{ id: "pb_4" }],
+            aspect_ratio: "bogus",
+          },
+        ],
+      }),
+    );
+    const r = await listReadyMuxAssets();
+    expect(r).toEqual([
+      { assetId: "as_1", playbackId: "pb_3", passthrough: "pv_3", aspectRatio: 16 / 9 },
+      { assetId: "as_2", playbackId: "pb_4", passthrough: "pv_4", aspectRatio: null },
+    ]);
+    const [, init] = fetchMock.mock.calls[0];
+    expect(init.signal).toBeInstanceOf(AbortSignal);
+  });
+
+  it("returns an empty array when nothing is listed", async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ data: [] }));
+    expect(await listReadyMuxAssets()).toEqual([]);
   });
 });
 

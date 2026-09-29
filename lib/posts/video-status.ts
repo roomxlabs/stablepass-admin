@@ -10,7 +10,12 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { isMissingVideoTable } from "@/lib/posts/videos";
 import { POST_MEDIA_BUCKET, signPhotoMap } from "@/lib/storage/photos";
-import { muxSignedStreamUrl, muxSignedThumbnailUrl, resolvePostVideoPlayback } from "@/lib/mux-playback";
+import {
+  muxSignedStreamUrl,
+  muxSignedThumbnailUrl,
+  reconcilePostVideos,
+  type PostVideoWriteDb,
+} from "@/lib/mux-playback";
 
 export type VideoStatus = {
   id: string;
@@ -20,14 +25,42 @@ export type VideoStatus = {
   playbackUrl: string | null;
 };
 
+/** The poll may reconcile against Mux at most this often per post. */
+export const RECONCILE_MIN_INTERVAL_MS = 30_000;
+const lastReconcileAt = new Map<string, number>();
+
+/**
+ * ENG-1598 review — the poll's reconcile throttle. True (and the slot is
+ * claimed) when this post has not reconciled in the last 30s on this
+ * instance, so a fresh create can reach `ready` without the webhook while a
+ * 3s poll still costs at most one Mux listing per 30s. Best-effort per server
+ * instance, which is all a fallback path needs.
+ */
+export function claimReconcileSlot(postId: string, now: number = Date.now()): boolean {
+  const last = lastReconcileAt.get(postId);
+  if (last !== undefined && now - last < RECONCILE_MIN_INTERVAL_MS) return false;
+  lastReconcileAt.set(postId, now);
+  if (lastReconcileAt.size > 500) {
+    for (const [k, t] of lastReconcileAt) if (now - t >= RECONCILE_MIN_INTERVAL_MS) lastReconcileAt.delete(k);
+  }
+  return true;
+}
+
+/** Test seam: forget every claimed slot. */
+export function resetReconcileThrottle(): void {
+  lastReconcileAt.clear();
+}
+
 /**
  * The post's video rows, in slot order, with display media signed.
  *
  * `opts.reconcile` gates the ONE place this can call Mux: when true and a row
- * has no stored `mux_playback_id` yet, it asks `resolvePostVideoPlayback` to
- * look the asset up by passthrough (= the video's own id, ENG-1597). Callers
- * that poll this frequently must leave it unset/false so every poll stays a
- * pure DB read.
+ * has no stored `mux_playback_id` yet, `reconcilePostVideos` lists the recent
+ * Mux assets ONCE, matches each row by passthrough (= its own id, ENG-1597;
+ * a backfilled legacy row falls back to `post.id`) and WRITES the match onto
+ * the row (guarded only-if-null, `status: "ready"`), so the publish gate and
+ * the slot-0 mirror see it. The poll passes it at most every 30s per post
+ * (`claimReconcileSlot`); every other poll is a pure DB read.
  */
 export async function readPostVideoStatus(
   sb: SupabaseClient,
@@ -36,7 +69,9 @@ export async function readPostVideoStatus(
 ): Promise<{ videos: VideoStatus[] } | { unavailable: true } | { error: true }> {
   const { data, error } = await sb
     .from("post_video")
-    .select("id,sort_order,status,mux_playback_id,poster_url")
+    // mux_upload_id is read ONLY to spot a backfilled legacy row for the
+    // reconcile; it is never returned (guardrail #8).
+    .select("id,sort_order,status,mux_upload_id,mux_playback_id,poster_url,created_at")
     .eq("post_id", postId)
     .order("sort_order");
 
@@ -50,25 +85,30 @@ export async function readPostVideoStatus(
     id: string;
     sort_order: number;
     status: string;
+    mux_upload_id: string | null;
     mux_playback_id: string | null;
     poster_url: string | null;
+    created_at: string | null;
   }[];
+
+  const reconciled = opts?.reconcile
+    ? await reconcilePostVideos(sb as unknown as PostVideoWriteDb, postId, rows)
+    : new Map<string, { playbackId: string }>();
 
   // One round-trip for every stored poster path, keyed by the original value.
   const posterMap = await signPhotoMap(sb, POST_MEDIA_BUCKET, rows.map((r) => r.poster_url));
 
   const videos: VideoStatus[] = [];
   for (const r of rows) {
-    const status: VideoStatus["status"] =
-      r.status === "ready" || r.status === "errored" ? r.status : "uploading";
+    const written = reconciled.get(r.id);
+    const status: VideoStatus["status"] = written
+      ? "ready"
+      : r.status === "ready" || r.status === "errored"
+        ? r.status
+        : "uploading";
 
-    let playbackId = r.mux_playback_id;
-    let playbackUrl: string | null = playbackId ? muxSignedStreamUrl(playbackId) : null;
-    if (!playbackId && opts?.reconcile) {
-      const resolved = await resolvePostVideoPlayback({ id: r.id, mux_playback_id: null });
-      playbackId = resolved.playbackId;
-      playbackUrl = resolved.playbackUrl;
-    }
+    const playbackId = r.mux_playback_id ?? written?.playbackId ?? null;
+    const playbackUrl: string | null = playbackId ? muxSignedStreamUrl(playbackId) : null;
 
     const signedPoster = r.poster_url ? posterMap.get(r.poster_url) ?? null : null;
     const posterUrl =

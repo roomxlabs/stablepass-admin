@@ -246,23 +246,54 @@ export async function discardDraft(id: string): Promise<void> {
   }
 }
 
-/** PUT the finished video straight to the Mux one-time upload URL. */
+/** The rejection an aborted `uploadVideoToMux` settles with. */
+export class UploadAbortedError extends Error {
+  constructor() {
+    super("Upload cancelled.");
+    this.name = "AbortError";
+  }
+}
+
+/**
+ * PUT the finished video straight to the Mux one-time upload URL.
+ *
+ * ENG-1598 review — abortable: a removed tile, a replaced set or a cancelled
+ * edit aborts its PUT via `signal`, so no orphaned multi-GB upload keeps
+ * running (and lands a video the operator threw away). An abort rejects with
+ * `UploadAbortedError`.
+ */
 export function uploadVideoToMux(
   uploadUrl: string,
   file: File,
   onProgress?: (pct: number) => void,
+  signal?: AbortSignal,
 ): Promise<void> {
   return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new UploadAbortedError());
+      return;
+    }
     const xhr = new XMLHttpRequest();
+    const onAbort = () => xhr.abort();
+    signal?.addEventListener("abort", onAbort, { once: true });
+    const settle = () => signal?.removeEventListener("abort", onAbort);
     xhr.open("PUT", uploadUrl);
     xhr.upload.onprogress = (e) => {
       if (e.lengthComputable && onProgress) onProgress(Math.round((e.loaded / e.total) * 100));
     };
-    xhr.onload = () =>
-      xhr.status >= 200 && xhr.status < 300
-        ? resolve()
-        : reject(new Error(`Upload failed (${xhr.status}).`));
-    xhr.onerror = () => reject(new Error("Upload failed — check your connection."));
+    xhr.onload = () => {
+      settle();
+      if (xhr.status >= 200 && xhr.status < 300) resolve();
+      else reject(new Error(`Upload failed (${xhr.status}).`));
+    };
+    xhr.onerror = () => {
+      settle();
+      reject(new Error("Upload failed — check your connection."));
+    };
+    xhr.onabort = () => {
+      settle();
+      reject(new UploadAbortedError());
+    };
     xhr.send(file);
   });
 }

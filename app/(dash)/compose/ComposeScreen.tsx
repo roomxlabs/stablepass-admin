@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Icon } from "../icons";
@@ -52,6 +52,7 @@ import {
 import {
   MAX_VIDEOS,
   VIDEO_POLL_MS,
+  VIDEO_POLL_MAX_MS,
   anyUploading,
   applyServerStatus,
   coverSource,
@@ -609,6 +610,37 @@ export default function ComposeScreen({
    * while members get the old one.
    */
   const posterPicks = useRef(new Map<string, number>());
+  /**
+   * ENG-1598 review — one AbortController per tile whose bytes are still going
+   * up, by tile key. A remove, a replacing pick, `resetMedia` and a cancelled
+   * edit abort the PUT so a thrown-away video never finishes uploading.
+   */
+  const uploadAborts = useRef(new Map<string, AbortController>());
+  function abortUploads(keys?: readonly string[]) {
+    for (const [k, c] of uploadAborts.current) {
+      if (keys && !keys.includes(k)) continue;
+      c.abort();
+      uploadAborts.current.delete(k);
+    }
+  }
+  /**
+   * ENG-1598 review — edit mode only: `post_video` ids appended THIS session
+   * and not yet accepted by a save. An append creates the row on the live post
+   * immediately, so leaving without saving must take them back out (Cancel
+   * PATCHes them away; a tab close is warned about).
+   */
+  const [pendingAppends, setPendingAppendsState] = useState<string[]>([]);
+  /**
+   * Synchronous mirrors of `pendingAppends` / `serverVideoIds` for the unmount
+   * cleanup and a stale append, which run outside any render. Written in the
+   * same call as the state (never from an effect), so a save that clears the
+   * pending set right before `router.push` is seen by the unmount that follows.
+   */
+  const pendingAppendsRef = useRef<string[]>([]);
+  function setPendingAppends(next: string[]) {
+    pendingAppendsRef.current = next;
+    setPendingAppendsState(next);
+  }
   /** The status route is not deployed (503): stop asking. */
   const [pollOff, setPollOff] = useState(false);
   /**
@@ -867,7 +899,14 @@ export default function ComposeScreen({
     if (!pollKey || !uploadPostId) return;
     const postId = uploadPostId;
     let cancelled = false;
-    const timer = setInterval(() => {
+    // ENG-1598 review — a self-scheduling timeout, not an interval: one
+    // request in flight at a time (a slow route cannot stack polls), and a
+    // tick that changes nothing backs off (x2, capped) so a dead slot is not
+    // polled every 3s forever. Any change snaps back to the base cadence.
+    let delay = VIDEO_POLL_MS;
+    let lastSig = "";
+    let timer: ReturnType<typeof setTimeout>;
+    const tick = () => {
       void fetchPostVideos(postId)
         .then((rows) => {
           if (cancelled) return;
@@ -875,15 +914,23 @@ export default function ComposeScreen({
             setPollOff(true);
             return;
           }
+          const sig = rows.map((r) => `${r.id}:${r.status}:${r.playbackUrl ? 1 : 0}`).join("|");
+          delay = sig === lastSig ? Math.min(delay * 2, VIDEO_POLL_MAX_MS) : VIDEO_POLL_MS;
+          lastSig = sig;
           setVideos((prev) => applyServerStatus(prev, rows));
         })
         .catch(() => {
-          // A missed poll is harmless — the next tick asks again.
+          // A missed poll is harmless — the next tick asks again, a bit later.
+          delay = Math.min(delay * 2, VIDEO_POLL_MAX_MS);
+        })
+        .finally(() => {
+          if (!cancelled) timer = setTimeout(tick, delay);
         });
-    }, VIDEO_POLL_MS);
+    };
+    timer = setTimeout(tick, delay);
     return () => {
       cancelled = true;
-      clearInterval(timer);
+      clearTimeout(timer);
     };
   }, [pollKey, uploadPostId]);
 
@@ -893,15 +940,45 @@ export default function ComposeScreen({
    * "uploading" on the post forever, blocking publish.
    */
   const videoBytesInFlight = usesVideoSet && anyUploading(videos);
+  // ENG-1598 review — also while a live post holds unsaved appended videos:
+  // leaving now would publish slots the operator never saved.
+  const unsavedAppends = isEdit && pendingAppends.length > 0;
+  const warnOnLeave = videoBytesInFlight || unsavedAppends;
   useEffect(() => {
-    if (!videoBytesInFlight) return;
+    if (!warnOnLeave) return;
     const warn = (e: BeforeUnloadEvent) => {
       e.preventDefault();
       e.returnValue = "";
     };
     window.addEventListener("beforeunload", warn);
     return () => window.removeEventListener("beforeunload", warn);
-  }, [videoBytesInFlight]);
+  }, [warnOnLeave]);
+
+  /** Latest server id set, for the unmount cleanup below (refs only, no state). */
+  const serverIdsRef = useRef<string[]>(serverVideoIds);
+  useEffect(() => {
+    serverIdsRef.current = serverVideoIds;
+  }, [serverVideoIds]);
+  /**
+   * ENG-1598 review (4a) — leaving an EDIT by in-app navigation (a sidebar
+   * link; `beforeunload` never fires for it) must not let an unsaved appended
+   * video finish uploading and go live. On unmount: void any in-flight append,
+   * abort every PUT, and best-effort PATCH the unsaved appends back off the
+   * post. Create mode keeps its uploads running: a draft is not live.
+   */
+  useEffect(() => {
+    if (!isEdit) return;
+    const aborts = uploadAborts.current;
+    const generation = pickGeneration;
+    return () => {
+      generation.current += 1;
+      for (const c of aborts.values()) c.abort();
+      aborts.clear();
+      revertAppends();
+    };
+    // Mount/unmount only: everything it reads is a ref.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   /** The photos that actually landed in Storage, in display order. */
   const readyPhotos = uploadedPhotos(photos);
   /**
@@ -1114,6 +1191,7 @@ export default function ComposeScreen({
     revokePhotoUrls(photos);
     setPhotos([]);
     // ENG-1598 — the video set belongs to the same draft, and so goes with it.
+    abortUploads();
     posterPicks.current.clear();
     revokeVideoUrls(videos);
     setVideos([]);
@@ -1632,19 +1710,30 @@ export default function ComposeScreen({
   ) {
     await Promise.all(
       tiles.map(async (t, i) => {
+        const ctrl = new AbortController();
+        uploadAborts.current.set(t.key, ctrl);
         try {
-          await uploadVideoToMux(targets[i].uploadUrl, t.file!, (pct) => {
-            if (!stale()) setVideos((prev) => updateVideo(prev, t.key, { pct }));
-          });
-          if (stale()) return;
+          await uploadVideoToMux(
+            targets[i].uploadUrl,
+            t.file!,
+            (pct) => {
+              if (!stale() && !ctrl.signal.aborted)
+                setVideos((prev) => updateVideo(prev, t.key, { pct }));
+            },
+            ctrl.signal,
+          );
+          if (stale() || ctrl.signal.aborted) return;
           setVideos((prev) =>
             updateVideo(prev, t.key, { state: t.id ? "processing" : "ready", pct: 100 }),
           );
         } catch (e) {
-          if (stale()) return;
+          // An aborted PUT is a tile the operator threw away: nothing to show.
+          if (stale() || ctrl.signal.aborted) return;
           setVideos((prev) =>
             updateVideo(prev, t.key, { state: "failed", error: (e as Error).message }),
           );
+        } finally {
+          if (uploadAborts.current.get(t.key) === ctrl) uploadAborts.current.delete(t.key);
         }
       }),
     );
@@ -1692,6 +1781,7 @@ export default function ComposeScreen({
     setVideoError(null);
 
     if (draft) void discardDraft(draft.id).catch(() => {});
+    abortUploads();
     revokeVideoUrls(videos);
     setDraft(null);
     setVideos([]);
@@ -1805,7 +1895,13 @@ export default function ComposeScreen({
     } finally {
       setAppending(false);
     }
-    if (stale()) return;
+    if (stale()) {
+      // The screen moved on (or unmounted) while the slots were being minted:
+      // nothing will upload into them, so on a live post take them straight
+      // back out rather than leave orphan rows (ENG-1598 review, 4a).
+      if (isEdit) revertAppends(targets.flatMap((t) => (t.videoId ? [t.videoId] : [])));
+      return;
+    }
     if (targets.length < picked.length) {
       setVideoError("Mux did not return enough upload slots. Nothing was uploaded.");
       return;
@@ -1814,6 +1910,7 @@ export default function ComposeScreen({
     const addedIds = added.flatMap((v) => (v.id ? [v.id] : []));
     // Functional: the server's set is whatever the LATEST write left it.
     setServerVideoIds((prev) => [...prev, ...addedIds]);
+    if (isEdit) setPendingAppends([...pendingAppendsRef.current, ...addedIds]);
     setVideos((prev) => [...prev, ...added]);
     await uploadVideoSet(added, targets, stale);
   }
@@ -1840,8 +1937,53 @@ export default function ComposeScreen({
     // tile object, and one queued but not yet rendered would make an
     // identity lookup miss and the remove silently do nothing.
     setVideos((prev) => prev.filter((v) => v.key !== gone.key));
+    // Its PUT, if still running, is aborted: a removed video must never finish
+    // uploading and go live (ENG-1598 review, must-fix 4).
+    abortUploads([gone.key]);
     if (gone) revokeVideoUrls([gone]);
     setVideoError(null);
+  }
+
+  /**
+   * ENG-1598 review (4a) — best-effort: PATCH this session's unsaved appended
+   * slots (plus `extra`, rows a voided append minted but never tracked) back
+   * off the post. Fire-and-forget; used where nobody is left to show an error.
+   */
+  function revertAppends(extra: readonly string[] = []) {
+    if (!initial) return;
+    const known = [...serverIdsRef.current, ...extra.filter((x) => !serverIdsRef.current.includes(x))];
+    const drop = new Set([...pendingAppendsRef.current, ...extra]);
+    const keep = known.filter((vid) => !drop.has(vid));
+    if (drop.size === 0 || keep.length === 0) return;
+    void patchPost(initial.id, { videos: keep, knownVideos: known }).catch(() => {});
+  }
+
+  /**
+   * ENG-1598 — Cancel in edit mode with unsaved appended
+   * videos. The append already put those rows on the (possibly live) post, so
+   * "leave without saving" has to take them back out: abort their PUTs and
+   * best-effort PATCH the set back to what it was before this session's
+   * appends (removals and reorders were never sent, so this is the original
+   * set in its original order). Then leave, whatever the PATCH did.
+   */
+  async function onCancel(e: ReactMouseEvent<HTMLAnchorElement>) {
+    if (!isEdit) return;
+    // An append still minting its slots: void it, so it never uploads (it
+    // reverts its own rows when the mint returns — see `onAppendVideos`).
+    if (appending) pickGeneration.current += 1;
+    if (pendingAppends.length === 0) return;
+    e.preventDefault();
+    abortUploads();
+    const keep = serverVideoIds.filter((vid) => !pendingAppends.includes(vid));
+    if (keep.length > 0) {
+      try {
+        await patchPost(initial!.id, { videos: keep, knownVideos: [...serverVideoIds] });
+      } catch {
+        // Best effort — the operator asked to leave, and the tiles are gone.
+      }
+    }
+    setPendingAppends([]);
+    router.push("/posts");
   }
 
   async function runAction(next: PublishMode) {
@@ -1919,6 +2061,7 @@ export default function ComposeScreen({
         ...posterTimePatch,
       });
       if (videoPatch.videos) setServerVideoIds(videoPatch.videos);
+      setPendingAppends([]);
 
       // ENG-1584 — the PATCH above only stores the chosen time. If Mux's
       // `asset.ready` already fired (the usual case: it lands while the
@@ -2199,6 +2342,7 @@ export default function ComposeScreen({
         ...videoPatch,
       });
       if (videoPatch.videos) setServerVideoIds(videoPatch.videos);
+      setPendingAppends([]);
       setAction({ kind: "ok", message: "Changes saved." });
       router.push("/posts");
       router.refresh();
@@ -2243,6 +2387,7 @@ export default function ComposeScreen({
         ...videoPatch,
       });
       if (videoPatch.videos) setServerVideoIds(videoPatch.videos);
+      setPendingAppends([]);
       await publishPost(initial.id);
       setAction({ kind: "ok", message: "Post published." });
       router.push("/posts");
@@ -2300,6 +2445,7 @@ export default function ComposeScreen({
         ...videoPatch,
       });
       if (videoPatch.videos) setServerVideoIds(videoPatch.videos);
+      setPendingAppends([]);
       await schedulePost(initial.id, when.toISOString());
       setAction({
         kind: "ok",
@@ -2426,7 +2572,7 @@ export default function ComposeScreen({
       <div className={`admin-topbar ${styles.topbar}`}>
         <h1>{isEdit ? "Edit post" : "Compose post"}</h1>
         <div className="actions">
-          <Link href="/posts" className={styles.cancelLink}>
+          <Link href="/posts" className={styles.cancelLink} onClick={onCancel}>
             Cancel
           </Link>
           <button

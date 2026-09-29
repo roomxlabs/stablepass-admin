@@ -20,7 +20,7 @@ import {
   signPhoto,
   signPhotoMap,
 } from "@/lib/storage/photos";
-import { resolveVideoPlayback } from "@/lib/mux-playback";
+import { muxSignedStreamUrl, resolveVideoPlayback } from "@/lib/mux-playback";
 import { readPostVideoStatus } from "@/lib/posts/video-status";
 import { orderLabels } from "@/lib/posts/labels";
 import { orderBylines } from "@/lib/posts/bylines";
@@ -190,8 +190,8 @@ export default async function ComposePage({
       const h = one(post.horse);
       const t = h ? one(h.trainer) : null;
       // photo AND voice → signed Storage URL (same private bucket, same
-      // object); video → signed Mux HLS URL (reconciled from Mux on read if
-      // the webhook hasn't set mux_playback_id yet); text → no media at all.
+      // object); video → the slot-0 row's signed Mux HLS URL (see the video
+      // set read below); text → no media at all.
       // ENG-1268 — the post's own trainer, for a trainer-subject post.
       const st = one(post.source_trainer);
       const [horsePhoto, trainerPhoto, mediaUrl] = await Promise.all([
@@ -199,11 +199,7 @@ export default async function ComposePage({
         signPhoto(sb, TRAINER_PHOTO_BUCKET, st?.photo_url ?? null),
         post.type === "photo" || post.type === "voice"
           ? signPhoto(sb, POST_MEDIA_BUCKET, post.media_url)
-          : post.type === "video"
-            ? resolveVideoPlayback(sb, { id: post.id, mux_playback_id: post.mux_playback_id }).then(
-                (p) => p.playbackUrl,
-              )
-            : Promise.resolve(null),
+          : Promise.resolve(null),
       ]);
       // ENG-1266 — the post's CURRENT ordered photo set, for edit mode's photo
       // strip. Lives in `loadPostPhotos` (data.ts), NOT inline, for the same
@@ -238,6 +234,13 @@ export default async function ComposePage({
       // off for the session, exactly like `photosUnavailable`.
       let videos: NonNullable<EditInitial["videos"]> = [];
       let videosUnavailable = false;
+      //
+      // ENG-1598 review (must-fix 2): the reconcile writes the ROW, never
+      // `post` — a `post`-only write left a backfilled slot-0 row NULL, and the
+      // next `post_video` write mirrored that NULL back over `post`, erasing
+      // the video. So the post-level `resolveVideoPlayback` (which writes
+      // `post`) runs ONLY when `post_video` does not exist yet (pre-migration:
+      // no mirror to fight). A failed read signs what `post` holds, no write.
       let coverUrl = mediaUrl;
       if (post.type === "video") {
         const result = await readPostVideoStatus(sb, post.id, { reconcile: true });
@@ -245,9 +248,18 @@ export default async function ComposePage({
           videos = result.videos;
           // Slot 0 IS the post's video (the deferred mirror), so its own signed
           // URL is the better source when the post row lags the webhook.
-          coverUrl = videos[0]?.playbackUrl ?? mediaUrl;
+          coverUrl =
+            videos[0]?.playbackUrl ??
+            (post.mux_playback_id ? muxSignedStreamUrl(post.mux_playback_id) : null);
         } else {
           videosUnavailable = true;
+          coverUrl =
+            "unavailable" in result
+              ? (await resolveVideoPlayback(sb, { id: post.id, mux_playback_id: post.mux_playback_id }))
+                  .playbackUrl
+              : post.mux_playback_id
+                ? muxSignedStreamUrl(post.mux_playback_id)
+                : null;
         }
       }
 

@@ -28,6 +28,8 @@ export const MAX_VIDEOS = 5;
 
 /** How often the screen re-reads processing videos. */
 export const VIDEO_POLL_MS = 3000;
+/** The poll backs off to at most this when nothing changes (ENG-1598 review). */
+export const VIDEO_POLL_MAX_MS = 30_000;
 
 export type VideoTileState = "uploading" | "processing" | "ready" | "failed";
 

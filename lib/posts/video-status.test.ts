@@ -5,14 +5,20 @@ const state: FakeState = blankState();
 
 const muxSignedStreamUrl = vi.fn((id: string) => `https://stream.mux.com/${id}.m3u8?token=tok`);
 const muxSignedThumbnailUrl = vi.fn((id: string) => `https://image.mux.com/${id}/thumbnail.jpg?token=tok`);
-const resolvePostVideoPlayback = vi.fn(async (v: { id: string; mux_playback_id: string | null }) => ({
-  playbackId: `resolved_${v.id}`,
-  playbackUrl: `https://stream.mux.com/resolved_${v.id}.m3u8?token=tok`,
-}));
+type ReconcileRow = {
+  id: string;
+  status: string;
+  mux_playback_id: string | null;
+  mux_upload_id: string | null;
+  created_at?: string | null;
+};
+const reconcilePostVideos =
+  vi.fn<(db: unknown, postId: string, rows: ReconcileRow[]) => Promise<Map<string, { playbackId: string }>>>();
 vi.mock("@/lib/mux-playback", () => ({
   muxSignedStreamUrl: (id: string) => muxSignedStreamUrl(id),
   muxSignedThumbnailUrl: (id: string) => muxSignedThumbnailUrl(id),
-  resolvePostVideoPlayback: (v: { id: string; mux_playback_id: string | null }) => resolvePostVideoPlayback(v),
+  reconcilePostVideos: (db: unknown, postId: string, rows: ReconcileRow[]) =>
+    reconcilePostVideos(db, postId, rows),
 }));
 
 // Bespoke signPhotoMap so a poster path can be made to "fail to sign" (a
@@ -31,7 +37,12 @@ vi.mock("@/lib/storage/photos", () => ({
     signPhotoMap(sb, bucket, values),
 }));
 
-import { readPostVideoStatus } from "./video-status";
+import {
+  claimReconcileSlot,
+  RECONCILE_MIN_INTERVAL_MS,
+  readPostVideoStatus,
+  resetReconcileThrottle,
+} from "./video-status";
 
 const P1 = "11111111-1111-1111-1111-111111111111";
 
@@ -43,7 +54,8 @@ beforeEach(() => {
   Object.assign(state, blankState());
   muxSignedStreamUrl.mockClear();
   muxSignedThumbnailUrl.mockClear();
-  resolvePostVideoPlayback.mockClear();
+  reconcilePostVideos.mockReset();
+  reconcilePostVideos.mockResolvedValue(new Map());
   signPhotoMap.mockClear();
 });
 
@@ -128,23 +140,124 @@ describe("readPostVideoStatus — ENG-1598", () => {
     expect(JSON.stringify(r.videos)).not.toContain("mux_upload_id");
   });
 
-  it("reconcile=false (default) never calls resolvePostVideoPlayback, even with no stored playback id", async () => {
+  it("reconcile=false (default) never calls reconcilePostVideos, even with no stored playback id", async () => {
     seed([{ id: "pv0", sort_order: 0, status: "uploading", mux_playback_id: null, poster_url: null }]);
     const r = await readPostVideoStatus(makeFakeClient(state) as never, P1);
     if (!("videos" in r)) throw new Error("expected videos");
     expect(r.videos[0].playbackUrl).toBeNull();
-    expect(resolvePostVideoPlayback).not.toHaveBeenCalled();
+    expect(reconcilePostVideos).not.toHaveBeenCalled();
   });
 
-  it("reconcile=true calls resolvePostVideoPlayback only for rows missing a playback id", async () => {
+  it("reconcile=true calls reconcilePostVideos once with (sb, postId, rows including mux_upload_id and created_at)", async () => {
+    const sb = makeFakeClient(state) as never;
     seed([
-      { id: "pv0", sort_order: 0, status: "ready", mux_playback_id: "pb_0", poster_url: null },
-      { id: "pv1", sort_order: 1, status: "uploading", mux_playback_id: null, poster_url: null },
+      {
+        id: "pv0",
+        sort_order: 0,
+        status: "ready",
+        mux_playback_id: "pb_0",
+        mux_upload_id: "up_0",
+        poster_url: null,
+        created_at: "2024-01-01T00:00:00.000Z",
+      },
+      {
+        id: "pv1",
+        sort_order: 1,
+        status: "uploading",
+        mux_playback_id: null,
+        mux_upload_id: null,
+        poster_url: null,
+        created_at: null,
+      },
     ]);
+    await readPostVideoStatus(sb, P1, { reconcile: true });
+    expect(reconcilePostVideos).toHaveBeenCalledTimes(1);
+    expect(reconcilePostVideos).toHaveBeenCalledWith(sb, P1, [
+      {
+        id: "pv0",
+        sort_order: 0,
+        status: "ready",
+        mux_playback_id: "pb_0",
+        mux_upload_id: "up_0",
+        poster_url: null,
+        created_at: "2024-01-01T00:00:00.000Z",
+      },
+      {
+        id: "pv1",
+        sort_order: 1,
+        status: "uploading",
+        mux_playback_id: null,
+        mux_upload_id: null,
+        poster_url: null,
+        created_at: null,
+      },
+    ]);
+  });
+
+  it("a row the reconcile writes reports as ready with a signed playback url", async () => {
+    seed([{ id: "pv1", sort_order: 0, status: "uploading", mux_playback_id: null, mux_upload_id: null, poster_url: null }]);
+    reconcilePostVideos.mockResolvedValue(new Map([["pv1", { playbackId: "pb_new" }]]));
     const r = await readPostVideoStatus(makeFakeClient(state) as never, P1, { reconcile: true });
     if (!("videos" in r)) throw new Error("expected videos");
-    expect(resolvePostVideoPlayback).toHaveBeenCalledTimes(1);
-    expect(resolvePostVideoPlayback).toHaveBeenCalledWith({ id: "pv1", mux_playback_id: null });
-    expect(r.videos[1].playbackUrl).toBe("https://stream.mux.com/resolved_pv1.m3u8?token=tok");
+    expect(r.videos[0].status).toBe("ready");
+    expect(r.videos[0].playbackUrl).toBe("https://stream.mux.com/pb_new.m3u8?token=tok");
+    expect(muxSignedStreamUrl).toHaveBeenCalledWith("pb_new");
+  });
+
+  it("returned objects never contain mux_upload_id / mux_asset_id / created_at keys", async () => {
+    seed([
+      {
+        id: "pv1",
+        sort_order: 0,
+        status: "uploading",
+        mux_playback_id: null,
+        mux_upload_id: "up_1",
+        poster_url: null,
+        created_at: "2024-01-01T00:00:00.000Z",
+      },
+    ]);
+    reconcilePostVideos.mockResolvedValue(new Map([["pv1", { playbackId: "pb_new" }]]));
+    const r = await readPostVideoStatus(makeFakeClient(state) as never, P1, { reconcile: true });
+    if (!("videos" in r)) throw new Error("expected videos");
+    expect(Object.keys(r.videos[0]).sort()).toEqual(
+      ["id", "playbackUrl", "posterUrl", "sortOrder", "status"].sort(),
+    );
+    expect(JSON.stringify(r.videos)).not.toContain("mux_asset_id");
+    expect(JSON.stringify(r.videos)).not.toContain("mux_upload_id");
+    expect(JSON.stringify(r.videos)).not.toContain("created_at");
+  });
+});
+
+describe("claimReconcileSlot / resetReconcileThrottle — ENG-1598 review", () => {
+  beforeEach(() => {
+    resetReconcileThrottle();
+  });
+
+  it("is true the first time for a post", () => {
+    expect(claimReconcileSlot("p1", 1000)).toBe(true);
+  });
+
+  it("is false again within 30s of the claimed slot", () => {
+    expect(claimReconcileSlot("p1", 1000)).toBe(true);
+    expect(claimReconcileSlot("p1", 1000 + RECONCILE_MIN_INTERVAL_MS - 1)).toBe(false);
+  });
+
+  it("is true again at/after 30s", () => {
+    expect(claimReconcileSlot("p1", 1000)).toBe(true);
+    expect(claimReconcileSlot("p1", 1000 + RECONCILE_MIN_INTERVAL_MS)).toBe(true);
+  });
+
+  it("is tracked independently per post", () => {
+    expect(claimReconcileSlot("p1", 1000)).toBe(true);
+    expect(claimReconcileSlot("p2", 1000)).toBe(true);
+    expect(claimReconcileSlot("p1", 1010)).toBe(false);
+    expect(claimReconcileSlot("p2", 1010)).toBe(false);
+  });
+
+  it("resetReconcileThrottle forgets every claimed slot", () => {
+    expect(claimReconcileSlot("p1", 1000)).toBe(true);
+    expect(claimReconcileSlot("p1", 1010)).toBe(false);
+    resetReconcileThrottle();
+    expect(claimReconcileSlot("p1", 1020)).toBe(true);
   });
 });

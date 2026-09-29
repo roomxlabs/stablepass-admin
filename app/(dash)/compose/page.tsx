@@ -21,6 +21,7 @@ import {
   signPhotoMap,
 } from "@/lib/storage/photos";
 import { resolveVideoPlayback } from "@/lib/mux-playback";
+import { readPostVideoStatus } from "@/lib/posts/video-status";
 import { orderLabels } from "@/lib/posts/labels";
 import { orderBylines } from "@/lib/posts/bylines";
 
@@ -228,6 +229,28 @@ export default async function ComposePage({
         photosUnavailable = result.photosUnavailable;
       }
 
+      // ENG-1598 — the post's CURRENT ordered video set, for edit mode's video
+      // tiles. Shared with `GET /api/admin/posts/:id/videos` (the poll) so the
+      // first paint and every later read describe a row the same way.
+      // `reconcile` lets a row whose webhook has not landed yet still play (a
+      // one-off Mux lookup by passthrough = post_video.id); the poll never
+      // does that. A failed read is NOT "no videos": it switches video editing
+      // off for the session, exactly like `photosUnavailable`.
+      let videos: NonNullable<EditInitial["videos"]> = [];
+      let videosUnavailable = false;
+      let coverUrl = mediaUrl;
+      if (post.type === "video") {
+        const result = await readPostVideoStatus(sb, post.id, { reconcile: true });
+        if ("videos" in result) {
+          videos = result.videos;
+          // Slot 0 IS the post's video (the deferred mirror), so its own signed
+          // URL is the better source when the post row lags the webhook.
+          coverUrl = videos[0]?.playbackUrl ?? mediaUrl;
+        } else {
+          videosUnavailable = true;
+        }
+      }
+
       // ENG-1268 — `post.subject` is `horse` for every row B1's migration
       // backfilled, so an unrecognised value can only be a build older than
       // the database. Falling back to `horse` keeps such a post editable
@@ -239,7 +262,7 @@ export default async function ComposePage({
         status: post.status,
         subject,
         mediaType: post.type as MediaType,
-        mediaUrl,
+        mediaUrl: coverUrl,
         title: post.title ?? "",
         caption: post.body ?? "",
         label: post.label ?? null,
@@ -275,6 +298,8 @@ export default async function ComposePage({
           : null,
         photos,
         photosUnavailable,
+        videos,
+        videosUnavailable,
       };
     }
   }

@@ -103,3 +103,23 @@ export async function resolveVideoPlayback(
   if (!playbackId) return { playbackId: null, playbackUrl: null };
   return { playbackId, playbackUrl: muxSignedStreamUrl(playbackId) };
 }
+
+/**
+ * ENG-1598 — per-video playback. Mux passthrough is now the `post_video.id`
+ * (ENG-1597), so the post-level fallback in `resolveVideoPlayback` no longer
+ * matches new uploads. Read-only: the be webhook owns `post_video` writes, so
+ * no DB write here.
+ */
+export async function resolvePostVideoPlayback(
+  video: { id: string; mux_playback_id: string | null },
+): Promise<ResolvedPlayback> {
+  let playbackId = video.mux_playback_id;
+
+  if (!playbackId) {
+    const asset = await findMuxAssetByPassthrough(video.id).catch(() => null);
+    playbackId = asset?.playbackId ?? null;
+  }
+
+  if (!playbackId) return { playbackId: null, playbackUrl: null };
+  return { playbackId, playbackUrl: muxSignedStreamUrl(playbackId) };
+}

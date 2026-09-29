@@ -10,6 +10,7 @@ vi.mock("@/lib/mux", () => ({
 import {
   muxSignedStreamUrl,
   muxSignedThumbnailUrl,
+  resolvePostVideoPlayback,
   resolveVideoPlayback,
   signMuxPlaybackToken,
   type PlaybackDb,
@@ -142,5 +143,28 @@ describe("resolveVideoPlayback", () => {
     const r = await resolveVideoPlayback(db, { id: "post_1", mux_playback_id: null });
     expect(r).toEqual({ playbackId: null, playbackUrl: null });
     expect(calls).toHaveLength(0);
+  });
+});
+
+describe("resolvePostVideoPlayback — ENG-1598", () => {
+  it("signs directly when mux_playback_id is already stored (no Mux call)", async () => {
+    const r = await resolvePostVideoPlayback({ id: "pv_1", mux_playback_id: "pb_9" });
+    expect(r.playbackId).toBe("pb_9");
+    expect(r.playbackUrl).toContain("https://stream.mux.com/pb_9.m3u8?token=");
+    expect(findMuxAssetByPassthrough).not.toHaveBeenCalled();
+  });
+
+  it("falls back to a Mux lookup by passthrough = the video's own id", async () => {
+    findMuxAssetByPassthrough.mockResolvedValue({ assetId: "as_1", playbackId: "pb_2" });
+    const r = await resolvePostVideoPlayback({ id: "pv_1", mux_playback_id: null });
+    expect(findMuxAssetByPassthrough).toHaveBeenCalledWith("pv_1");
+    expect(r.playbackId).toBe("pb_2");
+    expect(r.playbackUrl).toContain("pb_2.m3u8?token=");
+  });
+
+  it("returns nulls when the Mux lookup fails (never throws)", async () => {
+    findMuxAssetByPassthrough.mockRejectedValue(new Error("mux down"));
+    const r = await resolvePostVideoPlayback({ id: "pv_1", mux_playback_id: null });
+    expect(r).toEqual({ playbackId: null, playbackUrl: null });
   });
 });

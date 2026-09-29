@@ -1578,3 +1578,23 @@
     outline-offset: 2px;
   }
 }
+
+/* ENG-1598 — the video set reuses the photo strip's tiles (.photoTile and
+   friends, owner decision: no new mockup). Only two things are new: the tile's
+   own progress bar — the Step 3 .progressTrack at tile scale — and the glyph a
+   tile shows before it has a poster or a local frame. */
+.videoTileTrack {
+  height: 4px;
+  margin: 0 5px 4px;
+  background: var(--line-dark);
+  border-radius: var(--radius-pill);
+  overflow: hidden;
+}
+.videoTileGlyph {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: rgba(255, 255, 255, 0.75);
+}

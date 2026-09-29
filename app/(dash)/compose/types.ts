@@ -276,6 +276,21 @@ export type EditInitial = {
    * lost. Absent/false is the normal case.
    */
   photosUnavailable?: boolean;
+  /**
+   * ENG-1598 — the post's CURRENT ordered `post_video` set, for a video post
+   * only: id, processing status and SIGNED poster / HLS urls (never a Mux
+   * asset or upload id). Ordered by `sort_order`, so index 0 is the cover the
+   * feed shows. Absent/empty for every other type, and for a legacy video post
+   * with no rows (it then edits as before: media fixed).
+   */
+  videos?: { id: string; sortOrder: number; status: string; posterUrl: string | null; playbackUrl: string | null }[];
+  /**
+   * ENG-1598 — the `post_video` read FAILED (or the table is not deployed).
+   * Same rule as `photosUnavailable`: media is read-only for the session and
+   * `videos` is never sent, because a save built on a set we could not read
+   * would delete the rows we never saw.
+   */
+  videosUnavailable?: boolean;
 };
 
 /**

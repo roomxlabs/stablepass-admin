@@ -340,6 +340,26 @@ describe("ENG-1269 · the subject cell renders horse / trainer / stablepass", ()
 // ENG-1590 — the table opts into the phone-stacking CSS (app/globals.css),
 // and the cells that need it carry the caption/hide markers.
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ENG-1598 — the "N videos" badge on a multi-video post.
+// ---------------------------------------------------------------------------
+describe("ENG-1598 · the N-videos badge", () => {
+  it("shows the badge for a video post with videoCount 3", () => {
+    renderOne({ id: "vid", type: "video", typeLabel: "Video", videoCount: 3 });
+    expect(screen.getByTestId("post-video-count").textContent).toBe("3 videos");
+  });
+
+  it("shows no badge when videoCount is 1", () => {
+    renderOne({ id: "vid", type: "video", typeLabel: "Video", videoCount: 1 });
+    expect(screen.queryByTestId("post-video-count")).toBeNull();
+  });
+
+  it("shows no badge when videoCount is undefined", () => {
+    renderOne({ id: "vid", type: "video", typeLabel: "Video", videoCount: undefined });
+    expect(screen.queryByTestId("post-video-count")).toBeNull();
+  });
+});
+
 describe("ENG-1590 · phone-stacking hooks", () => {
   it("the table carries stack-phone, and every subject cell carries stack-full + its data-label", () => {
     const { container } = renderLib();

@@ -14,10 +14,12 @@ import {
   createDraft,
   createPostLabel,
   discardDraft,
+  fetchPostVideos,
   patchPost,
   publishPost,
   rebakeDraftPoster,
   requestPhotoUploads,
+  requestVideoUploads,
   retireByline,
   retireLabel,
   schedulePost,
@@ -47,6 +49,30 @@ import {
   uploadedPhotos,
   type ComposePhoto,
 } from "./photos";
+import {
+  MAX_VIDEOS,
+  VIDEO_POLL_MS,
+  anyUploading,
+  applyServerStatus,
+  coverSource,
+  moveVideo,
+  nonVideoError,
+  plural,
+  pollableIds,
+  removeVideoAt,
+  slot0Changed,
+  tileFromRow,
+  tileStateLabel,
+  updateVideo,
+  videoBlockReason,
+  videoCapError,
+  videoOrderPatch,
+  videoSaveBlockReason,
+  videoUploadTargets,
+  waitingMessage,
+  type ComposeVideo,
+  type VideoUploadTarget,
+} from "./videos";
 import type {
   CreateDraftResponse,
   EditInitial,
@@ -129,6 +155,33 @@ function objectUrl(file: File): string | null {
 function revokePhotoUrls(list: readonly ComposePhoto[]): void {
   if (typeof URL === "undefined" || !URL.revokeObjectURL) return;
   for (const p of list) if (p.previewUrl?.startsWith("blob:")) URL.revokeObjectURL(p.previewUrl);
+}
+
+/** ENG-1598 — release every video tile's local object URL. */
+function revokeVideoUrls(list: readonly ComposeVideo[]): void {
+  if (typeof URL === "undefined" || !URL.revokeObjectURL) return;
+  for (const v of list) if (v.localUrl?.startsWith("blob:")) URL.revokeObjectURL(v.localUrl);
+}
+
+/**
+ * ENG-1598 — edit mode's video tiles, from the loader's `post_video` read.
+ * Create mode, other types, and a legacy video post with no rows start empty.
+ */
+function initialVideos(initial: EditInitial | undefined): ComposeVideo[] {
+  if (!initial || initial.mediaType !== "video" || initial.videosUnavailable) return [];
+  return (initial.videos ?? []).map(tileFromRow);
+}
+
+/**
+ * ENG-1598 — a lifecycle failure as the operator should read it. A publish /
+ * schedule `409 videos_not_ready` (the API's own gate, for a set that changed
+ * under the screen) reads exactly like the disabled-button reason. Structural
+ * rather than `instanceof ApiError`, like `scheduleErrorMessage`.
+ */
+function videosNotReadyMessage(e: unknown): string | null {
+  if (!e || typeof e !== "object" || (e as { code?: string }).code !== "videos_not_ready") return null;
+  const n = (e as { notReady?: unknown[] }).notReady?.length ?? 0;
+  return waitingMessage(Math.max(1, n));
 }
 
 /**
@@ -525,6 +578,26 @@ export default function ComposeScreen({
   /** Cap breach and per-set upload problems — shown above the strip. */
   const [photoError, setPhotoError] = useState<string | null>(null);
   /**
+   * ENG-1598 — the ordered video set, in DISPLAY order; index 0 is the cover.
+   * Video posts only. The source of truth for order, per-video progress and
+   * processing state, and for what `videos` a save sends.
+   */
+  const [videos, setVideos] = useState<ComposeVideo[]>(() => initialVideos(initial));
+  /**
+   * ENG-1598 — the ordered `post_video` ids the SERVER holds, as far as this
+   * session knows: what the loader read, plus every slot minted since, minus
+   * what a successful save removed. It is what `videoOrderPatch` diffs
+   * against and what goes back as `knownVideos`. State rather than a ref
+   * because the save fragment is derived from it during render.
+   */
+  const [serverVideoIds, setServerVideoIds] = useState<string[]>(() =>
+    initial?.mediaType === "video" && !initial.videosUnavailable
+      ? (initial.videos ?? []).map((v) => v.id)
+      : [],
+  );
+  /** Cap breach, mixed pick and append failures — shown under the video strip. */
+  const [videoError, setVideoError] = useState<string | null>(null);
+  /**
    * The post type is CHOSEN up front (step 2), never inferred from the picked
    * file. Inference is what left `text` unauthorable — it has no file to sniff.
    * Video is the default: it is the common post, and it is what the mockup
@@ -723,6 +796,94 @@ export default function ComposeScreen({
   // an edit save now carries `media`, so the strip is what `post_media` and the
   // `post.media_url` mirror are rewritten from.
   const usesPhotoSet = postType === "photo" && !photosUnavailable;
+  /**
+   * ENG-1598 — a video post goes through the multi-video set path: always in
+   * create mode, and in edit mode when the loader read the post's
+   * `post_video` rows. A legacy video post with no rows, or one whose read
+   * failed, keeps the old read-only media frame and never sends `videos`.
+   */
+  const usesVideoSet =
+    postType === "video" &&
+    !initial?.videosUnavailable &&
+    (!isEdit || (initial?.videos?.length ?? 0) > 0);
+  /** The cover — slot 0, the video the feed shows and the only one with a frame chooser. */
+  const coverVideo = usesVideoSet ? videos[0] : undefined;
+  /**
+   * What Step 3's big frame, the scrubber, the measurement and the preview's
+   * first slide describe. For a video set that is the COVER tile — it moves
+   * when the operator reorders — and for every other type the single picked
+   * file, exactly as before.
+   */
+  const stepFile: File | null = usesVideoSet ? coverVideo?.file ?? null : file;
+  const stepUrl: string | null = usesVideoSet
+    ? // The loader's cover URL is the fallback ONLY while the post's own
+      // first video is still first — after a reorder it describes the wrong clip.
+      coverSource(coverVideo) ??
+      (coverVideo && coverVideo.id === initial?.videos?.[0]?.id ? initial?.mediaUrl ?? null : null)
+    : mediaUrl;
+  /**
+   * Publish / Schedule gate for a video set: every video ready (MV-A1 409s
+   * otherwise). Null for any other type.
+   */
+  const videoBlock = usesVideoSet ? videoBlockReason(videos) : null;
+  /**
+   * The edit SAVE gate — looser: a live post may keep a newly added video
+   * processing (members see it once it is ready, MV-B3).
+   */
+  const editVideoBlock =
+    isEdit && usesVideoSet
+      ? videoSaveBlockReason(videos, {
+          live: initial!.status === "published" || initial!.status === "scheduled",
+        })
+      : null;
+  /** The `videos` / `knownVideos` fragment every save spreads in (absent if unchanged). */
+  const videoPatch = usesVideoSet ? videoOrderPatch(videos, serverVideoIds) : {};
+
+  /**
+   * ENG-1598 — poll the processing videos until Mux has finished with them.
+   *
+   * Keyed on the SET of ids waiting (a string, so an unrelated re-render does
+   * not restart the timer) and torn down the moment none is. The state write
+   * happens in the interval callback, never synchronously in the effect body
+   * (the set-state-in-effect lint, gotcha :812). The be mux-webhook is what
+   * flips a row; this only reads it.
+   */
+  const pollKey = usesVideoSet && uploadPostId ? pollableIds(videos).join(",") : "";
+  useEffect(() => {
+    if (!pollKey || !uploadPostId) return;
+    const postId = uploadPostId;
+    let cancelled = false;
+    const timer = setInterval(() => {
+      void fetchPostVideos(postId)
+        .then((rows) => {
+          if (cancelled || !rows) return;
+          setVideos((prev) => applyServerStatus(prev, rows));
+        })
+        .catch(() => {
+          // A missed poll is harmless — the next tick asks again.
+        });
+    }, VIDEO_POLL_MS);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [pollKey, uploadPostId]);
+
+  /**
+   * ENG-1598 — warn before leaving while video bytes are still going up: the
+   * PUT dies with the page, and the slot it was filling would sit
+   * "uploading" on the post forever, blocking publish.
+   */
+  const videoBytesInFlight = usesVideoSet && anyUploading(videos);
+  useEffect(() => {
+    if (!videoBytesInFlight) return;
+    const warn = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      e.returnValue = "";
+    };
+    window.addEventListener("beforeunload", warn);
+    return () => window.removeEventListener("beforeunload", warn);
+  }, [videoBytesInFlight]);
   /** The photos that actually landed in Storage, in display order. */
   const readyPhotos = uploadedPhotos(photos);
   /**
@@ -789,7 +950,14 @@ export default function ComposeScreen({
    */
   const draftReady =
     !!draft &&
-    (usesPhotoSet ? photosSettled && readyPhotos.length > 0 : upload.state === "done");
+    (usesPhotoSet
+      ? photosSettled && readyPhotos.length > 0
+      : usesVideoSet
+        ? // ENG-1598 — a video set can be SAVED as a draft once every byte has
+          // landed (processing is Mux's job, not the operator's); going live
+          // additionally needs `videoBlock` clear — see `canGoLive`.
+          videos.length > 0 && !anyUploading(videos)
+        : upload.state === "done");
   /**
    * A text post has no upload, so it can never satisfy `draftReady` — and its
    * draft does not even exist yet, because minting one is what picking a file
@@ -831,6 +999,8 @@ export default function ComposeScreen({
    */
   const editPhotoUnsettled = isEdit && usesPhotoSet && !photosSettled;
   const canAct = isText ? textReady : draftReady;
+  /** ENG-1598 — Publish / Schedule additionally wait for every video to be ready. */
+  const canGoLive = canAct && !videoBlock;
   const busy = action.kind === "working";
   // Both halves of the pick are required before the schedule action is allowed.
   const canSchedule = !!scheduleDate && !!scheduleTime;
@@ -862,7 +1032,7 @@ export default function ComposeScreen({
     // Only ask when there is something to discard. A subject switch before any
     // file is picked is free, and a confirm on it is noise the operator learns
     // to click through — which is how a real confirm stops being read.
-    const hasWork = !!draft || photos.length > 0 || !!file;
+    const hasWork = !!draft || photos.length > 0 || videos.length > 0 || !!file;
     if (hasWork && typeof window !== "undefined" && !window.confirm(DISCARD_ON_SUBJECT_SWITCH)) {
       return;
     }
@@ -925,6 +1095,11 @@ export default function ComposeScreen({
     // operator can re-pick a ten-photo set as often as they like.
     revokePhotoUrls(photos);
     setPhotos([]);
+    // ENG-1598 — the video set belongs to the same draft, and so goes with it.
+    revokeVideoUrls(videos);
+    setVideos([]);
+    setServerVideoIds([]);
+    setVideoError(null);
     // The DRAFT is discarded below, so the next photo belongs to a different
     // post id and no slot of this one is held any more. This is the only kind
     // of place the high-water mark may go down.
@@ -975,7 +1150,12 @@ export default function ComposeScreen({
    */
   function onPickPosterFrame(timeS: number) {
     setPosterTimeS(timeS);
-    if (draft) {
+    // ENG-1598 — the early write lands on the server's slot 0. If the operator
+    // has reordered since the last save, that is a DIFFERENT video from the
+    // one they just picked a frame of, so skip it: the save/publish PATCH
+    // carries the new order and this time together, and the route writes the
+    // time after the reorder.
+    if (draft && !("videos" in videoPatch)) {
       void patchPost(draft.id, { poster_time_s: timeS }).catch(() => {
         // Best-effort early write — the publish PATCH re-sends posterTimePatch.
       });
@@ -1405,6 +1585,232 @@ export default function ComposeScreen({
     setPhotoError(null);
   }
 
+  /**
+   * ENG-1598 — the cover changed (a reorder or a removal put another video
+   * first). The frame chooser moves to it and starts empty, as the API does
+   * for the new slot 0 (MV-A1); the measurement is redone for the new clip.
+   */
+  function onCoverChanged(next: ComposeVideo | undefined) {
+    setPosterTimeS(null);
+    setDims(null);
+    setMeasure(next?.file ? "measuring" : "off");
+  }
+
+  /**
+   * ENG-1598 — PUT each tile's bytes straight to its own Mux direct-upload URL,
+   * IN PARALLEL (a video set is a handful of large files, unlike the ten-photo
+   * Storage case), each settling its own tile. A tile whose bytes land waits
+   * on Mux ("processing") unless it has no row id to poll — a pre-MV-A1
+   * create, which behaves exactly as a single video did before.
+   */
+  async function uploadVideoSet(
+    tiles: readonly ComposeVideo[],
+    targets: readonly VideoUploadTarget[],
+    stale: () => boolean,
+  ) {
+    await Promise.all(
+      tiles.map(async (t, i) => {
+        try {
+          await uploadVideoToMux(targets[i].uploadUrl, t.file!, (pct) => {
+            if (!stale()) setVideos((prev) => updateVideo(prev, t.key, { pct }));
+          });
+          if (stale()) return;
+          setVideos((prev) =>
+            updateVideo(prev, t.key, { state: t.id ? "processing" : "ready", pct: 100 }),
+          );
+        } catch (e) {
+          if (stale()) return;
+          setVideos((prev) =>
+            updateVideo(prev, t.key, { state: "failed", error: (e as Error).message }),
+          );
+        }
+      }),
+    );
+  }
+
+  /** New tiles for freshly minted slots, in pick order. */
+  function seedTiles(postId: string, picked: File[], targets: VideoUploadTarget[]): ComposeVideo[] {
+    return picked.map((f, i) => ({
+      key: `${postId}-${targets[i].videoId ?? `legacy-${i}`}`,
+      id: targets[i].videoId,
+      name: f.name,
+      size: f.size,
+      file: f,
+      localUrl: objectUrl(f),
+      state: "uploading" as const,
+      pct: 0,
+    }));
+  }
+
+  /**
+   * ENG-1598 — pick one OR MORE videos (up to 5), replacing the set. The video
+   * counterpart of `onPickPhotos`: one path for one file or five, so the
+   * single-video case cannot drift from the multi one.
+   */
+  async function onPickVideos(picked: File[]) {
+    if (!subjectReady) {
+      setUpload({ state: "error", pct: 0, error: subjectPrompt });
+      return;
+    }
+    if (picked.length === 0) return;
+    // The cap and the videos-only rule, BEFORE anything is created or uploaded.
+    const cap = videoCapError(0, picked.length);
+    if (cap) {
+      setVideoError(cap);
+      if (fileInputRef.current) fileInputRef.current.value = "";
+      return;
+    }
+    const mixed = nonVideoError(picked);
+    if (mixed) {
+      setTypeError(mixed);
+      if (fileInputRef.current) fileInputRef.current.value = "";
+      return;
+    }
+    setTypeError(null);
+    setVideoError(null);
+
+    if (draft) void discardDraft(draft.id).catch(() => {});
+    revokeVideoUrls(videos);
+    setDraft(null);
+    setVideos([]);
+    setServerVideoIds([]);
+    setPosterTimeS(null);
+    setDims(null);
+    setMeasure("measuring");
+    setUpload({ state: "creating", pct: 0 });
+
+    const generation = ++pickGeneration.current;
+    const stale = () => pickGeneration.current !== generation;
+
+    try {
+      const created = await createDraft({
+        ...subjectFields,
+        type: "video",
+        // ONLY for a genuine multi-pick: an absent `videoCount` is 1
+        // server-side, so a single video sends the byte-identical request it
+        // always has.
+        ...(picked.length > 1 ? { videoCount: picked.length } : {}),
+      });
+      if (stale()) {
+        void discardDraft(created.id).catch(() => {});
+        return;
+      }
+      const targets = videoUploadTargets(created);
+      if (targets.length < picked.length) throw new Error("No upload target was returned.");
+      setDraft(created);
+      const seeded = seedTiles(created.id, picked, targets);
+      setVideos(seeded);
+      setServerVideoIds(seeded.flatMap((v) => (v.id ? [v.id] : [])));
+      setUpload({ state: "uploading", pct: 0 });
+      await uploadVideoSet(seeded, targets, stale);
+      if (stale()) return;
+      setUpload({ state: "done", pct: 100 });
+    } catch (e) {
+      if (stale()) return;
+      setUpload({ state: "error", pct: 0, error: (e as Error).message });
+    }
+  }
+
+  /**
+   * ENG-1598 — "Add more videos": APPEND slots to the post (draft or, in edit
+   * mode, published) via `POST video-uploads`. Like `onAppendPhotos` it reads
+   * the pick generation and never bumps it — an append voids nothing.
+   */
+  async function onAppendVideos(picked: File[]) {
+    if (picked.length === 0) return;
+    const postId = uploadPostId;
+    if (!postId) {
+      setVideoError("Add the first video before adding more.");
+      return;
+    }
+    const cap = videoCapError(videos.length, picked.length);
+    if (cap) {
+      setVideoError(cap);
+      if (fileInputRef.current) fileInputRef.current.value = "";
+      return;
+    }
+    const mixed = nonVideoError(picked);
+    if (mixed) {
+      setTypeError(mixed);
+      if (fileInputRef.current) fileInputRef.current.value = "";
+      return;
+    }
+    setTypeError(null);
+    setVideoError(null);
+
+    const generation = pickGeneration.current;
+    const stale = () => pickGeneration.current !== generation;
+
+    // The route counts the rows the SERVER holds, and a removal is only
+    // committed by a save. With unsaved removals the append can hit the cap
+    // server-side while the strip is under it. In CREATE mode the draft is the
+    // operator's scratch, so commit the removals first; in edit mode that
+    // would be an unrequested live change, so say what to do instead.
+    let known = serverVideoIds;
+    if (known.length + picked.length > MAX_VIDEOS) {
+      if (isEdit) {
+        setVideoError(
+          `This post still holds ${plural(known.length, "video")} until you save your removals. Save first, then add more.`,
+        );
+        return;
+      }
+      const order = videoOrderPatch(videos, known);
+      if (order.videos) {
+        try {
+          await patchPost(postId, order);
+        } catch (e) {
+          if (stale()) return;
+          setVideoError((e as Error).message);
+          return;
+        }
+        known = order.videos;
+        setServerVideoIds(order.videos);
+      }
+    }
+
+    let targets: VideoUploadTarget[];
+    try {
+      targets = await requestVideoUploads(postId, picked.length);
+    } catch (e) {
+      if (stale()) return;
+      setVideoError((e as Error).message);
+      return;
+    }
+    if (stale()) return;
+    if (targets.length < picked.length) {
+      setVideoError("Mux did not return enough upload slots. Nothing was uploaded.");
+      return;
+    }
+    const added = seedTiles(postId, picked, targets);
+    const addedIds = added.flatMap((v) => (v.id ? [v.id] : []));
+    setServerVideoIds([...known, ...addedIds]);
+    setVideos((prev) => [...prev, ...added]);
+    await uploadVideoSet(added, targets, stale);
+  }
+
+  /** Reorder the video strip; the frame chooser follows the cover. */
+  function reorderVideo(index: number, direction: -1 | 1) {
+    const next = moveVideo(videos, index, direction);
+    if (next === videos) return;
+    if (slot0Changed(videos, next)) onCoverChanged(next[0]);
+    setVideos((prev) => moveVideo(prev, index, direction));
+  }
+
+  /**
+   * Remove one video. Local until the next save / publish, whose PATCH sends
+   * the set without it (the route deletes the row and its Mux asset). A
+   * removed tile's PUT, if still running, is simply no longer shown.
+   */
+  function dropVideo(index: number) {
+    const gone = videos[index];
+    const next = removeVideoAt(videos, index);
+    if (next === videos) return;
+    if (slot0Changed(videos, next)) onCoverChanged(next[0]);
+    setVideos((prev) => removeVideoAt(prev, prev.indexOf(gone)));
+    if (gone) revokeVideoUrls([gone]);
+    setVideoError(null);
+  }
+
   async function runAction(next: PublishMode) {
     if (isText) {
       // The body IS the post for a text type, so an empty one is blocked here
@@ -1419,6 +1825,11 @@ export default function ComposeScreen({
       }
     } else if (!draft || !draftReady) {
       setAction({ kind: "error", message: `Upload a ${TYPE_LABEL[postType].toLowerCase()} first.` });
+      return;
+    }
+    // ENG-1598 — going live waits for every video; a draft save does not.
+    if (next !== "draft" && videoBlock) {
+      setAction({ kind: "error", message: videoBlock });
       return;
     }
     setMode(next);
@@ -1468,8 +1879,13 @@ export default function ComposeScreen({
         ...bylinePatch,
         ...labelPatch,
         ...mediaPatch,
+        // ENG-1598 — the reordered / trimmed video set, before the poster
+        // time: the route applies the order first (clearing a new cover's
+        // time) and then writes `poster_time_s` onto the new slot 0.
+        ...videoPatch,
         ...posterTimePatch,
       });
+      if (videoPatch.videos) setServerVideoIds(videoPatch.videos);
 
       // ENG-1584 — the PATCH above only stores the chosen time. If Mux's
       // `asset.ready` already fired (the usual case: it lands while the
@@ -1525,7 +1941,9 @@ export default function ComposeScreen({
       // past time the client guard let through); other actions surface raw.
       setAction({
         kind: "error",
-        message: next === "schedule" ? scheduleErrorMessage(e) : (e as Error).message,
+        message:
+          videosNotReadyMessage(e) ??
+          (next === "schedule" ? scheduleErrorMessage(e) : (e as Error).message),
       });
     }
   }
@@ -1728,6 +2146,11 @@ export default function ComposeScreen({
       setAction({ kind: "error", message: PHOTO_UPLOADING });
       return;
     }
+    // ENG-1598 — the video set's own save rules (see `videoSaveBlockReason`).
+    if (editVideoBlock) {
+      setAction({ kind: "error", message: editVideoBlock });
+      return;
+    }
     setAction({ kind: "working" });
     try {
       await patchPost(initial.id, {
@@ -1740,7 +2163,9 @@ export default function ComposeScreen({
         ...bylinePatch,
         ...labelPatch,
         ...mediaPatch,
+        ...videoPatch,
       });
+      if (videoPatch.videos) setServerVideoIds(videoPatch.videos);
       setAction({ kind: "ok", message: "Changes saved." });
       router.push("/posts");
       router.refresh();
@@ -1764,6 +2189,12 @@ export default function ComposeScreen({
       setAction({ kind: "error", message: PHOTO_UPLOADING });
       return;
     }
+    // ENG-1598 — publishing waits for every video, not just a savable set.
+    const liveBlock = editVideoBlock ?? videoBlock;
+    if (liveBlock) {
+      setAction({ kind: "error", message: liveBlock });
+      return;
+    }
     setAction({ kind: "working" });
     try {
       await patchPost(initial.id, {
@@ -1776,13 +2207,15 @@ export default function ComposeScreen({
         ...bylinePatch,
         ...labelPatch,
         ...mediaPatch,
+        ...videoPatch,
       });
+      if (videoPatch.videos) setServerVideoIds(videoPatch.videos);
       await publishPost(initial.id);
       setAction({ kind: "ok", message: "Post published." });
       router.push("/posts");
       router.refresh();
     } catch (e) {
-      setAction({ kind: "error", message: (e as Error).message });
+      setAction({ kind: "error", message: videosNotReadyMessage(e) ?? (e as Error).message });
     }
   }
 
@@ -1802,6 +2235,12 @@ export default function ComposeScreen({
     // deletes every row above it. The button is disabled for this too.
     if (editPhotoUnsettled) {
       setAction({ kind: "error", message: PHOTO_UPLOADING });
+      return;
+    }
+    // ENG-1598 — scheduling is going live later; the route gates it the same.
+    const liveBlock = editVideoBlock ?? videoBlock;
+    if (liveBlock) {
+      setAction({ kind: "error", message: liveBlock });
       return;
     }
     const when = combineLocal(scheduleDate, scheduleTime);
@@ -1825,7 +2264,9 @@ export default function ComposeScreen({
         ...bylinePatch,
         ...labelPatch,
         ...mediaPatch,
+        ...videoPatch,
       });
+      if (videoPatch.videos) setServerVideoIds(videoPatch.videos);
       await schedulePost(initial.id, when.toISOString());
       setAction({
         kind: "ok",
@@ -1834,7 +2275,7 @@ export default function ComposeScreen({
       router.push("/posts");
       router.refresh();
     } catch (e) {
-      setAction({ kind: "error", message: scheduleErrorMessage(e) });
+      setAction({ kind: "error", message: videosNotReadyMessage(e) ?? scheduleErrorMessage(e) });
     }
   }
 
@@ -1867,8 +2308,10 @@ export default function ComposeScreen({
     // the same photo `mirrorPath` will write into `post.media_url` — so the
     // card the operator is looking at is the card a subscriber gets. Falls back
     // to the plain `mediaUrl` for every other type and for a single photo.
+    // ENG-1598 — for a video set, the COVER tile's source (`stepUrl`), so a
+    // reorder moves the preview's first slide with it.
     mediaUrl:
-      (postType === "photo" && photos.find((p) => p.path === coverPath)?.previewUrl) || mediaUrl,
+      (postType === "photo" && photos.find((p) => p.path === coverPath)?.previewUrl) || stepUrl,
     // ENG-748 (C1, found in review) — the carousel shows the photos that will
     // actually BE THERE: `readyPhotos`, never the raw list.
     //
@@ -1909,6 +2352,17 @@ export default function ComposeScreen({
     // ENG-1584 — the frame picked with "Use this frame", so the preview's
     // video sits on the poster a member will see instead of frame 0.
     posterTimeS: postType === "video" ? posterTimeS : null,
+    // ENG-1598 — two or more videos → the carousel. Every tile, in display
+    // order (a failed one included: it is still in the set until removed,
+    // and the pager must not silently reindex against the strip).
+    videos:
+      usesVideoSet && videos.length > 1
+        ? videos.map((v) => ({
+            posterUrl: v.posterUrl ?? null,
+            localUrl: v.localUrl,
+            ready: v.state === "ready",
+          }))
+        : undefined,
     dims,
     measure,
   };
@@ -1920,13 +2374,17 @@ export default function ComposeScreen({
   // inflating the count (ENG-748 C1).
   const mediaLabel = isText
     ? "None — text post"
-    : photos.length > 0
+    : usesVideoSet && videos.length > 0
+      ? videos.every((v) => v.state === "ready")
+        ? plural(videos.length, "video")
+        : `${videos.filter((v) => v.state === "ready").length} of ${plural(videos.length, "video")} ready`
+      : photos.length > 0
       ? readyPhotos.length === photos.length
         ? readyPhotos.length === 1
           ? "1 photo"
           : `${readyPhotos.length} photos`
         : `${readyPhotos.length} of ${photos.length} photos`
-      : file || mediaUrl
+      : stepFile || stepUrl
         ? `1 ${postType}`
         : "None yet";
 
@@ -1951,7 +2409,8 @@ export default function ComposeScreen({
                 type="button"
                 className={`btn ${initial?.status === "draft" ? styles.btnLight : "btn-primary"} ${styles.btnSm}`}
                 onClick={saveEdit}
-                disabled={busy || editPhotoEmpty || editPhotoUnsettled}
+                disabled={busy || editPhotoEmpty || editPhotoUnsettled || !!editVideoBlock}
+                title={editVideoBlock ?? undefined}
               >
                 {busy ? "Saving…" : "Save changes"}
               </button>
@@ -1961,7 +2420,8 @@ export default function ComposeScreen({
                   className={`btn btn-primary ${styles.btnSm}`}
                   data-testid="publish-draft"
                   onClick={publishDraftNow}
-                  disabled={busy || editPhotoEmpty || editPhotoUnsettled}
+                  disabled={busy || editPhotoEmpty || editPhotoUnsettled || !!(editVideoBlock ?? videoBlock)}
+                  title={editVideoBlock ?? videoBlock ?? undefined}
                 >
                   {busy ? "Working…" : "Publish now"}
                 </button>
@@ -1981,7 +2441,8 @@ export default function ComposeScreen({
                 type="button"
                 className={`btn ${styles.btnLight} ${styles.btnSm}`}
                 onClick={() => runAction("schedule")}
-                disabled={!canAct || busy}
+                disabled={!canGoLive || busy}
+                title={videoBlock ?? undefined}
               >
                 Schedule
               </button>
@@ -1989,7 +2450,9 @@ export default function ComposeScreen({
                 type="button"
                 className={`btn btn-primary ${styles.btnSm}`}
                 onClick={() => runAction("publish")}
-                disabled={!canAct || busy}
+                disabled={!canGoLive || busy}
+                title={videoBlock ?? undefined}
+                data-testid="topbar-publish"
               >
                 Publish
               </button>
@@ -2459,10 +2922,10 @@ export default function ComposeScreen({
                 // (media is read-only there). Video is a single Mux asset and
                 // voice a single Storage object, so neither may offer it.
                 // ENG-748 multi-select for PHOTO, and since ENG-1266 in EDIT
-                // mode too — media is no longer read-only there. Video is a
-                // single Mux asset and voice a single Storage object, so
-                // neither may offer it.
-                multiple={usesPhotoSet}
+                // mode too — media is no longer read-only there. ENG-1598:
+                // VIDEO too (up to 5 per post). Voice is a single Storage
+                // object, so it still may not offer it.
+                multiple={usesPhotoSet || usesVideoSet}
                 data-testid="media-input"
                 onChange={(e) => {
                   const picked = Array.from(e.target.files ?? []);
@@ -2480,6 +2943,12 @@ export default function ComposeScreen({
                   if (usesPhotoSet) {
                     if (mode === "append" || isEdit) void onAppendPhotos(picked);
                     else void onPickPhotos(picked);
+                  } else if (usesVideoSet) {
+                    // ENG-1598 — same shape as the photo set: a replacing pick
+                    // in create mode, an append from "Add more videos" or in
+                    // edit mode (the post's videos ARE the set there).
+                    if (mode === "append" || isEdit) void onAppendVideos(picked);
+                    else void onPickVideos(picked);
                   } else if (!isEdit) void onPickFile(picked[0]);
                 }}
               />
@@ -2495,9 +2964,10 @@ export default function ComposeScreen({
                       // reordering moves it, and `post.media_url` follows.
                       // eslint-disable-next-line @next/next/no-img-element -- signed existing media
                       <img src={coverPhoto?.previewUrl ?? mediaUrl!} alt="" />
-                    ) : postType === "video" && mediaUrl ? (
-                      // Signed Mux HLS URL hydrated by the edit page loader.
-                      <HlsVideo src={mediaUrl} controls playsInline preload="metadata" />
+                    ) : postType === "video" && stepUrl ? (
+                      // Signed Mux HLS URL hydrated by the edit page loader —
+                      // the COVER's, which moves with a reorder (ENG-1598).
+                      <HlsVideo key={stepUrl} src={stepUrl} controls playsInline preload="metadata" />
                     ) : postType === "voice" && mediaUrl ? (
                       <audio src={mediaUrl} controls preload="metadata" data-testid="voice-existing" />
                     ) : (
@@ -2515,15 +2985,20 @@ export default function ComposeScreen({
                           // sentence would be a straight lie. The strip below
                           // carries the controls.
                           `${photos.length} ${photos.length === 1 ? "photo" : "photos"} \u00b7 add, remove or reorder them below.`
+                        : usesVideoSet
+                          ? // ENG-1598 — likewise for a post's videos.
+                            `${plural(videos.length, "video")} \u00b7 add, remove or reorder them below.`
                         : photosUnavailable
                           ? // Honest about WHY, so the operator retries instead
                             // of concluding the photos are gone.
                             "This post\u2019s photos couldn\u2019t be loaded, so they can\u2019t be edited right now. Reload to try again \u2014 your other changes still save."
-                          : `Existing ${postType} \u00b7 media can\u2019t be changed when editing.`}
+                          : initial?.videosUnavailable
+                            ? "This post\u2019s videos couldn\u2019t be loaded, so they can\u2019t be edited right now. Reload to try again \u2014 your other changes still save."
+                            : `Existing ${postType} \u00b7 media can\u2019t be changed when editing.`}
                     </span>
                   </div>
                 </div>
-              ) : file ? (
+              ) : stepFile ? (
                 <div className={`${styles.uploadZone} ${styles.filled}`} data-testid="media-filled">
                   <div
                     className={`${styles.preview} ${postType === "voice" ? styles.previewAudio : ""}`}
@@ -2532,17 +3007,26 @@ export default function ComposeScreen({
                       // The COVER, not the first file picked — see coverPhoto.
                       // eslint-disable-next-line @next/next/no-img-element -- local object URL preview
                       <img src={coverPhoto?.previewUrl ?? mediaUrl!} alt="" />
-                    ) : postType === "video" && mediaUrl ? (
+                    ) : postType === "video" && stepUrl ? (
                       // Playable local preview of the picked file (object URL);
                       // native controls replace the decorative play glyph.
-                      <HlsVideo src={mediaUrl} controls playsInline preload="metadata" />
+                      // ENG-1598: the COVER's file, keyed so a reorder swaps it.
+                      <HlsVideo key={stepUrl} src={stepUrl} controls playsInline preload="metadata" />
                     ) : postType === "voice" && mediaUrl ? (
                       // Voice has no visual, so the local object URL is offered
                       // as a playable audio element rather than a blank frame.
                       <audio src={mediaUrl} controls preload="metadata" data-testid="voice-preview" />
                     ) : null}
                   </div>
-                  {upload.state === "uploading" ? (
+                  {usesVideoSet ? (
+                    // ENG-1598 — the cover's own bytes; every tile carries its
+                    // own bar in the strip below.
+                    coverVideo?.state === "uploading" ? (
+                      <div className={styles.progressTrack}>
+                        <div className={styles.progressFill} style={{ width: `${coverVideo.pct}%` }} />
+                      </div>
+                    ) : null
+                  ) : upload.state === "uploading" ? (
                     <div className={styles.progressTrack}>
                       <div className={styles.progressFill} style={{ width: `${upload.pct}%` }} />
                     </div>
@@ -2551,11 +3035,26 @@ export default function ComposeScreen({
                     <span className={styles.uploadMeta}>
                       {/* Names the cover for a photo set, so the frame and its
                           caption cannot describe two different photos. */}
-                      {coverPhoto?.name ?? file.name} ·{" "}
-                      {humanSize(coverPhoto?.size ?? file.size)}
+                      {coverPhoto?.name ?? stepFile.name} ·{" "}
+                      {humanSize(coverPhoto?.size ?? stepFile.size)}
                       {photos.length > 1 ? ` · cover of ${photos.length}` : ""}
+                      {usesVideoSet && videos.length > 1 ? ` · cover of ${videos.length}` : ""}
                       {"  "}
-                      {upload.state === "creating" || upload.state === "uploading" ? (
+                      {usesVideoSet && coverVideo ? (
+                        // ENG-1598 — the cover tile's state, in the same words.
+                        coverVideo.state === "uploading" ? (
+                          <span className={styles.uploadStatus}> · uploading{coverVideo.pct ? ` ${coverVideo.pct}%` : "…"}</span>
+                        ) : coverVideo.state === "failed" ? (
+                          <span className={`${styles.uploadStatus} ${styles.uploadError}`}> · {coverVideo.error ?? "upload failed"}</span>
+                        ) : (
+                          <>
+                            <span className={styles.uploadStatus} data-testid="upload-done"> · uploaded</span>
+                            {coverVideo.state === "processing" ? (
+                              <span className={styles.uploadStatus}> · processing</span>
+                            ) : null}
+                          </>
+                        )
+                      ) : upload.state === "creating" || upload.state === "uploading" ? (
                         <span className={styles.uploadStatus}> · uploading{upload.state === "uploading" && upload.pct ? ` ${upload.pct}%` : "…"}</span>
                       ) : upload.state === "done" ? (
                         <span className={styles.uploadStatus} data-testid="upload-done"> · uploaded</span>
@@ -2579,8 +3078,8 @@ export default function ComposeScreen({
                         }}
                       >
                         {/* A photo pick REPLACES the whole set, so say so once
-                            there is more than one to lose. */}
-                        {photos.length > 1 ? "Replace all" : "Replace"}
+                            there is more than one to lose. Same for videos. */}
+                        {photos.length > 1 || videos.length > 1 ? "Replace all" : "Replace"}
                       </button>
                       <button type="button" className={styles.uploadBtn} onClick={resetMedia}>
                         Remove
@@ -2599,7 +3098,7 @@ export default function ComposeScreen({
                     </span>
                     <span className={styles.dropSub}>
                       {postType === "video"
-                        ? "Video goes to Mux — straight from your browser."
+                        ? `Up to ${MAX_VIDEOS} videos. They go to Mux — straight from your browser.`
                         : "Goes to private storage — straight from your browser."}
                     </span>
                     <button
@@ -2628,14 +3127,53 @@ export default function ComposeScreen({
               {/* ENG-824 — local poster scrubber. Video create only; never edit
                   mode (media is fixed there) and never photo/text/voice.
                   needs-design-check: no mockup — matches Step 3 upload controls. */}
-              {!isEdit && postType === "video" && file && mediaUrl ? (
+              {/* ENG-1598 — for the COVER only (owner decision): keyed by its
+                  source, so a reorder that puts another video first remounts
+                  the scrubber on that clip with no frame picked. */}
+              {!isEdit && postType === "video" && stepFile && stepUrl ? (
                 <PosterScrubber
-                  key={mediaUrl}
-                  file={file}
-                  src={mediaUrl}
+                  key={stepUrl}
+                  file={stepFile}
+                  src={stepUrl}
                   selectedTimeS={posterTimeS}
                   onPick={onPickPosterFrame}
                 />
+              ) : null}
+              {usesVideoSet && (isEdit || videos.length > 0) ? (
+                <VideoStrip
+                  videos={videos}
+                  canAdd={!!uploadPostId && videos.length < MAX_VIDEOS}
+                  onMove={reorderVideo}
+                  onRemove={dropVideo}
+                  onAdd={() => {
+                    pickMode.current = "append";
+                    if (fileInputRef.current) {
+                      fileInputRef.current.value = "";
+                      fileInputRef.current.click();
+                    }
+                  }}
+                  note={
+                    isEdit
+                      ? editVideoBlock ??
+                        (initial!.status === "draft"
+                          ? videoBlock
+                          : videos.some((v) => v.state === "processing")
+                            ? "New videos show to members once they finish processing."
+                            : null)
+                      : videos.length > 0
+                        ? videoBlock
+                        : null
+                  }
+                />
+              ) : null}
+              {videoError ? (
+                <div
+                  className={`${styles.help} ${styles.uploadError}`}
+                  data-testid="video-error"
+                  role="alert"
+                >
+                  {videoError}
+                </div>
               ) : null}
               {/* ENG-748 — the ordering strip. Present only for a photo post
                   that actually has photos, and only outside edit mode (media is
@@ -3167,6 +3705,14 @@ export default function ComposeScreen({
                 </>
               ) : null}
 
+              {/* ENG-1598 — WHY going live is off, where the button is. Only
+                  for a video set the operator has started, and only for a
+                  mode that goes live (a draft save does not wait on Mux). */}
+              {!isEdit && usesVideoSet && videos.length > 0 && mode !== "draft" && videoBlock ? (
+                <div className={styles.help} data-testid="publish-block-reason" role="status">
+                  {videoBlock}
+                </div>
+              ) : null}
               <div className={styles.publishActions}>
                 <button
                   type="button"
@@ -3175,8 +3721,10 @@ export default function ComposeScreen({
                   onClick={isEdit ? saveEdit : () => runAction(mode)}
                   disabled={
                     isEdit
-                      ? busy || editPhotoEmpty || editPhotoUnsettled
-                      : !canAct || busy || (mode === "schedule" && !canSchedule)
+                      ? busy || editPhotoEmpty || editPhotoUnsettled || !!editVideoBlock
+                      : !(mode === "draft" ? canAct : canGoLive) ||
+                        busy ||
+                        (mode === "schedule" && !canSchedule)
                   }
                 >
                   {busy ? (isEdit ? "Saving…" : "Working…") : isEdit ? "Save changes" : primaryLabel}
@@ -3263,7 +3811,13 @@ export default function ComposeScreen({
                   data-testid="schedule-action"
                   style={{ marginTop: 12 }}
                   onClick={scheduleEdit}
-                  disabled={!canSchedule || busy || editPhotoEmpty || editPhotoUnsettled}
+                  disabled={
+                    !canSchedule ||
+                    busy ||
+                    editPhotoEmpty ||
+                    editPhotoUnsettled ||
+                    !!(editVideoBlock ?? videoBlock)
+                  }
                 >
                   {busy
                     ? "Saving…"
@@ -3288,7 +3842,7 @@ export default function ComposeScreen({
               <PostPreview
                 data={previewData}
                 compact
-                onMeasure={file ? onMeasure : undefined}
+                onMeasure={stepFile ? onMeasure : undefined}
               />
             </div>
           </div>
@@ -3374,5 +3928,149 @@ function ManageList({
         </ul>
       ) : null}
     </div>
+  );
+}
+
+/**
+ * ENG-1598 — the video set's tiles: per-video progress / processing / ready /
+ * failed, reorder, remove, and "Add more videos".
+ *
+ * Built from the photo strip's classes on purpose (owner: reuse the photo-set
+ * tiles, no new mockup) — the same 104px tile, the same 1-based position chip,
+ * the same "Cover" badge on position 1, the same ↑ ↓ × controls. Only the
+ * per-tile progress bar is new, and it is the Step 3 bar at tile scale.
+ *
+ * A component rather than more inline JSX because ComposeScreen is already
+ * 3k+ lines; it owns no state — every decision is the parent's (videos.ts).
+ */
+function VideoStrip({
+  videos,
+  canAdd,
+  onMove,
+  onRemove,
+  onAdd,
+  note,
+}: {
+  videos: ComposeVideo[];
+  canAdd: boolean;
+  onMove: (index: number, direction: -1 | 1) => void;
+  onRemove: (index: number) => void;
+  onAdd: () => void;
+  /** Why the set cannot go live / be saved yet, or null. */
+  note: string | null;
+}) {
+  const ready = videos.filter((v) => v.state === "ready").length;
+  return (
+    <>
+      <div className={styles.photoStrip} data-testid="video-strip">
+        {videos.map((v, i) => (
+          <div
+            key={v.key}
+            className={`${styles.photoTile} ${v.state === "failed" ? styles.photoTileBad : ""}`}
+            data-testid={`video-tile-${i}`}
+            data-video-id={v.id ?? undefined}
+            data-state={v.state}
+          >
+            <div className={styles.photoThumbWrap}>
+              {v.posterUrl ? (
+                // eslint-disable-next-line @next/next/no-img-element -- signed poster, CSS-cropped thumb
+                <img className={styles.photoThumb} src={v.posterUrl} alt="" />
+              ) : v.localUrl ? (
+                // The picked file's first frame — never played here.
+                <video
+                  className={styles.photoThumb}
+                  src={v.localUrl}
+                  muted
+                  playsInline
+                  preload="metadata"
+                  aria-hidden="true"
+                />
+              ) : (
+                <span className={styles.videoTileGlyph} aria-hidden="true">
+                  <Icon name="play" />
+                </span>
+              )}
+              <span className={styles.photoPos} data-testid={`video-pos-${i}`}>
+                {i + 1}
+              </span>
+              {/* Position 1 is what `post` mirrors — the feed's video and the
+                  only one whose frame can be chosen. */}
+              {i === 0 ? (
+                <span className={styles.photoCover} data-testid="video-cover">
+                  Cover
+                </span>
+              ) : null}
+            </div>
+            <div className={styles.photoTools}>
+              <button
+                type="button"
+                className={styles.photoBtn}
+                onClick={() => onMove(i, -1)}
+                disabled={i === 0}
+                aria-label={`Move video ${i + 1} earlier`}
+                data-testid={`video-up-${i}`}
+              >
+                ↑
+              </button>
+              <button
+                type="button"
+                className={styles.photoBtn}
+                onClick={() => onMove(i, 1)}
+                disabled={i === videos.length - 1}
+                aria-label={`Move video ${i + 1} later`}
+                data-testid={`video-down-${i}`}
+              >
+                ↓
+              </button>
+              <button
+                type="button"
+                className={`${styles.photoBtn} ${styles.photoBtnKill}`}
+                onClick={() => onRemove(i)}
+                aria-label={`Remove video ${i + 1}`}
+                data-testid={`video-remove-${i}`}
+              >
+                ×
+              </button>
+            </div>
+            {v.state === "uploading" ? (
+              <div className={styles.videoTileTrack} aria-hidden="true">
+                <div className={styles.progressFill} style={{ width: `${v.pct}%` }} />
+              </div>
+            ) : null}
+            <div
+              className={`${styles.photoState} ${v.state === "failed" ? styles.photoStateBad : ""}`}
+              data-testid={`video-state-${i}`}
+              title={v.error ?? v.name}
+            >
+              {tileStateLabel(v)}
+            </div>
+          </div>
+        ))}
+      </div>
+      <div className={styles.photoStripActions}>
+        <button
+          type="button"
+          className={`btn ${styles.btnLight} ${styles.btnSm}`}
+          data-testid="video-add-more"
+          // Not disabled mid-upload: appending while earlier tiles upload is
+          // allowed and leaves them untouched.
+          disabled={!canAdd}
+          onClick={onAdd}
+        >
+          Add more videos
+        </button>
+        <span className={styles.help} data-testid="video-strip-help">
+          {videos.length >= MAX_VIDEOS
+            ? `That is the maximum of ${MAX_VIDEOS} videos.`
+            : `${videos.length} of ${MAX_VIDEOS} videos${ready < videos.length ? ` · ${ready} ready` : ""}.`}{" "}
+          The first video is the cover: the feed shows it, and its frame is the one you choose.
+        </span>
+      </div>
+      {note ? (
+        <div className={styles.help} data-testid="video-block-reason" role="status">
+          {note}
+        </div>
+      ) : null}
+    </>
   );
 }

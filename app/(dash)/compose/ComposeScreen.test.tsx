@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import ComposeScreen from "./ComposeScreen";
 import type { EditInitial, HorseOption, TrainerOption } from "./types";
 import { POST_LABEL_PRESETS } from "@/lib/posts/labels";
@@ -30,6 +30,9 @@ const api = vi.hoisted(() => ({
   retireLabel: vi.fn(),
   // ENG-1584 — compose bakes the picked poster frame.
   rebakeDraftPoster: vi.fn(),
+  // ENG-1598 — multi-video: append slots, and poll processing state.
+  requestVideoUploads: vi.fn(),
+  fetchPostVideos: vi.fn(),
 }));
 vi.mock("./api", () => api);
 
@@ -1434,17 +1437,20 @@ describe("ENG-748 · multi-photo compose", () => {
       .getAllByTestId(/^photo-tile-\d+$/)
       .map((t) => t.getAttribute("data-photo-path") ?? "");
 
-  describe("the multiple attribute is photo-only", () => {
+  describe("the multiple attribute is for photo and video", () => {
     it("sets `multiple` once the operator chooses Photo", () => {
       renderScreen();
       selectType("photo");
       expect((screen.getByTestId("media-input") as HTMLInputElement).multiple).toBe(true);
     });
 
-    it("does NOT set it for video — a single Mux asset", () => {
+    // ENG-1598 — INTENDED FLIP. This pinned `multiple === false` for video
+    // while a video post was a single Mux asset; MV-A1/A2 made it up to five,
+    // so the video picker now offers multi-select too. Voice stays single.
+    it("ENG-1598: DOES set it for video — up to 5 videos per post", () => {
       renderScreen();
       selectType("video");
-      expect((screen.getByTestId("media-input") as HTMLInputElement).multiple).toBe(false);
+      expect((screen.getByTestId("media-input") as HTMLInputElement).multiple).toBe(true);
     });
 
     it("does NOT set it for voice — a single Storage object", () => {
@@ -3275,5 +3281,291 @@ describe("Posting as (ENG-1268)", () => {
     expect(screen.getByTestId("preview-head-subline").textContent).toBe("Racing TV");
     expect(select.value).toBe("Racing TV");
     expect(Array.from(select.options).some((o) => o.value === "Track Media Wrap")).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ENG-1598 — MV-A2: compose + edit for multi-video posts.
+// ---------------------------------------------------------------------------
+describe("ENG-1598 · multi-video compose", () => {
+  const realCreate = (URL as unknown as { createObjectURL?: unknown }).createObjectURL;
+  const realRevoke = (URL as unknown as { revokeObjectURL?: unknown }).revokeObjectURL;
+  let n = 0;
+  beforeEach(() => {
+    n = 0;
+    Object.defineProperty(URL, "createObjectURL", {
+      value: vi.fn(() => `blob:v-${n++}`),
+      configurable: true,
+      writable: true,
+    });
+    Object.defineProperty(URL, "revokeObjectURL", { value: vi.fn(), configurable: true, writable: true });
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    Object.defineProperty(URL, "createObjectURL", { value: realCreate, configurable: true, writable: true });
+    Object.defineProperty(URL, "revokeObjectURL", { value: realRevoke, configurable: true, writable: true });
+  });
+
+  const vid = (name: string) => new File([new Uint8Array([1, 2, 3])], name, { type: "video/mp4" });
+  const IDS = [
+    "00000000-0000-4000-8000-00000000a000",
+    "00000000-0000-4000-8000-00000000a001",
+    "00000000-0000-4000-8000-00000000a002",
+  ];
+  const created = (count: number) => ({
+    id: "mv1",
+    status: "draft",
+    type: "video",
+    watermarked: false,
+    uploads: IDS.slice(0, count).map((videoId, i) => ({ videoId, uploadUrl: `https://mux.up/${i}` })),
+  });
+  const statusRows = (status: string, ids = IDS) =>
+    ids.map((id, i) => ({ id, sortOrder: i, status, posterUrl: null, playbackUrl: null }));
+  const tileIds = () =>
+    screen.getAllByTestId(/^video-tile-\d+$/).map((t) => t.getAttribute("data-video-id"));
+  const publishBtn = () => screen.getByTestId("topbar-publish") as HTMLButtonElement;
+
+  async function pickThree() {
+    api.createDraft.mockResolvedValue(created(3));
+    api.uploadVideoToMux.mockResolvedValue(undefined);
+    api.fetchPostVideos.mockResolvedValue(statusRows("uploading"));
+    renderScreen();
+    pickHorse("horse-opt-h1");
+    fireEvent.change(screen.getByTestId("media-input"), {
+      target: { files: [vid("a.mp4"), vid("b.mp4"), vid("c.mp4")] },
+    });
+    await waitFor(() => expect(api.uploadVideoToMux).toHaveBeenCalledTimes(3));
+    await waitFor(() => expect(screen.getByTestId("video-state-2").textContent).toBe("processing…"));
+  }
+
+  it("a 3-video pick mints 3 slots, uploads all 3 in parallel, and waits for processing", async () => {
+    await pickThree();
+    expect(api.createDraft).toHaveBeenCalledWith({
+      horseId: "h1",
+      type: "video",
+      sourceTrainerId: "t1",
+      videoCount: 3,
+    });
+    // One PUT per slot, each to its own target.
+    expect(api.uploadVideoToMux.mock.calls.map((c) => c[0])).toEqual([
+      "https://mux.up/0",
+      "https://mux.up/1",
+      "https://mux.up/2",
+    ]);
+    expect(tileIds()).toEqual(IDS);
+    expect(screen.getByTestId("video-cover").closest("[data-testid='video-tile-0']")).toBeTruthy();
+    // Publish is off, and says why.
+    expect(publishBtn().disabled).toBe(true);
+    expect(screen.getByTestId("video-block-reason").textContent).toBe(
+      "Waiting for 3 videos to finish processing",
+    );
+    // Save draft does not wait on Mux.
+    expect((screen.getByRole("button", { name: "Save draft" }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it("publish enables only once every video is ready (the poll)", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    await pickThree();
+    api.fetchPostVideos.mockResolvedValue([
+      ...statusRows("ready", IDS.slice(0, 2)),
+      { id: IDS[2], sortOrder: 2, status: "uploading", posterUrl: null, playbackUrl: null },
+    ]);
+    await act(async () => {
+      vi.advanceTimersByTime(3100);
+    });
+    await waitFor(() =>
+      expect(screen.getByTestId("video-block-reason").textContent).toBe(
+        "Waiting for 1 video to finish processing",
+      ),
+    );
+    expect(publishBtn().disabled).toBe(true);
+    api.fetchPostVideos.mockResolvedValue(statusRows("ready"));
+    await act(async () => {
+      vi.advanceTimersByTime(3100);
+    });
+    await waitFor(() => expect(publishBtn().disabled).toBe(false));
+    expect(api.fetchPostVideos).toHaveBeenCalledWith("mv1");
+    expect(screen.queryByTestId("video-block-reason")).toBeNull();
+  });
+
+  it("a 6th pick is refused with the cap message and nothing uploads", () => {
+    renderScreen();
+    pickHorse("horse-opt-h1");
+    fireEvent.change(screen.getByTestId("media-input"), {
+      target: { files: ["1", "2", "3", "4", "5", "6"].map((x) => vid(`${x}.mp4`)) },
+    });
+    expect(screen.getByTestId("video-error").textContent).toBe(
+      "You can add up to 5 videos to a post — you picked 6. Nothing was uploaded.",
+    );
+    expect(api.createDraft).not.toHaveBeenCalled();
+  });
+
+  it("a mixed photo + video pick is rejected (videos only)", () => {
+    renderScreen();
+    pickHorse("horse-opt-h1");
+    fireEvent.change(screen.getByTestId("media-input"), {
+      target: { files: [vid("a.mp4"), new File([new Uint8Array([1])], "c.jpg", { type: "image/jpeg" })] },
+    });
+    expect(screen.getByTestId("type-mismatch").textContent).toContain("c.jpg");
+    expect(api.createDraft).not.toHaveBeenCalled();
+  });
+
+  it("reorder 3 → 1 moves the cover (and the scrubber's clip), and the save sends the new order", async () => {
+    await pickThree();
+    expect(screen.getByTestId("poster-scrubber-video").getAttribute("src")).toBe("blob:v-0");
+    fireEvent.click(screen.getByTestId("video-up-2"));
+    fireEvent.click(screen.getByTestId("video-up-1"));
+    expect(tileIds()).toEqual([IDS[2], IDS[0], IDS[1]]);
+    // The scrubber follows the new first video.
+    expect(screen.getByTestId("poster-scrubber-video").getAttribute("src")).toBe("blob:v-2");
+    // …and so does the preview's first slide.
+    expect(screen.getByTestId("preview-video").getAttribute("src")).toBe("blob:v-2");
+
+    api.patchPost.mockResolvedValue(undefined);
+    fireEvent.click(screen.getByRole("button", { name: "Save draft" }));
+    await waitFor(() => expect(api.patchPost).toHaveBeenCalled());
+    expect(api.patchPost.mock.calls[0][1]).toMatchObject({
+      videos: [IDS[2], IDS[0], IDS[1]],
+      knownVideos: IDS,
+    });
+    // The picked frame belonged to the old cover: nothing is sent for it.
+    expect(api.patchPost.mock.calls[0][1]).not.toHaveProperty("poster_time_s");
+  });
+
+  it("removing a tile drops it, and the save sends the set without it", async () => {
+    await pickThree();
+    fireEvent.click(screen.getByTestId("video-remove-1"));
+    expect(tileIds()).toEqual([IDS[0], IDS[2]]);
+    api.patchPost.mockResolvedValue(undefined);
+    fireEvent.click(screen.getByRole("button", { name: "Save draft" }));
+    await waitFor(() => expect(api.patchPost).toHaveBeenCalled());
+    expect(api.patchPost.mock.calls[0][1]).toMatchObject({ videos: [IDS[0], IDS[2]], knownVideos: IDS });
+  });
+
+  it("a failed tile blocks publishing until it is removed", async () => {
+    api.createDraft.mockResolvedValue(created(2));
+    api.uploadVideoToMux
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(new Error("Upload failed (500)."));
+    api.fetchPostVideos.mockResolvedValue(statusRows("ready", IDS.slice(0, 2)));
+    renderScreen();
+    pickHorse("horse-opt-h1");
+    fireEvent.change(screen.getByTestId("media-input"), {
+      target: { files: [vid("a.mp4"), vid("b.mp4")] },
+    });
+    await waitFor(() =>
+      expect(screen.getByTestId("video-state-1").textContent).toBe("failed — remove and re-add"),
+    );
+    expect(screen.getByTestId("video-block-reason").textContent).toContain("Remove it");
+    expect(publishBtn().disabled).toBe(true);
+  });
+
+  it("a 409 videos_not_ready from publish reads as the waiting message", async () => {
+    // A single legacy-shaped create (no `uploads`) is ready once its bytes
+    // land, so the button is live — and the API still refuses.
+    api.createDraft.mockResolvedValue({
+      id: "v9",
+      status: "draft",
+      type: "video",
+      watermarked: false,
+      uploadUrl: "https://mux.up/legacy",
+    });
+    api.uploadVideoToMux.mockResolvedValue(undefined);
+    api.patchPost.mockResolvedValue(undefined);
+    api.publishPost.mockRejectedValue(
+      Object.assign(new Error("Every video must finish processing."), {
+        code: "videos_not_ready",
+        notReady: ["x", "y"],
+      }),
+    );
+    renderScreen();
+    pickHorse("horse-opt-h1");
+    fireEvent.change(screen.getByTestId("media-input"), { target: { files: [vid("a.mp4")] } });
+    await screen.findByTestId("upload-done");
+    fireEvent.click(screen.getByTestId("primary-action"));
+    await waitFor(() =>
+      expect(screen.getByTestId("action-note").textContent).toBe(
+        "Waiting for 2 videos to finish processing",
+      ),
+    );
+  });
+
+  const editInitial = (): EditInitial => ({
+    id: "post-mv",
+    status: "published",
+    mediaType: "video",
+    mediaUrl: "https://signed.example/v0.m3u8",
+    title: "",
+    caption: "Two angles",
+    bylineId: "t1",
+    subject: "horse",
+    byline: null,
+    trainer: null,
+    label: null,
+    scheduledFor: null,
+    horse: HORSES[0],
+    photos: [],
+    videos: [
+      { id: IDS[0], sortOrder: 0, status: "ready", posterUrl: "https://p/0.jpg", playbackUrl: "https://signed.example/v0.m3u8" },
+      { id: IDS[1], sortOrder: 1, status: "ready", posterUrl: "https://p/1.jpg", playbackUrl: "https://signed.example/v1.m3u8" },
+    ],
+  });
+
+  it("edit a published 2-video post: add a 3rd, it processes, and Save keeps the set", async () => {
+    api.requestVideoUploads.mockResolvedValue([{ videoId: IDS[2], uploadUrl: "https://mux.up/2" }]);
+    api.uploadVideoToMux.mockResolvedValue(undefined);
+    api.fetchPostVideos.mockResolvedValue(statusRows("uploading"));
+    api.patchPost.mockResolvedValue(undefined);
+    render(<ComposeScreen horses={HORSES} trainers={TRAINERS} initial={editInitial()} />);
+    expect(tileIds()).toEqual(IDS.slice(0, 2));
+    expect((screen.getByTestId("media-input") as HTMLInputElement).multiple).toBe(true);
+
+    fireEvent.change(screen.getByTestId("media-input"), { target: { files: [vid("c.mp4")] } });
+    await waitFor(() => expect(api.requestVideoUploads).toHaveBeenCalledWith("post-mv", 1));
+    await waitFor(() => expect(screen.getByTestId("video-state-2").textContent).toBe("processing…"));
+    expect(screen.getByTestId("video-block-reason").textContent).toBe(
+      "New videos show to members once they finish processing.",
+    );
+
+    // A live post may save with a new video still processing.
+    fireEvent.click(screen.getByTestId("primary-action"));
+    await waitFor(() => expect(api.patchPost).toHaveBeenCalled());
+    // The order did not change, so no `videos` key — the append already
+    // created the row server-side.
+    expect(api.patchPost.mock.calls[0][1]).not.toHaveProperty("videos");
+  });
+
+  it("edit: a processing video cannot become the cover of a live post", async () => {
+    api.requestVideoUploads.mockResolvedValue([{ videoId: IDS[2], uploadUrl: "https://mux.up/2" }]);
+    api.uploadVideoToMux.mockResolvedValue(undefined);
+    api.fetchPostVideos.mockResolvedValue(statusRows("uploading"));
+    render(<ComposeScreen horses={HORSES} trainers={TRAINERS} initial={editInitial()} />);
+    fireEvent.change(screen.getByTestId("media-input"), { target: { files: [vid("c.mp4")] } });
+    await waitFor(() => expect(screen.getByTestId("video-state-2").textContent).toBe("processing…"));
+    fireEvent.click(screen.getByTestId("video-up-2"));
+    fireEvent.click(screen.getByTestId("video-up-1"));
+    expect((screen.getByTestId("primary-action") as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByTestId("video-block-reason").textContent).toContain("must be ready");
+  });
+
+  it("edit: removing every video blocks the save", () => {
+    render(<ComposeScreen horses={HORSES} trainers={TRAINERS} initial={editInitial()} />);
+    fireEvent.click(screen.getByTestId("video-remove-1"));
+    fireEvent.click(screen.getByTestId("video-remove-0"));
+    expect((screen.getByTestId("primary-action") as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByTestId("video-block-reason").textContent).toBe(
+      "A video post needs at least one video.",
+    );
+  });
+
+  it("the preview shows a carousel for 2+ videos, and a single video gets none", () => {
+    render(<ComposeScreen horses={HORSES} trainers={TRAINERS} initial={editInitial()} />);
+    const rail = screen.getAllByTestId("post-preview")[0];
+    expect(within(rail).getByTestId("preview-count").textContent).toBe("1/2");
+    fireEvent.click(within(rail).getByTestId("preview-dot-1"));
+    expect(within(rail).getByTestId("preview-video-poster").getAttribute("src")).toBe("https://p/1.jpg");
+    expect(within(rail).getByTestId("preview-count").textContent).toBe("2/2");
+    fireEvent.click(screen.getByTestId("video-remove-1"));
+    expect(within(rail).queryByTestId("preview-dots")).toBeNull();
   });
 });

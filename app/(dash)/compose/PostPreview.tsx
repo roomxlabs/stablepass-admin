@@ -102,6 +102,16 @@ export type PostPreviewData = {
    * 0 whatever was picked, which read as "the pick did nothing".
    */
   posterTimeS?: number | null;
+  /**
+   * ENG-1598 — the ordered video set for a multi-video post, in DISPLAY order.
+   * Video posts with TWO OR MORE videos only; one video is the single-video
+   * card, unchanged (no dots, no pager), exactly like one photo.
+   *
+   * Slide 1 is always `mediaUrl` (the cover, parked on `posterTimeS`), so this
+   * list only has to describe slides 2..n: a signed poster once the server has
+   * one, the local file for a fresh pick, and whether Mux has finished with it.
+   */
+  videos?: { posterUrl: string | null; localUrl: string | null; ready: boolean }[];
 };
 
 export default function PostPreview({
@@ -128,6 +138,7 @@ export default function PostPreview({
     label,
     trainer,
     posterTimeS,
+    videos,
   } = data;
   const subject: Subject = data.subject ?? "horse";
 
@@ -138,12 +149,19 @@ export default function PostPreview({
   // a pager on a reel and re-render it through the <img> branch, undoing
   // ENG-747's 9:16 fix. Voice has no frame at all.
   const gallery = mediaType === "photo" && (photos?.length ?? 0) > 1 ? photos! : null;
+  // ENG-1598 — the video carousel: the same dots, the same n/m chip and the
+  // same clamped index as the photo one (owner: reuse the photo carousel, no
+  // new mockup). Slide 0 keeps the existing <video> branch below untouched —
+  // the ENG-747 9:16 fix and the ENG-1584 poster park both live there.
+  const videoSlides = mediaType === "video" && (videos?.length ?? 0) > 1 ? videos! : null;
+  const slideCount = gallery?.length ?? videoSlides?.length ?? 0;
   const [shown, setShown] = useState(0);
   // Clamped on READ rather than corrected in an effect: the operator can delete
   // the photo currently being shown, and an effect would paint one frame of a
   // blank box (or an out-of-range read) before it ran. Deriving keeps the index
   // valid in the same render that shortened the list.
-  const index = gallery ? Math.min(shown, gallery.length - 1) : 0;
+  const index = slideCount > 1 ? Math.min(shown, slideCount - 1) : 0;
+  const videoSlide = videoSlides && index > 0 ? videoSlides[index] : null;
   const shownUrl = gallery ? gallery[index] : mediaUrl;
 
   // The native control bar is opaque and eats the bottom ~21% of a 16:9 box, so
@@ -487,6 +505,36 @@ export default function PostPreview({
                   }
                   onError={() => onMeasure?.(null)}
                 />
+              ) : videoSlide ? (
+                // ENG-1598 — slides 2..n. Never the cover, so never measured
+                // (the readout and the card ratio describe slot 0) and never
+                // parked on `posterTimeS` (that frame belongs to slot 0 only).
+                // A video Mux has not finished with says so rather than
+                // showing a frame members cannot see yet.
+                !videoSlide.ready ? (
+                  <div className={styles.postMediaEmpty} data-testid="preview-video-processing">
+                    Processing video {index + 1}…
+                  </div>
+                ) : videoSlide.posterUrl ? (
+                  // eslint-disable-next-line @next/next/no-img-element -- signed poster, CSS-cropped
+                  <img
+                    key={videoSlide.posterUrl}
+                    src={videoSlide.posterUrl}
+                    alt=""
+                    data-testid="preview-video-poster"
+                  />
+                ) : videoSlide.localUrl ? (
+                  <video
+                    key={videoSlide.localUrl}
+                    src={videoSlide.localUrl}
+                    muted
+                    playsInline
+                    preload="metadata"
+                    data-testid="preview-video-slide"
+                  />
+                ) : (
+                  <div className={styles.postMediaEmpty}>Video {index + 1}</div>
+                )
               ) : mediaUrl && mediaType === "video" ? (
                 // Playable in the modal, where there is room to vet the actual
                 // video — click the frame to start it. NOT playable in the
@@ -608,13 +656,30 @@ export default function PostPreview({
                     />
                   ))}
                 </div>
+              ) : videoSlides ? (
+                // ENG-1598 — the same pager for a video set. Keyed by index:
+                // two slides may share a null poster, and the dots never
+                // reorder on their own (the set re-renders when it does).
+                <div className={styles.carouselDots} data-testid="preview-dots">
+                  {videoSlides.map((_, i) => (
+                    <button
+                      key={i}
+                      type="button"
+                      className={`${styles.carouselDot} ${i === index ? styles.carouselDotOn : ""}`}
+                      aria-label={`Show video ${i + 1} of ${videoSlides.length}`}
+                      aria-current={i === index}
+                      data-testid={`preview-dot-${i}`}
+                      onClick={() => setShown(i)}
+                    />
+                  ))}
+                </div>
               ) : null}
 
               {/* The count, so the operator can see "3 photos" without counting
                   dots. Same gate as the dots — never shown for a single photo. */}
-              {gallery ? (
+              {gallery || videoSlides ? (
                 <span className={styles.carouselCount} data-testid="preview-count">
-                  {index + 1}/{gallery.length}
+                  {index + 1}/{slideCount}
                 </span>
               ) : null}
             </div>

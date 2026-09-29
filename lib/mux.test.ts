@@ -32,6 +32,9 @@ describe("createMuxDirectUpload", () => {
     const [, init] = fetchMock.mock.calls[0];
     const body = JSON.parse(init.body);
     expect(body.new_asset_settings).toEqual({ playback_policy: ["signed"], passthrough: "post_1" });
+    // ENG-1597 review — every Mux call is bounded (MUX_TIMEOUT_MS), so a hung
+    // request cannot hold an admin request open indefinitely.
+    expect(init.signal).toBeInstanceOf(AbortSignal);
   });
 });
 
@@ -48,6 +51,8 @@ describe("findMuxAssetByPassthrough", () => {
     );
     const r = await findMuxAssetByPassthrough("post_1");
     expect(r).toEqual({ assetId: "as_1", playbackId: "pb_1" });
+    const [, init] = fetchMock.mock.calls[0];
+    expect(init.signal).toBeInstanceOf(AbortSignal);
   });
 
   it("returns null when nothing matches", async () => {
@@ -70,6 +75,7 @@ describe("deleteMuxAsset", () => {
     expect(init.headers.Authorization).toBe(
       `Basic ${Buffer.from("tok_id:tok_secret").toString("base64")}`,
     );
+    expect(init.signal).toBeInstanceOf(AbortSignal);
   });
 
   it("treats a 404 as success (already gone)", async () => {
@@ -90,6 +96,7 @@ describe("cancelMuxUpload", () => {
     const [url, init] = fetchMock.mock.calls[0];
     expect(url).toBe("https://api.mux.com/video/v1/uploads/up_1/cancel");
     expect(init.method).toBe("PUT");
+    expect(init.signal).toBeInstanceOf(AbortSignal);
   });
 
   it("treats a 404 as success", async () => {
@@ -107,6 +114,8 @@ describe("getMuxUploadAssetId", () => {
   it("returns the asset id off the upload", async () => {
     fetchMock.mockResolvedValue(jsonResponse({ data: { asset_id: "as_1" } }));
     expect(await getMuxUploadAssetId("up_1")).toBe("as_1");
+    const [, init] = fetchMock.mock.calls[0];
+    expect(init.signal).toBeInstanceOf(AbortSignal);
   });
 
   it("returns null when the upload has no asset yet", async () => {

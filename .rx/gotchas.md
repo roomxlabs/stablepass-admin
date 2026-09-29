@@ -2207,8 +2207,13 @@ columns are simply clipped — assert every element's right edge ≤ viewport, n
 - An upsert is an INSERT: a row another request deleted after your read comes back as a GHOST (same id,
   `uploading`, no Mux ids, blocks publish forever). `.select("id,created_at")` the upsert and delete any
   row whose `created_at` differs from what you loaded.
-- Delete removed rows first (a removed row still holding slot 0 would collide with the renumber), and
-  clean up Mux right after that delete, not at the end of the handler: an early error return would orphan the assets.
+- Delete removed rows first (a removed row still holding slot 0 would collide with the renumber), then
+  renumber IMMEDIATELY: between the two, the mirror has blanked `post`'s video. Mux cleanup goes LAST, in a
+  `finally` (so early returns can't orphan assets), for only the rows the delete `.select()` RETURNED, and
+  every Mux fetch carries `AbortSignal.timeout` so cleanup can't hang a request whose DB change already committed.
+- PostgREST gives no transaction across statements: two PATCHes removing opposite videos both pass
+  validation. Re-read the kept rows after the delete (restore what you deleted if one is gone), and re-read
+  the whole set after the writes (repack to 0..n-1 + 409 if a concurrent append left a gap).
 - The be's deferred trigger copies the slot-0 row onto `post` (mux ids, poster_url, poster_time_s,
   aspect_ratio) at COMMIT. A value written only to `post` (e.g. `poster_time_s`) is reverted by the next
   `post_video` write. Write the slot-0 row too. A PATCH response read before the video writes is stale, so re-read after them.

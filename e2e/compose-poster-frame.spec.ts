@@ -47,8 +47,13 @@ async function mockBff(page: Page): Promise<Calls> {
           status: "draft",
           type: "video",
           watermarked: false,
+          // ENG-1597 contract: one target per video slot, keyed by the
+          // post_video id; `uploadUrl` kept for a single-video create. No Mux
+          // upload id is ever returned to the browser.
+          uploads: [
+            { videoId: "00000000-0000-4000-8000-0000000000e2", uploadUrl: "http://127.0.0.1:8787/mock-upload/p-e2e" },
+          ],
           uploadUrl: "http://127.0.0.1:8787/mock-upload/p-e2e",
-          muxUploadId: "up-e2e",
         },
       }),
     });

@@ -219,4 +219,53 @@ describe("POST /api/admin/posts/:id/video-uploads — ENG-1597", () => {
     const r = await POST(postReq({ count: 1 }), ctx(P1));
     expect(r.status).toBe(201);
   });
+
+  // ENG-1597 — a video post with NO post_video rows but a live video already
+  // mirrored onto `post` predates the backfill (created in the deploy window).
+  // Inserting a slot-0 row would let the deferred mirror clobber `post`'s
+  // existing video with an empty `uploading` row, so this refuses instead.
+  it("no rows but post.mux_playback_id is set → 409 video_backfill_missing, no insert, no Mux call", async () => {
+    asAdmin();
+    state.tables.post = {
+      select: { single: { id: P1, type: "video", mux_asset_id: null, mux_playback_id: "pb_1" } },
+    };
+    state.tables.post_video = { select: { rows: [] } };
+    const r = await POST(postReq({ count: 1 }), ctx(P1));
+    expect(r.status).toBe(409);
+    const j = await r.json();
+    expect(j.error.code).toBe("video_backfill_missing");
+    expect(state.calls.mutations.filter((m) => m.op === "insert")).toHaveLength(0);
+    expect(createMuxDirectUpload).not.toHaveBeenCalled();
+  });
+
+  // The other half: no rows AND no live video on `post` at all (a genuinely
+  // brand-new video post) is not a backfill hazard — it still mints slot 0.
+  it("no rows and post has no Mux ids → still creates a slot at sort_order 0", async () => {
+    asAdmin();
+    state.tables.post = {
+      select: { single: { id: P1, type: "video", mux_asset_id: null, mux_playback_id: null } },
+    };
+    state.tables.post_video = { select: { rows: [] }, mutate: { rows: [{ id: "pv0", sort_order: 0 }] } };
+    const r = await POST(postReq({ count: 1 }), ctx(P1));
+    expect(r.status).toBe(201);
+    const insertCall = state.calls.mutations.find((m) => m.table === "post_video" && m.op === "insert");
+    expect(insertCall?.payload).toEqual([{ post_id: P1, sort_order: 0, status: "uploading" }]);
+  });
+
+  // A gap (0, 2 — no 1) means the set changed under a concurrent write since
+  // this admin last saw it; appending past the gap would be wrong, so this
+  // 409s and lets the client refetch instead (a PATCH reorder repacks it).
+  it("a gap in existing sort_orders (0, 2) → 409 video_set_stale, no insert", async () => {
+    asAdmin();
+    seedVideoPost([
+      { id: "pv0", sort_order: 0 },
+      { id: "pv2", sort_order: 2 },
+    ]);
+    const r = await POST(postReq({ count: 1 }), ctx(P1));
+    expect(r.status).toBe(409);
+    const j = await r.json();
+    expect(j.error.code).toBe("video_set_stale");
+    expect(state.calls.mutations.filter((m) => m.op === "insert")).toHaveLength(0);
+    expect(createMuxDirectUpload).not.toHaveBeenCalled();
+  });
 });

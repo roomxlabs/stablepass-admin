@@ -1,4 +1,5 @@
 import { requireAdmin } from "@/lib/auth/admin";
+import type { SupabaseClient } from "@supabase/supabase-js";
 import { ok, noContent, fail } from "@/lib/api/envelope";
 import { isLabelCheckViolation, LABEL_ERROR_MESSAGE, normalisePostLabel } from "@/lib/posts/labels";
 import {
@@ -353,92 +354,20 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
 
   /**
    * ENG-1597 — the `post_video` writes, now that `post` is safely written.
-   *
-   * ORDER MATTERS, same reasoning as `post_media` above:
-   *  a. delete removed rows FIRST — a slot freed here can never collide with
-   *     the renumber in (b), which is the whole reason it goes first.
-   *  b. renumber the KEPT rows in ONE upsert (on the `id` PK — the deferrable
-   *     `(post_id, sort_order)` unique can never be an arbiter), so a swap
-   *     between two rows passes the deferred constraint inside one statement.
-   *  c. clear the NEW slot-0 row's poster frame if the cover actually changed
-   *     — a new cover needs a new pick, so an old frame time is not carried
-   *     over silently.
-   *  d. best-effort Mux cleanup for whatever got removed, only after the
-   *     delete in (a) has actually committed.
+   * See `writeVideoSet` below for the order and why. Mux cleanup runs LAST, on
+   * every exit path (`finally`), and only for the rows this request's delete
+   * actually returned — never before the renumber, which is what keeps a
+   * removed cover from blanking a live post while Mux is being called.
    */
   if (wantsVideos) {
-    const keepIds = new Set(parsedVideos!);
-    const toRemove = currentVideoRows.filter((r) => !keepIds.has(r.id));
-
-    if (toRemove.length > 0) {
-      const { error: removeErr } = await sb
-        .from("post_video")
-        .delete()
-        .in("id", toRemove.map((r) => r.id))
-        .eq("post_id", id);
-      if (removeErr) {
-        console.error("post_video update_failed", removeErr.code);
-        return fail("update_failed", "Could not update the post's videos.", 400);
-      }
-      // Clean up NOW that the delete has committed — not at the end. A reorder
-      // failure below returns early, and these rows are already gone from the
-      // table, so nothing would ever reach their Mux assets again.
-      await cleanupVideos(toRemove); // best-effort; never fails the request
+    const out: VideoWriteOutcome = { removed: [] };
+    let videoErr: Response | null;
+    try {
+      videoErr = await writeVideoSet(sb, id, parsedVideos!, currentVideoRows, out);
+    } finally {
+      await cleanupVideos(out.removed); // best-effort; never throws, never fails the request
     }
-
-    const needsReorder = parsedVideos!.some((vid, i) => {
-      const row = currentVideoRows.find((r) => r.id === vid);
-      return !row || row.sort_order !== i;
-    });
-    if (needsReorder) {
-      const { data: upserted, error: reorderErr } = await sb
-        .from("post_video")
-        .upsert(
-          parsedVideos!.map((vid, i) => ({ id: vid, post_id: id, sort_order: i })),
-          { onConflict: "id" },
-        )
-        .select("id,created_at");
-      if (reorderErr) {
-        if (isSlotConflict(reorderErr))
-          return fail(
-            "video_set_stale",
-            "The post's videos changed. Refresh and try again.",
-            409,
-          );
-        console.error("post_video update_failed", reorderErr.code);
-        return fail("update_failed", "Could not update the post's videos.", 400);
-      }
-      // An upsert is INSERT ... ON CONFLICT: if another request deleted one of
-      // these rows after our read, it was re-INSERTED as a ghost (same id, no
-      // Mux ids, `uploading` forever, blocking publish). A re-created row has a
-      // new `created_at`; delete it and tell the client to refetch.
-      const loadedAt = new Map(currentVideoRows.map((r) => [r.id, r.created_at]));
-      const ghosts = ((upserted ?? []) as { id: string; created_at?: string }[])
-        .filter((r) => r.created_at && loadedAt.get(r.id) && r.created_at !== loadedAt.get(r.id))
-        .map((r) => r.id);
-      if (ghosts.length > 0) {
-        const { error: ghostErr } = await sb
-          .from("post_video")
-          .delete()
-          .in("id", ghosts)
-          .eq("post_id", id);
-        if (ghostErr) console.error("post_video ghost_cleanup_failed", ghostErr.code);
-        return fail("video_set_stale", "The post's videos changed. Refresh and try again.", 409);
-      }
-    }
-
-    const currentSlot0Id = currentVideoRows.find((r) => r.sort_order === 0)?.id;
-    if (parsedVideos![0] !== currentSlot0Id) {
-      const { error: clearErr } = await sb
-        .from("post_video")
-        .update({ poster_time_s: null })
-        .eq("id", parsedVideos![0])
-        .eq("post_id", id);
-      if (clearErr) {
-        console.error("post_video update_failed", clearErr.code);
-        return fail("update_failed", "Could not update the post's videos.", 400);
-      }
-    }
+    if (videoErr) return videoErr;
   }
 
   /**
@@ -449,9 +378,8 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
    * slot 0 onto `post` at commit — the next `post_video` write (a future
    * upload finishing, say) would silently revert it.
    *
-   * Best-effort: this is bookkeeping for a value that already landed on
-   * `post` itself, so a failure here is logged, never failed back to the
-   * operator as though their save had not gone through.
+   * A failure fails the request (400): the value on `post` alone would be
+   * reverted by the next `post_video` write, so reporting success would lie.
    */
   if (wantsPosterTime && videoPost?.type === "video") {
     const slot0Id = wantsVideos
@@ -462,8 +390,13 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
         .from("post_video")
         .update({ poster_time_s: patch.poster_time_s ?? null })
         .eq("id", slot0Id);
-      if (posterErr && !isMissingVideoTable(posterErr))
+      // A failure here is NOT harmless drift: the next `post_video` write
+      // re-mirrors slot 0 onto `post` and silently reverts the operator's
+      // frame. Say so, so they re-save, rather than reporting success.
+      if (posterErr && !isMissingVideoTable(posterErr)) {
         console.error("post_video update_failed", posterErr.code);
+        return fail("update_failed", "Could not save the poster frame on the post's cover video.", 400);
+      }
     }
   }
 
@@ -512,4 +445,201 @@ export async function DELETE(_req: Request, { params }: { params: Promise<{ id: 
     return fail("not_a_draft", "Only drafts can be discarded; published content is soft-hidden.", 409);
   await cleanupVideos(videoRows); // best-effort; the delete has already committed
   return noContent();
+}
+
+const videoSetStale = () =>
+  fail("video_set_stale", "The post's videos changed. Refresh and try again.", 409);
+
+/** What `writeVideoSet` hands back to its caller's `finally` for Mux cleanup. */
+type VideoWriteOutcome = { removed: PostVideoRow[] };
+
+/**
+ * One `upsert` on the `id` PK that sets each id's `sort_order` to its index —
+ * one statement, so a swap passes the deferred `(post_id, sort_order)` unique.
+ * An upsert is INSERT ... ON CONFLICT, so a row another request deleted after
+ * our read comes back as a GHOST (same id, `uploading`, no Mux ids, blocking
+ * publish forever); a re-created row has a new `created_at`, so those are
+ * deleted again and reported.
+ */
+async function upsertOrder(
+  sb: SupabaseClient,
+  postId: string,
+  ids: string[],
+  loaded: PostVideoRow[],
+): Promise<{ error: { code?: string } | null; ghosts: boolean }> {
+  const { data, error } = await sb
+    .from("post_video")
+    .upsert(
+      ids.map((vid, i) => ({ id: vid, post_id: postId, sort_order: i })),
+      { onConflict: "id" },
+    )
+    .select("id,created_at");
+  if (error) return { error, ghosts: false };
+  const loadedAt = new Map(loaded.map((r) => [r.id, r.created_at]));
+  const ghosts = ((data ?? []) as { id: string; created_at?: string }[]).filter(
+    (r) => r.created_at && loadedAt.get(r.id) && r.created_at !== loadedAt.get(r.id),
+  );
+  // Each ghost is deleted by its OWN `created_at`, never by id alone: a
+  // concurrent request may have restored the real row (same id, original
+  // `created_at`) in the meantime, and that one must survive.
+  for (const g of ghosts) {
+    const { error: ghostErr } = await sb
+      .from("post_video")
+      .delete()
+      .eq("id", g.id)
+      .eq("post_id", postId)
+      .eq("created_at", g.created_at!);
+    if (ghostErr) console.error("post_video ghost_cleanup_failed", ghostErr.code);
+  }
+  return { error: null, ghosts: ghosts.length > 0 };
+}
+
+/**
+ * ENG-1597 — apply the client's ordered video set. Returns an error response,
+ * or null on success. `out.removed` is set to the rows whose Mux assets the
+ * caller must clean up (after this returns, on every path).
+ *
+ * ORDER MATTERS:
+ *  a. delete the removed rows, returning them (`.select("*")`). Only rows the
+ *     delete actually RETURNED are ever handed to Mux cleanup — a row another
+ *     request already removed is theirs to clean up.
+ *  b. check every row this request KEEPS still exists. Two concurrent PATCHes
+ *     removing opposite videos ({X,Y} → [Y] and [X]) both pass validation;
+ *     without this they would together empty a published post. If a kept row
+ *     is gone, re-insert what (a) deleted, touch no Mux asset, and 409.
+ *  c. renumber the kept rows IMMEDIATELY (one upsert on the `id` PK), so a
+ *     removed cover leaves `post`'s mirrored video columns blank for one
+ *     statement, not for the length of a Mux round-trip.
+ *  d. clear the NEW slot-0 row's poster frame if the cover actually changed —
+ *     a new cover needs a new pick.
+ *  e. re-read the set. A concurrent append (or any other writer) can land a
+ *     row between our read and our writes, leaving e.g. A0,C1,D3 — a gap that
+ *     breaks every reader assuming a contiguous 0..n-1 prefix. If the set is
+ *     not exactly the requested ids at 0..n-1, repack whatever is there to
+ *     0..n-1 (keeping its order) and 409 so the client refetches.
+ */
+async function writeVideoSet(
+  sb: SupabaseClient,
+  postId: string,
+  order: string[],
+  loaded: PostVideoRow[],
+  out: VideoWriteOutcome,
+): Promise<Response | null> {
+  const keep = new Set(order);
+  const toRemove = loaded.filter((r) => !keep.has(r.id));
+  let wrote = false;
+  let stale = false;
+
+  // (a) + (b)
+  if (toRemove.length > 0) {
+    const { data: deleted, error: removeErr } = await sb
+      .from("post_video")
+      .delete()
+      .in("id", toRemove.map((r) => r.id))
+      .eq("post_id", postId)
+      .select("*");
+    if (removeErr) {
+      console.error("post_video update_failed", removeErr.code);
+      return fail("update_failed", "Could not update the post's videos.", 400);
+    }
+    const deletedRows = ((deleted ?? []) as (PostVideoRow & Record<string, unknown>)[]);
+    wrote = deletedRows.length > 0;
+
+    const { data: kept, error: keptErr } = await sb
+      .from("post_video")
+      .select("id")
+      .eq("post_id", postId)
+      .in("id", order);
+    if (keptErr || (kept ?? []).length !== order.length) {
+      if (keptErr) console.error("post_video query_failed", keptErr.code);
+      if (deletedRows.length > 0) {
+        // Upsert on the PK, not insert: a concurrent reorder may already have
+        // re-created one of these ids as a ghost, and the real row (with its
+        // Mux ids) must overwrite it rather than conflict with it.
+        const { error: restoreErr } = await sb
+          .from("post_video")
+          .upsert(deletedRows, { onConflict: "id" });
+        if (restoreErr) {
+          console.error("post_video restore_failed", restoreErr.code);
+          // A failed restore is AMBIGUOUS (the write may have committed and
+          // only the response been lost). Hand Mux cleanup ONLY the rows a
+          // fresh read confirms are really gone; if that read fails too,
+          // leak the assets rather than risk deleting a live video's.
+          const { data: back, error: backErr } = await sb
+            .from("post_video")
+            .select("id")
+            .in("id", deletedRows.map((r) => r.id));
+          if (backErr) {
+            console.error("post_video query_failed", backErr.code);
+          } else {
+            const present = new Set(((back ?? []) as { id: string }[]).map((r) => r.id));
+            out.removed = deletedRows.filter((r) => !present.has(r.id));
+          }
+        }
+      }
+      return videoSetStale();
+    }
+    out.removed = deletedRows;
+  }
+
+  // (c)
+  const needsReorder = order.some((vid, i) => loaded.find((r) => r.id === vid)?.sort_order !== i);
+  if (needsReorder) {
+    wrote = true;
+    const { error: reorderErr, ghosts } = await upsertOrder(sb, postId, order, loaded);
+    if (reorderErr) {
+      if (isSlotConflict(reorderErr)) return videoSetStale();
+      console.error("post_video update_failed", reorderErr.code);
+      return fail("update_failed", "Could not update the post's videos.", 400);
+    }
+    // A ghost means the set changed under us, but our upsert has ALREADY
+    // renumbered the other rows — returning here could leave a gap (even an
+    // empty slot 0, blanking a live post). Fall through so (e) repacks.
+    if (ghosts) stale = true;
+  }
+
+  // (d)
+  const currentSlot0Id = loaded.find((r) => r.sort_order === 0)?.id;
+  if (order[0] !== currentSlot0Id) {
+    wrote = true;
+    const { error: clearErr } = await sb
+      .from("post_video")
+      .update({ poster_time_s: null })
+      .eq("id", order[0])
+      .eq("post_id", postId);
+    if (clearErr) {
+      console.error("post_video update_failed", clearErr.code);
+      return fail("update_failed", "Could not update the post's videos.", 400);
+    }
+  }
+
+  // (e)
+  if (wrote) {
+    const { rows: after, error: afterErr } = await loadPostVideos(sb, postId);
+    if (afterErr) {
+      console.error("post_video query_failed", afterErr.code);
+      return null; // the writes themselves succeeded; nothing to verify against
+    }
+    const exact =
+      after.length === order.length && after.every((r, i) => r.id === order[i] && r.sort_order === i);
+    if (!exact) {
+      if (after.some((r, i) => r.sort_order !== i)) {
+        // Known limit: the live-cover gate (PATCH's up-front check) does not
+        // re-run here, so a repack that moves a not-ready row into slot 0 is
+        // logged for follow-up rather than refused — a gap is worse.
+        if (after[0] && after[0].status !== "ready")
+          console.error("post_video repack_cover_not_ready", after[0].id);
+        const { error: repackErr, ghosts: repackGhosts } = await upsertOrder(
+          sb,
+          postId,
+          after.map((r) => r.id),
+          after,
+        );
+        if (repackErr) console.error("post_video repack_failed", repackErr.code);
+        if (repackGhosts) console.error("post_video repack_ghost", postId);
+      }
+      return videoSetStale();
+    }
+  }
+  return stale ? videoSetStale() : null;
 }

@@ -11,6 +11,16 @@
 const MUX_UPLOADS_URL = "https://api.mux.com/video/v1/uploads";
 const MUX_ASSETS_URL = "https://api.mux.com/video/v1/assets";
 
+/**
+ * Every Mux call is bounded (ENG-1597 review). Cleanup runs AFTER the DB change
+ * has committed, so a hung Mux request would otherwise hold the admin request
+ * until the function's max duration and report a failure for a change that
+ * already happened. A timeout surfaces as a thrown `MuxError`, which every
+ * caller already maps (502 on create, logged + swallowed on cleanup).
+ */
+export const MUX_TIMEOUT_MS = 8000;
+const muxSignal = () => AbortSignal.timeout(MUX_TIMEOUT_MS);
+
 export type MuxDirectUpload = { uploadId: string; uploadUrl: string };
 export type MuxReadyAsset = { assetId: string; playbackId: string };
 
@@ -38,6 +48,7 @@ export async function createMuxDirectUpload(opts?: {
     res = await fetch(MUX_UPLOADS_URL, {
       method: "POST",
       headers: { Authorization: auth, "Content-Type": "application/json" },
+      signal: muxSignal(),
       body: JSON.stringify({
         cors_origin: opts?.corsOrigin ?? "*",
         new_asset_settings: {
@@ -77,7 +88,10 @@ export async function findMuxAssetByPassthrough(passthrough: string): Promise<Mu
 
   let res: Response;
   try {
-    res = await fetch(`${MUX_ASSETS_URL}?limit=100`, { headers: { Authorization: auth } });
+    res = await fetch(`${MUX_ASSETS_URL}?limit=100`, {
+      headers: { Authorization: auth },
+      signal: muxSignal(),
+    });
   } catch (e) {
     throw new MuxError(`Mux request failed: ${(e as Error).message}`);
   }
@@ -101,7 +115,11 @@ export async function deleteMuxAsset(assetId: string): Promise<void> {
   const auth = muxAuthHeader();
   let res: Response;
   try {
-    res = await fetch(MUX_ASSET_ID_URL(assetId), { method: "DELETE", headers: { Authorization: auth } });
+    res = await fetch(MUX_ASSET_ID_URL(assetId), {
+      method: "DELETE",
+      headers: { Authorization: auth },
+      signal: muxSignal(),
+    });
   } catch (e) {
     throw new MuxError(`Mux request failed: ${(e as Error).message}`);
   }
@@ -120,6 +138,7 @@ export async function cancelMuxUpload(uploadId: string): Promise<void> {
     res = await fetch(`${MUX_UPLOAD_ID_URL(uploadId)}/cancel`, {
       method: "PUT",
       headers: { Authorization: auth },
+      signal: muxSignal(),
     });
   } catch (e) {
     throw new MuxError(`Mux request failed: ${(e as Error).message}`);
@@ -137,7 +156,10 @@ export async function getMuxUploadAssetId(uploadId: string): Promise<string | nu
   const auth = muxAuthHeader();
   let res: Response;
   try {
-    res = await fetch(MUX_UPLOAD_ID_URL(uploadId), { headers: { Authorization: auth } });
+    res = await fetch(MUX_UPLOAD_ID_URL(uploadId), {
+      headers: { Authorization: auth },
+      signal: muxSignal(),
+    });
   } catch (e) {
     throw new MuxError(`Mux request failed: ${(e as Error).message}`);
   }

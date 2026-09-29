@@ -35,7 +35,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
 
   const { data: post, error: postErr } = await sb
     .from("post")
-    .select("id,type")
+    .select("id,type,mux_asset_id,mux_playback_id")
     .eq("id", id)
     .maybeSingle();
   if (postErr) {
@@ -52,11 +52,26 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     return fail("query_failed", "Could not load the post's videos.", 400);
   }
 
+  // A video post with NO rows but a live video on `post` predates the
+  // `post_video` backfill (created in the deploy window, or a duplicate
+  // `mux_asset_id` the migration skipped). Inserting a slot-0 row would make
+  // the deferred mirror copy an EMPTY uploading row over `post`'s video —
+  // blanking a live post. Refuse until it has its own slot-0 row.
+  if (rows.length === 0 && (post.mux_asset_id || post.mux_playback_id))
+    return fail(
+      "video_backfill_missing",
+      "This post's existing video has no video row yet, so no more videos can be added. Contact support to backfill it.",
+      409,
+    );
+
   if (rows.length + count > MAX_VIDEOS)
     return fail("video_cap", `A post can have at most ${MAX_VIDEOS} videos.`, 409);
-  const next = rows.length ? Math.max(...rows.map((r) => r.sort_order)) + 1 : 0;
-  if (next + count - 1 > MAX_VIDEOS - 1)
-    return fail("video_cap", `A post can have at most ${MAX_VIDEOS} videos.`, 409);
+  // Slots must be the contiguous prefix 0..n-1 (every reader counts on it).
+  // A gap means the set changed under a concurrent write — let the client
+  // refetch (a PATCH of the order repacks it) rather than append past the gap.
+  if (rows.some((r, i) => r.sort_order !== i))
+    return fail("video_set_stale", "The post's videos changed. Refresh and try again.", 409);
+  const next = rows.length;
 
   const insertRows = Array.from({ length: count }, (_, i) => ({
     post_id: id,

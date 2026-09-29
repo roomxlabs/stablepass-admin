@@ -4093,6 +4093,20 @@ describe("ENG-1598 · multi-video compose", () => {
       expect(api.publishPost).not.toHaveBeenCalled();
     });
 
+    it("an append (POST video-uploads) refused as video_set_stale also reloads the set", async () => {
+      api.requestVideoUploads.mockRejectedValueOnce(stale());
+      api.fetchPostVideos.mockResolvedValue(serverSet);
+      render(<ComposeScreen horses={HORSES} trainers={TRAINERS} initial={editInitial()} />);
+      fireEvent.change(screen.getByTestId("media-input"), { target: { files: [vid("c.mp4")] } });
+      await waitFor(() =>
+        expect(screen.getByTestId("video-error").textContent).toBe(
+          "This post's videos changed elsewhere — reloaded",
+        ),
+      );
+      expect(tileIds()).toEqual([IDS[0], IDS[2]]);
+      expect(api.uploadVideoToMux).not.toHaveBeenCalled();
+    });
+
     it("a failed refetch still explains, without touching the tiles", async () => {
       api.patchPost.mockRejectedValueOnce(stale());
       api.fetchPostVideos.mockRejectedValue(new Error("network"));

@@ -110,6 +110,12 @@ export type ReconcileVideoRow = {
   status: string;
   mux_playback_id: string | null;
   mux_upload_id: string | null;
+  /**
+   * The row's slot. "post wins" applies only at slot 0: `post` mirrors
+   * whichever row is at slot 0, so a legacy row moved further down would
+   * otherwise copy ANOTHER video's ids / poster (ENG-1611 review).
+   */
+  sort_order?: number | null;
   /** ISO timestamp; the legacy fallback only considers rows older than this window. */
   created_at?: string | null;
 };
@@ -183,7 +189,7 @@ async function readLegacyPost(db: PostVideoWriteDb, postId: string): Promise<Leg
  *   next `post_video` write mirrored that NULL back over `post`, erasing the
  *   video. At most ONE row per post may claim it.
  *
- * ENG-1611 — "post wins" for that legacy row. The slot-0 mirror copies the
+ * ENG-1611 — "post wins" for that legacy row WHILE IT IS SLOT 0. The slot-0 mirror copies the
  * row's `poster_url` / `poster_time_s` / `aspect_ratio` onto `post` when its
  * `mux_playback_id` changes, so the legacy write carries the post's own values
  * in the SAME update as the ids (else the old webhook's baked poster and the
@@ -212,14 +218,18 @@ export async function reconcilePostVideos(
     !!r.created_at &&
     now - Date.parse(r.created_at) >= LEGACY_FALLBACK_MIN_AGE_MS;
 
+  // `post` mirrors slot 0, so it describes a legacy row only while that row IS slot 0.
+  const postWins = (r: ReconcileVideoRow) => isLegacy(r) && r.sort_order === 0;
+
   const legacyPost = pending.some(isLegacy) ? await readLegacyPost(db, postId) : null;
   let legacyClaimed = false;
   const writes: { row: ReconcileVideoRow; values: Record<string, unknown>; playbackId: string }[] = [];
 
   // The post already holds the legacy video (the old webhook set it): copy it
   // down onto the first legacy row verbatim — no Mux lookup needed.
-  if (legacyPost?.mux_playback_id) {
-    const r = pending.find(isLegacy)!;
+  const slot0Legacy = pending.find(postWins);
+  if (legacyPost?.mux_playback_id && slot0Legacy) {
+    const r = slot0Legacy;
     legacyClaimed = true;
     writes.push({
       row: r,
@@ -258,7 +268,7 @@ export async function reconcilePostVideos(
         mux_playback_id: asset.playbackId,
         status: "ready",
       };
-      if (fromLegacy && legacyPost) {
+      if (fromLegacy && legacyPost && postWins(r)) {
         // post wins: keep what the old webhook baked and the operator chose.
         values.poster_url = legacyPost.poster_url;
         values.poster_time_s = legacyPost.poster_time_s;

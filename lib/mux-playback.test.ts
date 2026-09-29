@@ -399,7 +399,9 @@ describe("reconcilePostVideos — ENG-1598 review", () => {
   // changes, so a write without them erased `post.poster_url` /
   // `poster_time_s` (and `aspect_ratio` when Mux returned none).
   // -------------------------------------------------------------------------
-  const legacyRow = (id = "pv_legacy") => row({ id, mux_upload_id: null, created_at: oldEnoughAt });
+  // A backfilled legacy row is slot 0 (the migration backfilled the post's one video there).
+  const legacyRow = (id = "pv_legacy", sort_order = 0) =>
+    row({ id, mux_upload_id: null, created_at: oldEnoughAt, sort_order });
 
   it("legacy match copies post's poster_url, poster_time_s and aspect_ratio onto the row, in the same guarded update", async () => {
     listReadyMuxAssets.mockResolvedValue([asset({ passthrough: "post_1", aspectRatio: 16 / 9 })]);
@@ -526,5 +528,30 @@ describe("reconcilePostVideos — ENG-1598 review", () => {
     });
     await reconcilePostVideos(db, "post_1", [legacyRow("pv_a"), legacyRow("pv_b")], NOW);
     expect(calls.map((c) => c.eq)).toEqual([["id", "pv_a"]]);
+  });
+
+  it("a legacy row NOT at slot 0 never takes post's columns: post mirrors another row, so it gets the plain post.id Mux match", async () => {
+    // An edit moved another video to the front: post now holds THAT row's ids + poster.
+    listReadyMuxAssets.mockResolvedValue([asset({ passthrough: "post_1", aspectRatio: 16 / 9 })]);
+    const { db, calls } = makeWriteDb(undefined, {
+      data: {
+        mux_asset_id: "as_front",
+        mux_playback_id: "pb_front",
+        poster_url: "posters/front.jpg",
+        poster_time_s: 1,
+        aspect_ratio: 0.5625,
+      },
+      error: null,
+    });
+    const out = await reconcilePostVideos(db, "post_1", [legacyRow("pv_legacy", 1)], NOW);
+    expect(calls).toEqual([
+      {
+        table: "post_video",
+        values: { mux_asset_id: "as_post_1", mux_playback_id: "pb_post_1", status: "ready", aspect_ratio: 16 / 9 },
+        eq: ["id", "pv_legacy"],
+        is: ["mux_playback_id", null],
+      },
+    ]);
+    expect(out.get("pv_legacy")).toEqual({ playbackId: "pb_post_1" });
   });
 });

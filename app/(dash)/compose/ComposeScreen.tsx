@@ -1927,7 +1927,8 @@ export default function ComposeScreen({
       targets = await requestVideoUploads(postId, picked.length);
     } catch (e) {
       if (stale()) return;
-      setVideoError((e as Error).message);
+      // ENG-1611 — the append route 409s `video_set_stale` too (two admins appending at once).
+      setVideoError((await reloadStaleVideoSet(e, postId)) ?? (e as Error).message);
       return;
     } finally {
       setAppending(false);

@@ -2187,3 +2187,16 @@ The admin icon set (navy + cream S + gold dot + ADMIN) lives in `app/icon.png`, 
 `expect(locator).toHaveCount(n)` can be met while the server page's streamed markup is still in the
 DOM but not yet revealed, so every `getBoundingClientRect()` is `0,0,0` and layout assertions (cards
 per row, widths) fail nonsensically. Wait on `toBeVisible()` for the last item before measuring layout.
+
+## Phone-width lists: opt-in `.adm-table.stack-phone`, rules in globals.css prefixed `.admin-main` (ENG-1590)
+Below 768px posts / trainers / waitlist tables become stacked cards via the opt-in class
+`stack-phone` (+ `td.stack-full`, `td.stack-hide`, `td[data-label]`). The rules live in the
+`@media (max-width: 767px)` block of `app/globals.css` and are ALL prefixed `.admin-main`: each
+screen re-declares `.adm-table` / `.adm-filter-bar` in its own CSS, which loads after globals and
+wins any specificity tie. A new list screen opts in by adding the class — don't copy the rules.
+The sortable `<th>`s survive as a "Sort" bar (`thead:has(th[aria-sort])`); plain headers hide.
+Two e2e traps hit here: (1) `toHaveText` / `toHaveCount` also match the still-HIDDEN streamed
+Suspense copy, so `boundingBox()` right after returns null — wait for `toBeVisible()` first;
+(2) `.adm-card` clips its overflow (`hidden`/`clip`), so a too-wide table keeps `scrollWidth == 390` while its
+columns are simply clipped — assert every element's right edge ≤ viewport, not just scrollWidth
+(see `fitsPhone` in `e2e/phone-screens.spec.ts`).

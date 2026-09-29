@@ -102,7 +102,7 @@ export default function WaitlistTable({
         </p>
       ) : (
         <>
-          <table className="adm-table">
+          <table className="adm-table stack-phone">
             <thead>
               <tr>
                 <th scope="col">Email</th>
@@ -113,11 +113,11 @@ export default function WaitlistTable({
             <tbody>
               {rows.map((row) => (
                 <tr key={row.id}>
-                  <td>
+                  <td className="stack-full">
                     <a href={`mailto:${row.email}`}>{row.email}</a>
                   </td>
-                  <td className="muted">{row.source ?? "—"}</td>
-                  <td className="muted">
+                  <td className="muted" data-label="Source">{row.source ?? "—"}</td>
+                  <td className="muted" data-label="Joined">
                     <LocalTime iso={row.joinedAt} kind="when" />
                   </td>
                 </tr>

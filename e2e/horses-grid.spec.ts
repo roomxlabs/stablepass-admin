@@ -99,10 +99,10 @@ test("horses grid — stays at 4 per row below 1280px", async ({ page }) => {
   expect(await skeletonFirstRow(page)).toBe(4);
 });
 
-// Phone (ENG-1585's drawer shell): the grid keeps the same 4 columns it had
-// before this ticket and the page gains no horizontal scroll — "no worse than
-// today". Making it genuinely phone-friendly is ENG-1590 (A3b).
-test("horses grid — phone 390px is no worse than before", async ({ page }) => {
+// Phone (ENG-1590 / A3b): below 768px the grid steps down to 2 per row — it
+// was 4 (~67px cards that clipped every name) until then — and the page gains
+// no horizontal scroll. The skeleton steps down with it.
+test("horses grid — phone 390px is 2 per row", async ({ page }) => {
   test.setTimeout(60000);
   await page.setViewportSize({ width: 390, height: 844 });
   await signIn(page);
@@ -110,7 +110,8 @@ test("horses grid — phone 390px is no worse than before", async ({ page }) => 
   await expect(page.locator(".horse-card-adm")).toHaveCount(9, { timeout: 30000 });
   // Streamed markup can be in the DOM (count met) before it is revealed.
   await expect(page.locator(".horse-card-adm").last()).toBeVisible({ timeout: 30000 });
-  expect(await firstRowCount(page, ".horse-card-adm")).toBe(4);
+  expect(await firstRowCount(page, ".horse-card-adm")).toBe(2);
+  expect(await skeletonFirstRow(page)).toBe(2);
   const scrolls = await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth);
   expect(scrolls).toBe(false);
   await page.mouse.move(0, 0);

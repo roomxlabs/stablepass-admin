@@ -1932,7 +1932,7 @@ export default function ComposeScreen({
 
   return (
     <>
-      <div className="admin-topbar">
+      <div className={`admin-topbar ${styles.topbar}`}>
         <h1>{isEdit ? "Edit post" : "Compose post"}</h1>
         <div className="actions">
           <Link href="/posts" className={styles.cancelLink}>

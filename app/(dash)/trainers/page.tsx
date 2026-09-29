@@ -153,7 +153,7 @@ export default async function TrainersPage({
               ) : null}
             </div>
           ) : (
-            <table className="adm-table" data-testid="trainers-table">
+            <table className="adm-table stack-phone" data-testid="trainers-table">
               <thead>
                 <tr>
                   <SortableTh {...columnProps("trainer")} style={{ width: "28%" }} />
@@ -174,7 +174,7 @@ export default async function TrainersPage({
                         {row.contactEmail ? <div className="row-sub">{row.contactEmail}</div> : null}
                       </div>
                     </td>
-                    <td>
+                    <td className="stack-full" data-label="Stable">
                       {row.stableName ?? "—"}
                       {row.location ? <div className="row-sub">{row.location}</div> : null}
                     </td>
@@ -196,7 +196,7 @@ export default async function TrainersPage({
                         );
                       })()}
                     </td>
-                    <td className="nowrap">
+                    <td className={row.lastPostAt ? "nowrap" : "nowrap stack-hide"} data-label="Last post">
                       {(() => {
                         const label = timeAgo(row.lastPostAt);
                         const href = trainerPostsHref(row.id, row.lastPostAt);

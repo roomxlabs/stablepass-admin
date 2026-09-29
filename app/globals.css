@@ -456,6 +456,125 @@ a { color: inherit; text-decoration: none; }
      which sits later in the file. */
   .admin-main .adm-table thead th { position: static; }
 
+  /* ------------------------------------------------------------------
+     Lists at phone width (ENG-1590 / A3b). Every rule is prefixed with
+     `.admin-main` so it outranks the per-screen copies of `.adm-table` /
+     `.adm-filter-bar` (posts.css, trainers.css, horses.css, waitlist.css),
+     which load AFTER this file and would win a specificity tie.
+     ------------------------------------------------------------------ */
+
+  /* Topbar with a search: the search takes the row, the primary action sits
+     beside it (compose's five-button topbar keeps the wrap set above).
+     `.search.wide` (trainers.css, 260px) is named so it cannot re-impose its
+     desktop floor (globals.css:331's 280px is already zeroed above). */
+  .admin-main .admin-topbar .actions:has(.search) { flex: 1 1 100%; flex-wrap: nowrap; min-width: 0; }
+  .admin-main .admin-topbar .actions > form { flex: 1 1 auto; min-width: 0; }
+  .admin-main .admin-topbar .search,
+  .admin-main .admin-topbar .search.wide { min-width: 0; flex: 1 1 auto; }
+  .admin-main .admin-topbar .actions > .btn { flex: none; }
+
+  /* Filter bars: chips wrap onto as many lines as they need, and the mini
+     search drops to its own full-width line (it had a 220-240px floor that
+     pushed the card sideways). */
+  .admin-main .adm-filter-bar { flex-wrap: wrap; padding: 12px 16px; gap: 8px; }
+  .admin-main .adm-filter-bar .spacer { display: none; }
+  .admin-main .adm-filter-bar .search-mini { min-width: 0; flex: 1 1 100%; }
+  .admin-main .adm-filter-bar .sort-select { flex: 1 1 100%; }
+  .admin-main .adm-scope-bar { flex-wrap: wrap; padding: 12px 16px; }
+
+  /* Tables → stacked cards (`.adm-table.stack-phone`, opt-in per screen:
+     posts, trainers, waitlist). Each row becomes one card: the first cell
+     (thumb + name) spans the width, the short cells follow on a wrapping
+     line, and the row actions sit on their own line at a thumb-sized height.
+     A cell that needs a caption once its column header is gone carries
+     `data-label`. */
+  .admin-main .adm-table.stack-phone,
+  .admin-main .adm-table.stack-phone tbody { display: block; width: 100%; }
+  .admin-main .adm-table.stack-phone tbody tr {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px 12px;
+    padding: 14px 16px;
+    border-bottom: 1px solid var(--line);
+  }
+  .admin-main .adm-table.stack-phone tbody tr:last-child { border-bottom: 0; }
+  .admin-main .adm-table.stack-phone td {
+    display: block;
+    padding: 0;
+    border: 0;
+    min-width: 0;
+    background: none;
+  }
+  .admin-main .adm-table.stack-phone td.with-thumb { display: flex; flex: 1 1 100%; }
+  /* A cell that only holds the desktop "—" placeholder says nothing in a card. */
+  .admin-main .adm-table.stack-phone td.stack-hide { display: none; }
+  .admin-main .adm-table.stack-phone td.stack-full { flex: 1 1 100%; max-width: none; }
+  .admin-main .adm-table.stack-phone td[data-label]::before {
+    content: attr(data-label);
+    display: inline;
+    margin-right: 6px;
+    font-size: 10.5px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--muted);
+  }
+  .admin-main .adm-table.stack-phone td.stack-full[data-label]::before {
+    display: block;
+    margin: 0 0 2px;
+  }
+  .admin-main .adm-table.stack-phone td.actions {
+    flex: 1 1 100%;
+    text-align: left;
+    white-space: normal;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 4px 16px;
+  }
+  .admin-main .adm-table.stack-phone td.actions:empty { display: none; }
+  .admin-main .adm-table.stack-phone td.actions a,
+  .admin-main .adm-table.stack-phone td.actions button {
+    margin-left: 0;
+    min-height: 36px;
+    display: inline-flex;
+    align-items: center;
+  }
+
+  /* The header row becomes the phone's sort bar: the sortable headers stay
+     (they are the only way to sort posts and trainers), laid out as a
+     wrapping line of links; the plain headers go, and a table with no
+     sortable header (waitlist) drops its header entirely. The `!important`
+     beats the inline `width: 28%/44%` the desktop column hints set. */
+  .admin-main .adm-table.stack-phone thead { display: block; }
+  .admin-main .adm-table.stack-phone thead:not(:has(th[aria-sort])) { display: none; }
+  .admin-main .adm-table.stack-phone thead tr {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px 16px;
+    padding: 10px 16px;
+    background: var(--cream);
+    border-bottom: 1px solid var(--line);
+  }
+  .admin-main .adm-table.stack-phone thead tr::before {
+    content: "Sort";
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--muted-light, var(--muted));
+  }
+  .admin-main .adm-table.stack-phone thead th {
+    display: block;
+    width: auto !important;
+    padding: 0;
+    border: 0;
+  }
+  .admin-main .adm-table.stack-phone thead th:not([aria-sort]) { display: none; }
+  .admin-main .adm-table.stack-phone thead .th-sort { min-height: 32px; }
+
   /* Sign-in (ENG-370 two-step card) — the 44px desktop padding leaves a
      270px column on a 390px phone; give the fields their width back. */
   .admin-signin-card { padding: 32px 22px; }
@@ -601,6 +720,10 @@ a { color: inherit; text-decoration: none; }
 }
 @media (width < 1280px) {
   .sk-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+}
+/* …and 2 on a phone (ENG-1590), with the phone card gap. */
+@media (max-width: 767px) {
+  .sk-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
 }
 .sk-tile {
   background: var(--white);

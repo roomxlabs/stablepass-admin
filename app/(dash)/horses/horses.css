@@ -147,6 +147,11 @@ textarea.adm-input { min-height: 110px; resize: vertical; font-family: var(--fon
 @media (width < 1280px) {
   .horse-grid-adm { grid-template-columns: repeat(4, minmax(0, 1fr)); }
 }
+/* Phone (ENG-1590): two per row. A 2-up card is ~155px wide at 390px — about
+   the 6-up desktop card's width — so it takes the same compact body below. */
+@media (max-width: 767px) {
+  .horse-grid-adm { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+}
 .horse-card-adm {
   display: block;
   background: var(--white);
@@ -189,7 +194,7 @@ textarea.adm-input { min-height: 110px; resize: vertical; font-family: var(--fon
    Racing Australia max) was cut off. Tighten the padding + step the name down
    a touch so most names fit whole, and let a name that still doesn't fit break
    inside the word rather than be clipped (ENG-1583 review). */
-@media (width >= 1280px) {
+@media (width >= 1280px), (max-width: 767px) {
   .horse-card-adm .body { padding: 12px; }
   .horse-card-adm .name { font-size: 16px; overflow-wrap: anywhere; }
   .horse-card-adm .stats { flex-wrap: wrap; row-gap: 4px; }

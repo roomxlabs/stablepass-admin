@@ -78,7 +78,7 @@ export default function PostRow({ post: p }: { post: PostView }) {
           `stablepass` over its byline. One <strong> line plus an optional muted
           sub-line in every case, so the three subjects sit on the same baseline
           and the column does not change height per row. */}
-      <td className="subject-cell" data-testid="post-subject">
+      <td className="subject-cell stack-full" data-label="Posted as" data-testid="post-subject">
         <strong className="subject-name">{p.subject.name}</strong>
         {/* The tag sits on the SUB-LINE, not beside the name. Inline, the
             cell's min-content became `name + tag` on one unbreakable line
@@ -100,8 +100,8 @@ export default function PostRow({ post: p }: { post: PostView }) {
       <td className="nowrap">
         <span className={p.statusPillClass}>{p.statusLabel}</span>
       </td>
-      <td className="nowrap">{iso ? <LocalTime kind="when" iso={iso} /> : "—"}</td>
-      <td className="nowrap">
+      <td className={iso ? "nowrap" : "nowrap stack-hide"} data-label={p.status === "scheduled" ? "Goes live" : "Published"}>{iso ? <LocalTime kind="when" iso={iso} /> : "—"}</td>
+      <td className={p.likeCount === null ? "nowrap stack-hide" : "nowrap"}>
         {p.likeCount === null ? (
           "—"
         ) : (

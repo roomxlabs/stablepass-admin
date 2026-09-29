@@ -39,8 +39,9 @@ export async function DELETE(_req: Request, { params }: { params: Promise<{ id: 
   // best-effort courtesy, not a precondition for the delete itself.
   const { rows: videoRows } = await loadPostVideos(sb, id);
 
-  const { error } = await sb.from("post").delete().eq("id", id);
+  const { data: deleted, error } = await sb.from("post").delete().eq("id", id).select("id");
   if (error) return fail("delete_failed", error.message, 400);
-  await cleanupVideos(videoRows); // best-effort; the delete has already committed
+  // Only clean up Mux when THIS request actually removed the row.
+  if ((deleted ?? []).length > 0) await cleanupVideos(videoRows); // best-effort; the delete has committed
   return noContent();
 }

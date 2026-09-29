@@ -2200,3 +2200,18 @@ Suspense copy, so `boundingBox()` right after returns null — wait for `toBeVis
 (2) `.adm-card` clips its overflow (`hidden`/`clip`), so a too-wide table keeps `scrollWidth == 390` while its
 columns are simply clipped — assert every element's right edge ≤ viewport, not just scrollWidth
 (see `fitsPhone` in `e2e/phone-screens.spec.ts`).
+## `post_video` writes: upsert on `id` only, delete BEFORE renumber, and watch the slot-0 mirror (ENG-1597)
+- The `(post_id, sort_order)` unique is DEFERRABLE, so it can never be an ON CONFLICT arbiter. A reorder
+  is ONE `upsert([...{id, post_id, sort_order}], { onConflict: "id" })`: one statement = one transaction,
+  so a swap passes the deferred check. Separate per-row updates each commit alone and FAIL on a swap.
+- An upsert is an INSERT: a row another request deleted after your read comes back as a GHOST (same id,
+  `uploading`, no Mux ids, blocks publish forever). `.select("id,created_at")` the upsert and delete any
+  row whose `created_at` differs from what you loaded.
+- Delete removed rows first (a removed row still holding slot 0 would collide with the renumber), and
+  clean up Mux right after that delete, not at the end of the handler: an early error return would orphan the assets.
+- The be's deferred trigger copies the slot-0 row onto `post` (mux ids, poster_url, poster_time_s,
+  aspect_ratio) at COMMIT. A value written only to `post` (e.g. `poster_time_s`) is reverted by the next
+  `post_video` write. Write the slot-0 row too. A PATCH response read before the video writes is stale, so re-read after them.
+- A status-scoped delete that matches 0 rows returns NO error. Gate side effects (Mux cleanup) on `.select("id")` rows.
+- Mux `passthrough` is now the `post_video.id`, NOT the post id. `lib/mux-playback.ts`'s
+  `findMuxAssetByPassthrough(post.id)` fallback no longer matches new uploads (MV-A2's surface).

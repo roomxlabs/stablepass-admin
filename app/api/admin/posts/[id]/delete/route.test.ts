@@ -82,7 +82,12 @@ describe("DELETE /api/admin/posts/:id/delete — hard delete, ANY status", () =>
   // ENG-1597 — hard-deleting a video post must not leak its Mux assets/uploads.
   it("cleans up an asset row (DELETE) and an upload-only row (cancel), both", async () => {
     asAdmin();
-    state.tables.post = { select: { single: { id: "p1", status: "published" } }, mutate: {} };
+    // ENG-1597 — the delete now scopes `.select("id")` off the mutation, so
+    // cleanup only runs once the row it actually removed comes back.
+    state.tables.post = {
+      select: { single: { id: "p1", status: "published" } },
+      mutate: { rows: [{ id: "p1" }] },
+    };
     state.tables.post_video = {
       select: {
         rows: [
@@ -108,6 +113,23 @@ describe("DELETE /api/admin/posts/:id/delete — hard delete, ANY status", () =>
     };
     const r = await DELETE(req(), ctx("p1"));
     expect(r.status).toBe(400);
+    expect(cleanupMuxVideo).not.toHaveBeenCalled();
+  });
+
+  // ENG-1597 — the addressed row can vanish (a concurrent hard delete winning
+  // the race) between the existence read above and this delete: PostgREST
+  // reports that as NO error and ZERO rows, not a failure. Still 204 (the row
+  // is gone either way), but THIS request did not remove it, so its Mux
+  // assets must not be touched twice / raced against the other request's own
+  // cleanup.
+  it("the addressed row is already gone by the time the delete runs (0 rows, no error) → 204, no cleanup call", async () => {
+    asAdmin();
+    state.tables.post = { select: { single: { id: "p1", status: "published" } }, mutate: { rows: [] } };
+    state.tables.post_video = {
+      select: { rows: [{ id: "pv0", sort_order: 0, status: "ready", mux_upload_id: null, mux_asset_id: "as_0" }] },
+    };
+    const r = await DELETE(req(), ctx("p1"));
+    expect(r.status).toBe(204);
     expect(cleanupMuxVideo).not.toHaveBeenCalled();
   });
 });

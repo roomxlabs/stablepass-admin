@@ -40,10 +40,12 @@ export type PostVideoRow = {
   status: string;
   mux_upload_id: string | null;
   mux_asset_id: string | null;
+  /** Lets the PATCH reorder tell a row it loaded from one its upsert re-created (ENG-1597). */
+  created_at?: string;
 };
 
 /** String-literal projection — `.select()` field lists must be literals (repo convention). */
-export const VIDEO_ROW_FIELDS = "id,sort_order,status,mux_upload_id,mux_asset_id";
+export const VIDEO_ROW_FIELDS = "id,sort_order,status,mux_upload_id,mux_asset_id,created_at";
 
 /**
  * How many upload targets a create request wants. Absent/null → 1 (every

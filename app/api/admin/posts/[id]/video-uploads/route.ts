@@ -87,11 +87,14 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
 
   const mint = await mintVideoUploads(newRows, sb);
   if (!mint.ok) {
-    await sb
+    const { error: rollbackErr } = await sb
       .from("post_video")
       .delete()
       .in("id", newRows.map((r) => r.id))
       .eq("post_id", id);
+    // A failed rollback leaves `uploading` rows that block publish until an
+    // admin removes them — log it so the leftover rows can be traced.
+    if (rollbackErr) console.error("post_video rollback_failed", rollbackErr.code);
     return fail("mux_unavailable", "Mux is unavailable.", 502);
   }
 

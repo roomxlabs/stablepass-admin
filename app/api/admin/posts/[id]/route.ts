@@ -13,6 +13,7 @@ import {
   cleanupVideos,
   isSlotConflict,
   isMissingVideoTable,
+  videosNotReadyResponse,
   type PostVideoRow,
 } from "@/lib/posts/videos";
 
@@ -223,11 +224,11 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
    * must not pay for, or be able to fail on, a round trip it does not need.
    */
   const wantsPosterTime = "poster_time_s" in b;
-  let videoPost: { id: string; type: string } | null = null;
+  let videoPost: { id: string; type: string; status: string } | null = null;
   if (wantsVideos || wantsPosterTime) {
     const { data: p, error: postTypeErr } = await sb
       .from("post")
-      .select("id,type")
+      .select("id,type,status")
       .eq("id", id)
       .maybeSingle();
     if (postTypeErr) {
@@ -266,6 +267,19 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
           409,
         );
     }
+
+    // A LIVE post's cover must be playable. The deferred trigger mirrors slot 0
+    // onto `post` at commit, so moving a still-uploading row (e.g. one just
+    // appended to a published post) into slot 0 would blank the video for
+    // every reader of `post` — feed_page's `p.*` and older clients. Same 409
+    // the publish gate uses.
+    const newSlot0 = rows.find((r) => r.id === parsedVideos![0]);
+    if (
+      (videoPost!.status === "published" || videoPost!.status === "scheduled") &&
+      newSlot0 &&
+      newSlot0.status !== "ready"
+    )
+      return videosNotReadyResponse([newSlot0.id]);
   }
 
   // Videos-ONLY request (no `media`, no other patch field): the `post` table
@@ -366,6 +380,10 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
         console.error("post_video update_failed", removeErr.code);
         return fail("update_failed", "Could not update the post's videos.", 400);
       }
+      // Clean up NOW that the delete has committed — not at the end. A reorder
+      // failure below returns early, and these rows are already gone from the
+      // table, so nothing would ever reach their Mux assets again.
+      await cleanupVideos(toRemove); // best-effort; never fails the request
     }
 
     const needsReorder = parsedVideos!.some((vid, i) => {
@@ -373,10 +391,13 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
       return !row || row.sort_order !== i;
     });
     if (needsReorder) {
-      const { error: reorderErr } = await sb.from("post_video").upsert(
-        parsedVideos!.map((vid, i) => ({ id: vid, post_id: id, sort_order: i })),
-        { onConflict: "id" },
-      );
+      const { data: upserted, error: reorderErr } = await sb
+        .from("post_video")
+        .upsert(
+          parsedVideos!.map((vid, i) => ({ id: vid, post_id: id, sort_order: i })),
+          { onConflict: "id" },
+        )
+        .select("id,created_at");
       if (reorderErr) {
         if (isSlotConflict(reorderErr))
           return fail(
@@ -386,6 +407,23 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
           );
         console.error("post_video update_failed", reorderErr.code);
         return fail("update_failed", "Could not update the post's videos.", 400);
+      }
+      // An upsert is INSERT ... ON CONFLICT: if another request deleted one of
+      // these rows after our read, it was re-INSERTED as a ghost (same id, no
+      // Mux ids, `uploading` forever, blocking publish). A re-created row has a
+      // new `created_at`; delete it and tell the client to refetch.
+      const loadedAt = new Map(currentVideoRows.map((r) => [r.id, r.created_at]));
+      const ghosts = ((upserted ?? []) as { id: string; created_at?: string }[])
+        .filter((r) => r.created_at && loadedAt.get(r.id) && r.created_at !== loadedAt.get(r.id))
+        .map((r) => r.id);
+      if (ghosts.length > 0) {
+        const { error: ghostErr } = await sb
+          .from("post_video")
+          .delete()
+          .in("id", ghosts)
+          .eq("post_id", id);
+        if (ghostErr) console.error("post_video ghost_cleanup_failed", ghostErr.code);
+        return fail("video_set_stale", "The post's videos changed. Refresh and try again.", 409);
       }
     }
 
@@ -401,8 +439,6 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
         return fail("update_failed", "Could not update the post's videos.", 400);
       }
     }
-
-    await cleanupVideos(toRemove); // best-effort; never fails the request
   }
 
   /**
@@ -431,6 +467,12 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
     }
   }
 
+  // The `post` row read above predates the `post_video` writes; the deferred
+  // mirror has since changed its slot-0 columns. Return the settled row.
+  if (wantsVideos) {
+    const { data: fresh } = await sb.from("post").select("*").eq("id", id).maybeSingle();
+    if (fresh) return ok(fresh);
+  }
   return ok(data);
 }
 
@@ -456,8 +498,18 @@ export async function DELETE(_req: Request, { params }: { params: Promise<{ id: 
   // Scope the delete to draft too — defensive against a concurrent publish
   // landing between the check above and here (guardrail §2: never hard-delete a
   // published post).
-  const { error } = await sb.from("post").delete().eq("id", id).eq("status", "draft");
+  const { data: deleted, error } = await sb
+    .from("post")
+    .delete()
+    .eq("id", id)
+    .eq("status", "draft")
+    .select("id");
   if (error) return fail("delete_failed", error.message, 400);
+  // A publish that won the race leaves 0 rows deleted and NO error. The post is
+  // live now, so its Mux assets must survive: clean up only when THIS request
+  // actually removed the draft.
+  if ((deleted ?? []).length === 0)
+    return fail("not_a_draft", "Only drafts can be discarded; published content is soft-hidden.", 409);
   await cleanupVideos(videoRows); // best-effort; the delete has already committed
   return noContent();
 }

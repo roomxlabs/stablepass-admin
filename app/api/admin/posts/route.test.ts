@@ -10,9 +10,14 @@ vi.mock("@/lib/supabase/server", () => ({
 const createMuxDirectUpload = vi.fn<
   (opts?: { passthrough?: string }) => Promise<{ uploadId: string; uploadUrl: string }>
 >(async () => ({ uploadId: "up_123", uploadUrl: "https://mux.local/upload" }));
+const cleanupMuxVideo = vi.fn<(v: { videoId: string; assetId?: string | null; uploadId?: string | null }) => Promise<void>>(
+  async () => undefined,
+);
 vi.mock("@/lib/mux", () => ({
   MuxError: class MuxError extends Error {},
   createMuxDirectUpload: (opts?: { passthrough?: string }) => createMuxDirectUpload(opts),
+  cleanupMuxVideo: (v: { videoId: string; assetId?: string | null; uploadId?: string | null }) =>
+    cleanupMuxVideo(v),
 }));
 
 import { GET, POST } from "./route";
@@ -35,6 +40,7 @@ beforeEach(() => {
   // (text never touches Mux) — clear call history per-test so an earlier
   // test's video draft can't leak into that assertion.
   createMuxDirectUpload.mockClear();
+  cleanupMuxVideo.mockClear();
 });
 
 describe("POST /api/admin/posts — create draft", () => {
@@ -58,30 +64,47 @@ describe("POST /api/admin/posts — create draft", () => {
     expect(j.data.bucket).toBe("post-media");
   });
 
-  it("creates a video draft → 202 + Mux direct-upload URL", async () => {
+  /** Seeds a single-slot `post_video` insert result — the ENG-1597 default for every pre-existing video test. */
+  function seedOneVideoRow(id = "pv1") {
+    state.tables.post_video = { mutate: { rows: [{ id, sort_order: 0 }] } };
+  }
+
+  it("creates a video draft → 202 + Mux direct-upload URL, and never returns a mux upload id", async () => {
     asAdmin();
     state.tables.horse = { select: { single: { id: "h1" } } };
     state.tables.post = { mutate: { single: { id: "p2", status: "draft", type: "video", horse_id: "h1" } } };
+    seedOneVideoRow();
     const r = await POST(postReq({ horseId: "h1", type: "video", sourceTrainerId: "t1" }));
     expect(r.status).toBe(202);
     const j = await r.json();
     expect(j.data.uploadUrl).toBe("https://mux.local/upload");
-    expect(j.data.muxUploadId).toBe("up_123");
+    expect(j.data.uploads).toEqual([{ videoId: "pv1", uploadUrl: "https://mux.local/upload" }]);
+    expect(j.data.muxUploadId).toBeUndefined();
+    expect(JSON.stringify(j)).not.toContain("mux_upload_id");
+    expect(JSON.stringify(j)).not.toContain("muxUploadId");
   });
 
-  it("passes passthrough = post id to Mux (webhook reconcile contract)", async () => {
+  // ENG-1597 — passthrough is now the post_video ROW id, not the post id: one
+  // video post can carry up to 5 rows, and the webhook needs to reconcile the
+  // asset onto the right ONE.
+  it("passes passthrough = the post_video row id to Mux (webhook reconcile contract)", async () => {
     asAdmin();
     state.tables.horse = { select: { single: { id: "h1" } } };
     state.tables.post = { mutate: { single: { id: "p2", status: "draft", type: "video", horse_id: "h1" } } };
+    seedOneVideoRow("pv1");
     await POST(postReq({ horseId: "h1", type: "video", sourceTrainerId: "t1" }));
-    expect(createMuxDirectUpload).toHaveBeenCalledWith(expect.objectContaining({ passthrough: "p2" }));
+    expect(createMuxDirectUpload).toHaveBeenCalledWith(expect.objectContaining({ passthrough: "pv1" }));
   });
 
-  // ENG-824 — optional poster_time_s on create (video only).
-  it("inserts poster_time_s when provided on a video draft", async () => {
+  // ENG-824 — optional poster_time_s on create (video only). ENG-1597: it is
+  // written on BOTH the post insert (unchanged back-compat) and the slot-0
+  // `post_video` row — the deferred mirror trigger copies slot 0 onto `post`
+  // at commit, so only the post_video row actually sticks.
+  it("inserts poster_time_s when provided on a video draft — on the post AND the slot-0 post_video row", async () => {
     asAdmin();
     state.tables.horse = { select: { single: { id: "h1" } } };
     state.tables.post = { mutate: { single: { id: "p2", status: "draft", type: "video", horse_id: "h1" } } };
+    seedOneVideoRow();
     const r = await POST(
       postReq({ horseId: "h1", type: "video", sourceTrainerId: "t1", poster_time_s: 3.5 }),
     );
@@ -93,17 +116,31 @@ describe("POST /api/admin/posts — create draft", () => {
         payload: expect.objectContaining({ poster_time_s: 3.5, type: "video" }),
       }),
     );
+    expect(state.calls.mutations).toContainEqual(
+      expect.objectContaining({
+        table: "post_video",
+        op: "insert",
+        payload: [{ post_id: "p2", sort_order: 0, status: "uploading", poster_time_s: 3.5 }],
+      }),
+    );
   });
 
-  it("omits poster_time_s from the insert when absent", async () => {
+  it("omits poster_time_s from the insert when absent (post_video row still carries the key, as null)", async () => {
     asAdmin();
     state.tables.horse = { select: { single: { id: "h1" } } };
     state.tables.post = { mutate: { single: { id: "p2", status: "draft", type: "video", horse_id: "h1" } } };
+    seedOneVideoRow();
     await POST(postReq({ horseId: "h1", type: "video", sourceTrainerId: "t1" }));
     const insert = state.calls.mutations.find(
       (m: { table: string; op: string }) => m.table === "post" && m.op === "insert",
     );
     expect(insert?.payload).not.toHaveProperty("poster_time_s");
+    const videoInsert = state.calls.mutations.find(
+      (m: { table: string; op: string }) => m.table === "post_video" && m.op === "insert",
+    );
+    expect(videoInsert?.payload).toEqual([
+      { post_id: "p2", sort_order: 0, status: "uploading", poster_time_s: null },
+    ]);
   });
 
   it("rejects a non-finite poster_time_s → 400", async () => {
@@ -285,6 +322,7 @@ describe("POST /api/admin/posts — create draft", () => {
     asAdmin();
     state.tables.horse = { select: { single: { id: "h1" } } };
     state.tables.post = { mutate: { single: { id: "p5", status: "draft", type, horse_id: "h1" } } };
+    if (type === "video") state.tables.post_video = { mutate: { rows: [{ id: "pv5", sort_order: 0 }] } };
     const body: Record<string, unknown> = { horseId: "h1", type, sourceTrainerId: "t1" };
     if (type === "text") body.body = "Stable update text";
     const r = await POST(postReq(body));
@@ -671,12 +709,14 @@ describe("POST /api/admin/posts — subject (ENG-1268)", () => {
   it("trainer video happy path → 202, and the insert carries horse_id: null", async () => {
     asAdmin();
     state.tables.post = { mutate: { single: { id: "p1", status: "draft", type: "video" } } };
+    state.tables.post_video = { mutate: { rows: [{ id: "pv1", sort_order: 0 }] } };
     const r = await POST(
       postReq({ subject: "trainer", sourceTrainerId: "t1", type: "video", title: "Weekend preview" }),
     );
     expect(r.status).toBe(202);
     const j = await r.json();
-    expect(j.data.muxUploadId).toBeTruthy();
+    expect(j.data.uploadUrl).toBeTruthy();
+    expect(j.data.muxUploadId).toBeUndefined();
     const insertCall = state.calls.mutations.find((m) => m.table === "post" && m.op === "insert");
     expect(insertCall?.payload).toMatchObject({ horse_id: null });
   });
@@ -919,5 +959,177 @@ describe("POST /api/admin/posts — subject (ENG-1268)", () => {
     // name — NOT the subject message.
     expect(j.error.code).toBe("insert_failed");
     expect(j.error.message).toContain("post_aspect_ratio_positive");
+  });
+});
+
+describe("ENG-1597 · multi-video upload targets", () => {
+  function seedVideoRows(rows: { id: string; sort_order: number }[]) {
+    state.tables.post_video = { mutate: { rows } };
+  }
+
+  it("videoCount: 3 → 202 with 3 uploads, distinct passthroughs equal to the inserted row ids, in slot order", async () => {
+    asAdmin();
+    state.tables.horse = { select: { single: { id: "h1" } } };
+    state.tables.post = { mutate: { single: { id: "p20", status: "draft", type: "video", horse_id: "h1" } } };
+    seedVideoRows([
+      { id: "pv0", sort_order: 0 },
+      { id: "pv1", sort_order: 1 },
+      { id: "pv2", sort_order: 2 },
+    ]);
+    createMuxDirectUpload
+      .mockResolvedValueOnce({ uploadId: "up_0", uploadUrl: "https://mux.local/u0" })
+      .mockResolvedValueOnce({ uploadId: "up_1", uploadUrl: "https://mux.local/u1" })
+      .mockResolvedValueOnce({ uploadId: "up_2", uploadUrl: "https://mux.local/u2" });
+
+    const r = await POST(postReq({ horseId: "h1", type: "video", sourceTrainerId: "t1", videoCount: 3 }));
+    expect(r.status).toBe(202);
+    const j = await r.json();
+    expect(j.data.uploads).toEqual([
+      { videoId: "pv0", uploadUrl: "https://mux.local/u0" },
+      { videoId: "pv1", uploadUrl: "https://mux.local/u1" },
+      { videoId: "pv2", uploadUrl: "https://mux.local/u2" },
+    ]);
+    // Multi-video: no top-level back-compat `uploadUrl` (that field is
+    // single-video-only, and here there is no single upload to promote).
+    expect(j.data.uploadUrl).toBeUndefined();
+    expect(createMuxDirectUpload.mock.calls.map((c) => c[0]?.passthrough)).toEqual(["pv0", "pv1", "pv2"]);
+
+    const videoInsert = state.calls.mutations.find((m) => m.table === "post_video" && m.op === "insert");
+    expect(videoInsert?.payload).toEqual([
+      { post_id: "p20", sort_order: 0, status: "uploading", poster_time_s: null },
+      { post_id: "p20", sort_order: 1, status: "uploading", poster_time_s: null },
+      { post_id: "p20", sort_order: 2, status: "uploading", poster_time_s: null },
+    ]);
+  });
+
+  it("videoCount: 1 behaves identically to absent — legacy top-level uploadUrl, uploads has length 1", async () => {
+    asAdmin();
+    state.tables.horse = { select: { single: { id: "h1" } } };
+    state.tables.post = { mutate: { single: { id: "p21", status: "draft", type: "video", horse_id: "h1" } } };
+    seedVideoRows([{ id: "pv0", sort_order: 0 }]);
+    const r = await POST(postReq({ horseId: "h1", type: "video", sourceTrainerId: "t1", videoCount: 1 }));
+    expect(r.status).toBe(202);
+    const j = await r.json();
+    expect(j.data.uploadUrl).toBe("https://mux.local/upload");
+    expect(j.data.uploads).toHaveLength(1);
+  });
+
+  it.each([6, 0, -1, 2.5, "3"])("videoCount: %j → 400 invalid_video_count, no insert", async (videoCount) => {
+    asAdmin();
+    const r = await POST(postReq({ horseId: "h1", type: "video", sourceTrainerId: "t1", videoCount }));
+    expect(r.status).toBe(400);
+    const j = await r.json();
+    expect(j.error.code).toBe("invalid_video_count");
+    expect(state.calls.mutations).toHaveLength(0);
+    expect(createMuxDirectUpload).not.toHaveBeenCalled();
+  });
+
+  it("videoCount on a photo post → 400 invalid_video_count, no insert", async () => {
+    asAdmin();
+    const r = await POST(postReq({ horseId: "h1", type: "photo", sourceTrainerId: "t1", videoCount: 2 }));
+    expect(r.status).toBe(400);
+    const j = await r.json();
+    expect(j.error.code).toBe("invalid_video_count");
+    expect(state.calls.mutations).toHaveLength(0);
+  });
+
+  it("Mux failure on the 2nd upload → draft rolled back, the 1st upload cancelled, 502 mux_unavailable", async () => {
+    asAdmin();
+    state.tables.horse = { select: { single: { id: "h1" } } };
+    state.tables.post = { mutate: { single: { id: "p22", status: "draft", type: "video", horse_id: "h1" } } };
+    seedVideoRows([
+      { id: "pv0", sort_order: 0 },
+      { id: "pv1", sort_order: 1 },
+    ]);
+    createMuxDirectUpload
+      .mockResolvedValueOnce({ uploadId: "up_0", uploadUrl: "https://mux.local/u0" })
+      .mockRejectedValueOnce(new Error("mux down"));
+
+    const r = await POST(postReq({ horseId: "h1", type: "video", sourceTrainerId: "t1", videoCount: 2 }));
+    expect(r.status).toBe(502);
+    const j = await r.json();
+    expect(j.error.code).toBe("mux_unavailable");
+    expect(cleanupMuxVideo).toHaveBeenCalledTimes(1);
+    expect(cleanupMuxVideo).toHaveBeenCalledWith({ videoId: "pv0", uploadId: "up_0" });
+    expect(state.calls.mutations).toContainEqual(
+      expect.objectContaining({
+        table: "post",
+        op: "delete",
+        filters: expect.arrayContaining([
+          { column: "id", value: "p22" },
+          { column: "status", value: "draft" },
+        ]),
+      }),
+    );
+  });
+
+  it("the response body never contains a mux upload id, in any field name", async () => {
+    asAdmin();
+    state.tables.horse = { select: { single: { id: "h1" } } };
+    state.tables.post = { mutate: { single: { id: "p23", status: "draft", type: "video", horse_id: "h1" } } };
+    seedVideoRows([
+      { id: "pv0", sort_order: 0 },
+      { id: "pv1", sort_order: 1 },
+    ]);
+    const r = await POST(postReq({ horseId: "h1", type: "video", sourceTrainerId: "t1", videoCount: 2 }));
+    const body = await r.text();
+    expect(body).not.toContain("mux_upload_id");
+    expect(body).not.toContain("muxUploadId");
+  });
+
+  it("missing post_video table (n=1) → legacy Mux-direct fallback: 202 with uploadUrl, no uploads array", async () => {
+    asAdmin();
+    state.tables.horse = { select: { single: { id: "h1" } } };
+    state.tables.post = { mutate: { single: { id: "p24", status: "draft", type: "video", horse_id: "h1" } } };
+    state.tables.post_video = { mutate: { error: { code: "42P01" } } };
+    const r = await POST(postReq({ horseId: "h1", type: "video", sourceTrainerId: "t1" }));
+    expect(r.status).toBe(202);
+    const j = await r.json();
+    expect(j.data.uploadUrl).toBe("https://mux.local/upload");
+    expect(j.data.uploads).toBeUndefined();
+    expect(createMuxDirectUpload).toHaveBeenCalledWith(expect.objectContaining({ passthrough: "p24" }));
+  });
+
+  it("missing post_video table (n>1) → draft rolled back, 503 videos_unavailable", async () => {
+    asAdmin();
+    state.tables.horse = { select: { single: { id: "h1" } } };
+    state.tables.post = { mutate: { single: { id: "p25", status: "draft", type: "video", horse_id: "h1" } } };
+    state.tables.post_video = { mutate: { error: { code: "42P01" } } };
+    const r = await POST(postReq({ horseId: "h1", type: "video", sourceTrainerId: "t1", videoCount: 3 }));
+    expect(r.status).toBe(503);
+    const j = await r.json();
+    expect(j.error.code).toBe("videos_unavailable");
+    expect(createMuxDirectUpload).not.toHaveBeenCalled();
+    expect(state.calls.mutations).toContainEqual(
+      expect.objectContaining({
+        table: "post",
+        op: "delete",
+        filters: expect.arrayContaining([
+          { column: "id", value: "p25" },
+          { column: "status", value: "draft" },
+        ]),
+      }),
+    );
+  });
+
+  it("any other post_video insert error → draft rolled back, 400 insert_failed", async () => {
+    asAdmin();
+    state.tables.horse = { select: { single: { id: "h1" } } };
+    state.tables.post = { mutate: { single: { id: "p26", status: "draft", type: "video", horse_id: "h1" } } };
+    state.tables.post_video = { mutate: { error: { code: "500" } } };
+    const r = await POST(postReq({ horseId: "h1", type: "video", sourceTrainerId: "t1" }));
+    expect(r.status).toBe(400);
+    const j = await r.json();
+    expect(j.error.code).toBe("insert_failed");
+    expect(state.calls.mutations).toContainEqual(
+      expect.objectContaining({
+        table: "post",
+        op: "delete",
+        filters: expect.arrayContaining([
+          { column: "id", value: "p26" },
+          { column: "status", value: "draft" },
+        ]),
+      }),
+    );
   });
 });

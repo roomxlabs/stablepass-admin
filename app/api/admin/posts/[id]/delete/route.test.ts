@@ -7,6 +7,18 @@ vi.mock("@/lib/supabase/server", () => ({
   supabaseServer: async () => makeFakeClient(state),
 }));
 
+// ENG-1597 — the route's own `cleanupVideos` call goes through Mux; mocked
+// the same way the sibling routes' tests do it.
+const cleanupMuxVideo = vi.fn<
+  (v: { videoId: string; assetId?: string | null; uploadId?: string | null }) => Promise<void>
+>(async () => undefined);
+vi.mock("@/lib/mux", () => ({
+  MuxError: class MuxError extends Error {},
+  createMuxDirectUpload: vi.fn(),
+  cleanupMuxVideo: (v: { videoId: string; assetId?: string | null; uploadId?: string | null }) =>
+    cleanupMuxVideo(v),
+}));
+
 import { DELETE } from "./route";
 
 function asAdmin() {
@@ -22,6 +34,7 @@ const req = () => new Request("http://t", { method: "DELETE" });
 
 beforeEach(() => {
   Object.assign(state, blankState());
+  cleanupMuxVideo.mockClear();
 });
 
 describe("DELETE /api/admin/posts/:id/delete — hard delete, ANY status", () => {
@@ -64,5 +77,37 @@ describe("DELETE /api/admin/posts/:id/delete — hard delete, ANY status", () =>
     state.tables.post = { select: { single: null } };
     const r = await DELETE(req(), ctx("p1"));
     expect(r.status).toBe(404);
+  });
+
+  // ENG-1597 — hard-deleting a video post must not leak its Mux assets/uploads.
+  it("cleans up an asset row (DELETE) and an upload-only row (cancel), both", async () => {
+    asAdmin();
+    state.tables.post = { select: { single: { id: "p1", status: "published" } }, mutate: {} };
+    state.tables.post_video = {
+      select: {
+        rows: [
+          { id: "pv0", sort_order: 0, status: "ready", mux_upload_id: null, mux_asset_id: "as_0" },
+          { id: "pv1", sort_order: 1, status: "uploading", mux_upload_id: "up_1", mux_asset_id: null },
+        ],
+      },
+    };
+    const r = await DELETE(req(), ctx("p1"));
+    expect(r.status).toBe(204);
+    expect(cleanupMuxVideo).toHaveBeenCalledWith({ videoId: "pv0", assetId: "as_0", uploadId: null });
+    expect(cleanupMuxVideo).toHaveBeenCalledWith({ videoId: "pv1", assetId: null, uploadId: "up_1" });
+  });
+
+  it("a failed post delete → no cleanup call at all", async () => {
+    asAdmin();
+    state.tables.post = {
+      select: { single: { id: "p1", status: "published" } },
+      mutate: { error: { message: "delete failed" } },
+    };
+    state.tables.post_video = {
+      select: { rows: [{ id: "pv0", sort_order: 0, status: "ready", mux_upload_id: null, mux_asset_id: "as_0" }] },
+    };
+    const r = await DELETE(req(), ctx("p1"));
+    expect(r.status).toBe(400);
+    expect(cleanupMuxVideo).not.toHaveBeenCalled();
   });
 });

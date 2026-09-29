@@ -7,6 +7,14 @@ import {
   MEDIA_ERROR_MESSAGE,
   normaliseMediaSet,
 } from "@/lib/posts/media";
+import {
+  parseVideoOrder,
+  loadPostVideos,
+  cleanupVideos,
+  isSlotConflict,
+  isMissingVideoTable,
+  type PostVideoRow,
+} from "@/lib/posts/videos";
 
 // camelCase request field → post column.
 const FIELD_MAP: Record<string, string> = {
@@ -61,10 +69,31 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
 
   const patch: Record<string, unknown> = {};
   for (const [field, column] of Object.entries(FIELD_MAP)) if (field in b) patch[column] = b[field];
-  // `media` is editable but is not a `post` column — it is the whole `post_media`
-  // set — so it counts toward "did the caller ask for anything" on its own.
-  if (Object.keys(patch).length === 0 && !("media" in b))
+  // `media` and `videos` are editable but are not `post` columns — they are
+  // the whole `post_media` / `post_video` sets — so each counts toward "did
+  // the caller ask for anything" on its own.
+  if (Object.keys(patch).length === 0 && !("media" in b) && !("videos" in b))
     return fail("validation_failed", "No editable fields provided.", 400);
+
+  /**
+   * ENG-1597 — `videos`: the post's FULL ordered set of `post_video` row ids.
+   * `knownVideos`, when sent, is the full set the client last loaded, so a
+   * stale reorder (another admin added/removed a slot between load and save)
+   * 409s instead of silently reordering a set the operator never saw.
+   *
+   * Parsed here (pure, no IO) so a malformed shape 400s before anything is
+   * read or written — same discipline as every other validation in this file.
+   */
+  const wantsVideos = "videos" in b;
+  const parsedVideos = wantsVideos ? parseVideoOrder(b.videos) : null;
+  if (wantsVideos && parsedVideos === null)
+    return fail("invalid_video_set", "Send the post's videos as 1 to 5 distinct ids.", 400);
+  const wantsKnownVideos = "knownVideos" in b;
+  if (
+    wantsKnownVideos &&
+    (!Array.isArray(b.knownVideos) || !b.knownVideos.every((v: unknown) => typeof v === "string"))
+  )
+    return fail("invalid_video_set", "Send the post's videos as 1 to 5 distinct ids.", 400);
 
   // Validate the category against the preset list before it reaches the CHECK,
   // so an off-list value gets a readable 400 instead of a raw constraint error.
@@ -185,7 +214,70 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
     patch.media_url = mediaRows[0].mediaUrl;
   }
 
-  const { data, error } = await sb.from("post").update(patch).eq("id", id).select("*").maybeSingle();
+  /**
+   * ENG-1597 — the video-post pre-reads, all still BEFORE any write.
+   *
+   * `post.type` is only fetched when something actually needs it: a `videos`
+   * edit (to 409 a non-video post) or a `poster_time_s` edit (to know whether
+   * the slot-0 `post_video` row below even applies) — a caption-only save
+   * must not pay for, or be able to fail on, a round trip it does not need.
+   */
+  const wantsPosterTime = "poster_time_s" in b;
+  let videoPost: { id: string; type: string } | null = null;
+  if (wantsVideos || wantsPosterTime) {
+    const { data: p, error: postTypeErr } = await sb
+      .from("post")
+      .select("id,type")
+      .eq("id", id)
+      .maybeSingle();
+    if (postTypeErr) {
+      console.error("post query_failed", postTypeErr.code);
+      return fail("query_failed", "Could not load the post.", 400);
+    }
+    if (!p) return fail("not_found", "Post not found.", 404);
+    videoPost = p;
+  }
+
+  let currentVideoRows: PostVideoRow[] = [];
+  if (wantsVideos) {
+    if (videoPost!.type !== "video")
+      return fail("not_video_post", "Videos can only be added to a video post.", 409);
+
+    const { rows, error: videosErr } = await loadPostVideos(sb, id);
+    if (videosErr) {
+      console.error("post_video query_failed", videosErr.code);
+      return fail("query_failed", "Could not check the post's videos.", 400);
+    }
+    currentVideoRows = rows;
+    const currentIds = new Set(rows.map((r) => r.id));
+    // Every id in the request must name a row THIS post already has —
+    // `videos` reorders/removes the existing set, it never invents a slot
+    // (that is what `POST .../video-uploads` is for).
+    if (!parsedVideos!.every((v) => currentIds.has(v)))
+      return fail("invalid_video_set", "Send the post's videos as 1 to 5 distinct ids.", 400);
+
+    if (wantsKnownVideos) {
+      const known = new Set(b.knownVideos as string[]);
+      const same = known.size === currentIds.size && [...currentIds].every((v) => known.has(v));
+      if (!same)
+        return fail(
+          "video_set_stale",
+          "The post's videos changed. Refresh and try again.",
+          409,
+        );
+    }
+  }
+
+  // Videos-ONLY request (no `media`, no other patch field): the `post` table
+  // itself has nothing to write, so skip the update and read the row instead
+  // — an empty `.update({})` is not a meaningful statement, and skipping it
+  // means a videos-only save cannot trip a `post`-level CHECK it never
+  // touched. `media` keeps the existing behaviour (an update call even when
+  // `patch` is otherwise empty), since that path is unchanged by this ticket.
+  const videosOnly = wantsVideos && !("media" in b) && Object.keys(patch).length === 0;
+  const { data, error } = videosOnly
+    ? await sb.from("post").select("*").eq("id", id).maybeSingle()
+    : await sb.from("post").update(patch).eq("id", id).select("*").maybeSingle();
   // Backstop for a preset this build does not know about — same 400 as above,
   // never a 500 (guardrail: an editorial mistake is not a server fault).
   //
@@ -245,6 +337,100 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
     }
   }
 
+  /**
+   * ENG-1597 — the `post_video` writes, now that `post` is safely written.
+   *
+   * ORDER MATTERS, same reasoning as `post_media` above:
+   *  a. delete removed rows FIRST — a slot freed here can never collide with
+   *     the renumber in (b), which is the whole reason it goes first.
+   *  b. renumber the KEPT rows in ONE upsert (on the `id` PK — the deferrable
+   *     `(post_id, sort_order)` unique can never be an arbiter), so a swap
+   *     between two rows passes the deferred constraint inside one statement.
+   *  c. clear the NEW slot-0 row's poster frame if the cover actually changed
+   *     — a new cover needs a new pick, so an old frame time is not carried
+   *     over silently.
+   *  d. best-effort Mux cleanup for whatever got removed, only after the
+   *     delete in (a) has actually committed.
+   */
+  if (wantsVideos) {
+    const keepIds = new Set(parsedVideos!);
+    const toRemove = currentVideoRows.filter((r) => !keepIds.has(r.id));
+
+    if (toRemove.length > 0) {
+      const { error: removeErr } = await sb
+        .from("post_video")
+        .delete()
+        .in("id", toRemove.map((r) => r.id))
+        .eq("post_id", id);
+      if (removeErr) {
+        console.error("post_video update_failed", removeErr.code);
+        return fail("update_failed", "Could not update the post's videos.", 400);
+      }
+    }
+
+    const needsReorder = parsedVideos!.some((vid, i) => {
+      const row = currentVideoRows.find((r) => r.id === vid);
+      return !row || row.sort_order !== i;
+    });
+    if (needsReorder) {
+      const { error: reorderErr } = await sb.from("post_video").upsert(
+        parsedVideos!.map((vid, i) => ({ id: vid, post_id: id, sort_order: i })),
+        { onConflict: "id" },
+      );
+      if (reorderErr) {
+        if (isSlotConflict(reorderErr))
+          return fail(
+            "video_set_stale",
+            "The post's videos changed. Refresh and try again.",
+            409,
+          );
+        console.error("post_video update_failed", reorderErr.code);
+        return fail("update_failed", "Could not update the post's videos.", 400);
+      }
+    }
+
+    const currentSlot0Id = currentVideoRows.find((r) => r.sort_order === 0)?.id;
+    if (parsedVideos![0] !== currentSlot0Id) {
+      const { error: clearErr } = await sb
+        .from("post_video")
+        .update({ poster_time_s: null })
+        .eq("id", parsedVideos![0])
+        .eq("post_id", id);
+      if (clearErr) {
+        console.error("post_video update_failed", clearErr.code);
+        return fail("update_failed", "Could not update the post's videos.", 400);
+      }
+    }
+
+    await cleanupVideos(toRemove); // best-effort; never fails the request
+  }
+
+  /**
+   * ENG-1597 — an explicit `poster_time_s` on a video post ALSO lands on the
+   * slot-0 `post_video` row, AFTER the reorder/cover-clear above so an
+   * explicit value in the SAME request wins over the clear in (c). Written
+   * only to `post` it would be overwritten by the very trigger that mirrors
+   * slot 0 onto `post` at commit — the next `post_video` write (a future
+   * upload finishing, say) would silently revert it.
+   *
+   * Best-effort: this is bookkeeping for a value that already landed on
+   * `post` itself, so a failure here is logged, never failed back to the
+   * operator as though their save had not gone through.
+   */
+  if (wantsPosterTime && videoPost?.type === "video") {
+    const slot0Id = wantsVideos
+      ? parsedVideos![0]
+      : (await loadPostVideos(sb, id)).rows.find((r) => r.sort_order === 0)?.id;
+    if (slot0Id) {
+      const { error: posterErr } = await sb
+        .from("post_video")
+        .update({ poster_time_s: patch.poster_time_s ?? null })
+        .eq("id", slot0Id);
+      if (posterErr && !isMissingVideoTable(posterErr))
+        console.error("post_video update_failed", posterErr.code);
+    }
+  }
+
   return ok(data);
 }
 
@@ -261,10 +447,17 @@ export async function DELETE(_req: Request, { params }: { params: Promise<{ id: 
   if (post.status !== "draft")
     return fail("not_a_draft", "Only drafts can be discarded; published content is soft-hidden.", 409);
 
+  // ENG-1597 — read the draft's video rows BEFORE deleting it, so there is
+  // something to hand to Mux cleanup once the delete has actually committed.
+  // Any read failure (including a not-yet-deployed table) is treated as "no
+  // videos to clean up" — this is a best-effort courtesy, not a precondition.
+  const { rows: videoRows } = await loadPostVideos(sb, id);
+
   // Scope the delete to draft too — defensive against a concurrent publish
   // landing between the check above and here (guardrail §2: never hard-delete a
   // published post).
   const { error } = await sb.from("post").delete().eq("id", id).eq("status", "draft");
   if (error) return fail("delete_failed", error.message, 400);
+  await cleanupVideos(videoRows); // best-effort; the delete has already committed
   return noContent();
 }

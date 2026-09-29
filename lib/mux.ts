@@ -26,8 +26,9 @@ function muxAuthHeader(): string {
 
 export async function createMuxDirectUpload(opts?: {
   corsOrigin?: string;
-  /** Echoed back on asset lifecycle webhooks — set to the post id so the BE
-   * `mux-webhook` function can reconcile the processed asset onto the post. */
+  /** Echoed back on asset lifecycle webhooks — set to the `post_video` row id
+   * (ENG-1597: one row per video slot, 1..5 per post) so the BE `mux-webhook`
+   * function can reconcile the processed asset onto the right row. */
   passthrough?: string;
 }): Promise<MuxDirectUpload> {
   const auth = muxAuthHeader();
@@ -86,4 +87,110 @@ export async function findMuxAssetByPassthrough(passthrough: string): Promise<Mu
   const asset = json?.data?.find((a) => a.passthrough === passthrough && a.status === "ready");
   const playbackId = asset?.playback_ids?.[0]?.id;
   return asset?.id && playbackId ? { assetId: asset.id, playbackId } : null;
+}
+
+const MUX_UPLOAD_ID_URL = (uploadId: string) => `${MUX_UPLOADS_URL}/${encodeURIComponent(uploadId)}`;
+const MUX_ASSET_ID_URL = (assetId: string) => `${MUX_ASSETS_URL}/${encodeURIComponent(assetId)}`;
+
+/**
+ * Delete a Mux asset outright (ENG-1597 — a video slot removed from a post, or
+ * the whole post rolled back). 2xx or 404 (already gone) both count as
+ * success; anything else throws so the caller can decide whether to retry.
+ */
+export async function deleteMuxAsset(assetId: string): Promise<void> {
+  const auth = muxAuthHeader();
+  let res: Response;
+  try {
+    res = await fetch(MUX_ASSET_ID_URL(assetId), { method: "DELETE", headers: { Authorization: auth } });
+  } catch (e) {
+    throw new MuxError(`Mux request failed: ${(e as Error).message}`);
+  }
+  if (!res.ok && res.status !== 404) throw new MuxError(`Mux asset delete failed (${res.status}).`);
+}
+
+/**
+ * Cancel a Mux direct upload that never finished (the slot's row is being
+ * removed, or the whole mint is being rolled back, before any bytes landed).
+ * 2xx or 404 both count as success.
+ */
+export async function cancelMuxUpload(uploadId: string): Promise<void> {
+  const auth = muxAuthHeader();
+  let res: Response;
+  try {
+    res = await fetch(`${MUX_UPLOAD_ID_URL(uploadId)}/cancel`, {
+      method: "PUT",
+      headers: { Authorization: auth },
+    });
+  } catch (e) {
+    throw new MuxError(`Mux request failed: ${(e as Error).message}`);
+  }
+  if (!res.ok && res.status !== 404) throw new MuxError(`Mux upload cancel failed (${res.status}).`);
+}
+
+/**
+ * The asset id a direct upload has produced, if any — used when `cancel`
+ * itself fails (ENG-1597): by then the upload may already have turned into an
+ * asset, and cancelling is a no-op we cannot trust, so we look up what it
+ * became and delete THAT instead.
+ */
+export async function getMuxUploadAssetId(uploadId: string): Promise<string | null> {
+  const auth = muxAuthHeader();
+  let res: Response;
+  try {
+    res = await fetch(MUX_UPLOAD_ID_URL(uploadId), { headers: { Authorization: auth } });
+  } catch (e) {
+    throw new MuxError(`Mux request failed: ${(e as Error).message}`);
+  }
+  if (!res.ok) throw new MuxError(`Mux upload read failed (${res.status}).`);
+  const json = (await res.json().catch(() => null)) as { data?: { asset_id?: string } } | null;
+  return json?.data?.asset_id ?? null;
+}
+
+/**
+ * Best-effort Mux cleanup for one `post_video` slot (ENG-1597). NEVER throws —
+ * every caller (the mint rollback, a slot removal, a draft/post hard delete)
+ * must still complete its own transaction whether or not Mux cooperates, so a
+ * failure here is logged and swallowed rather than propagated.
+ *
+ * An asset id (the slot finished processing) wins over an upload id: the
+ * asset is the thing actually costing storage/bandwidth. Upload-only: cancel
+ * it; if the cancel itself fails, the upload may have already turned into an
+ * asset between our read and this call, so look that asset up and delete it —
+ * only falling back to rethrowing (and logging) the original cancel failure
+ * when no asset shows up either. Neither id present is a no-op: nothing was
+ * ever minted for this slot, so there is nothing to reach out to Mux for.
+ */
+export async function cleanupMuxVideo(v: {
+  videoId: string;
+  assetId?: string | null;
+  uploadId?: string | null;
+}): Promise<void> {
+  try {
+    if (v.assetId) {
+      await deleteMuxAsset(v.assetId);
+      return;
+    }
+    if (v.uploadId) {
+      try {
+        await cancelMuxUpload(v.uploadId);
+      } catch (cancelErr) {
+        let assetId: string | null = null;
+        try {
+          assetId = await getMuxUploadAssetId(v.uploadId);
+        } catch {
+          assetId = null;
+        }
+        if (assetId) {
+          await deleteMuxAsset(assetId);
+          return;
+        }
+        throw cancelErr;
+      }
+      return;
+    }
+    // Neither id — nothing was ever minted for this slot. No fetch.
+  } catch (e) {
+    // Never log the auth header — only the videoId and the error message.
+    console.error("mux_cleanup_failed", { videoId: v.videoId, error: (e as Error).message });
+  }
 }

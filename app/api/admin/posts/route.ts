@@ -10,6 +10,7 @@ import {
 } from "@/lib/posts/labels";
 import { isSubject, SUBJECTS } from "@/lib/posts/subject";
 import { MAX_PHOTOS, uploadSlotPath } from "@/lib/posts/media";
+import { parseVideoCount, isMissingVideoTable, mintVideoUploads } from "@/lib/posts/videos";
 import { isUuid } from "@/lib/uuid";
 import {
   POSTS_API_SELECT,
@@ -176,6 +177,7 @@ export async function POST(req: Request) {
     expiresAt,
     label,
     photoCount,
+    videoCount,
     poster_time_s,
     byline,
   } = payload ?? {};
@@ -285,6 +287,29 @@ export async function POST(req: Request) {
       400,
     );
 
+  // ENG-1597 — how many `post_video` slots (and Mux upload targets) to mint.
+  // Same reasoning as `photoCount` above: validated here, before any row
+  // exists, because `post_video`'s 0..4 `sort_order` CHECK cannot reject a
+  // request that hasn't written a row yet. VIDEO ONLY: a `videoCount` sent
+  // for any other type is a client bug, not a harmless extra.
+  if (videoCount !== undefined && videoCount !== null && type !== "video")
+    return fail(
+      "invalid_video_count",
+      "videoCount is only accepted on a video post, from 1 to 5.",
+      400,
+    );
+  let wantsVideos = 1;
+  if (type === "video") {
+    const n = parseVideoCount(videoCount);
+    if (n === null)
+      return fail(
+        "invalid_video_count",
+        "videoCount is only accepted on a video post, from 1 to 5.",
+        400,
+      );
+    wantsVideos = n;
+  }
+
   // Horse must exist — a clean 404 rather than a raw FK violation. Horse
   // subject only: the other two have no `horseId` to look up (the block above
   // already rejected one that was sent anyway).
@@ -386,17 +411,73 @@ export async function POST(req: Request) {
   }
 
   if (type === "video") {
-    try {
-      // passthrough = post id: Mux echoes it on asset webhooks so the BE
-      // mux-webhook (and our read-time fallback) can reconcile the processed
-      // asset back onto this post.
-      const { uploadId, uploadUrl } = await createMuxDirectUpload({ passthrough: draft.id });
-      return accepted({ id: draft.id, status: "draft", type, watermarked: false, uploadUrl, muxUploadId: uploadId });
-    } catch (e) {
+    // ENG-1597 — one `post_video` row per slot (`wantsVideos` of them, 1..5),
+    // UNIFORM keys so the shape is fully determined by this insert rather
+    // than by column defaults. `poster_time_s` lands on the SLOT-0 ROW, not
+    // just the post: the deferred mirror trigger copies slot 0's poster time
+    // (and asset/playback/aspect-ratio) onto `post` at COMMIT, so a value
+    // written only to `post` would be overwritten by the very insert below.
+    const insertRows = Array.from({ length: wantsVideos }, (_, i) => ({
+      post_id: draft.id,
+      sort_order: i,
+      status: "uploading",
+      poster_time_s: i === 0 ? posterTime : null,
+    }));
+    const { data: videoRows, error: videoInsertErr } = await sb
+      .from("post_video")
+      .insert(insertRows)
+      .select("id,sort_order");
+
+    if (videoInsertErr) {
+      // LEGACY FALLBACK: a single-video create against a DB that predates
+      // this ticket's migration behaves exactly as it did before it —
+      // straight to Mux, passthrough = the post id (there is no post_video
+      // row to key off).
+      if (isMissingVideoTable(videoInsertErr) && wantsVideos === 1) {
+        try {
+          const { uploadUrl } = await createMuxDirectUpload({ passthrough: draft.id });
+          return accepted({ id: draft.id, status: "draft", type, watermarked: false, uploadUrl });
+        } catch (e) {
+          await sb.from("post").delete().eq("id", draft.id).eq("status", "draft");
+          const msg = e instanceof MuxError ? e.message : "Mux is unavailable.";
+          return fail("mux_unavailable", msg, 502);
+        }
+      }
       await sb.from("post").delete().eq("id", draft.id).eq("status", "draft"); // roll back the orphan draft
-      const msg = e instanceof MuxError ? e.message : "Mux is unavailable.";
-      return fail("mux_unavailable", msg, 502);
+      if (isMissingVideoTable(videoInsertErr))
+        return fail(
+          "videos_unavailable",
+          "Multi-video posts are not available until the backend migration is deployed.",
+          503,
+        );
+      console.error("post_video insert_failed", videoInsertErr.code);
+      return fail("insert_failed", "Could not create the post's videos.", 400);
     }
+
+    const rows = (((videoRows ?? []) as { id: string; sort_order: number }[])
+      .slice()
+      .sort((a, b) => a.sort_order - b.sort_order));
+
+    const mint = await mintVideoUploads(rows, sb);
+    if (!mint.ok) {
+      // Cascade removes the rows `mintVideoUploads` just wrote to; the
+      // uploads/assets it minted are its own responsibility (it already
+      // best-effort cleaned those up before returning).
+      await sb.from("post").delete().eq("id", draft.id).eq("status", "draft");
+      return fail("mux_unavailable", "Mux is unavailable.", 502);
+    }
+
+    return accepted({
+      id: draft.id,
+      status: "draft",
+      type,
+      watermarked: false,
+      uploads: mint.uploads,
+      // Back-compat: a single-video create keeps handing back `uploadUrl` at
+      // the top level, exactly as it did before multi-video existed.
+      // `muxUploadId` is GONE — never return a Mux upload id (guardrail).
+      ...(wantsVideos === 1 ? { uploadUrl: mint.uploads[0].uploadUrl } : {}),
+    });
   }
 
   // photo | voice → Supabase Storage direct-upload target (signed upload URL).

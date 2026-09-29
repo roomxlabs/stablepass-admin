@@ -1,5 +1,6 @@
 import { requireAdmin } from "@/lib/auth/admin";
 import { ok, fail } from "@/lib/api/envelope";
+import { videoGate } from "@/lib/posts/videos";
 
 // POST /api/admin/posts/:id/republish — return an unpublished post to published
 // (undo of unpublish). Only an unpublished post can be republished.
@@ -9,10 +10,18 @@ export async function POST(_req: Request, { params }: { params: Promise<{ id: st
   const { sb } = g;
   const { id } = await params;
 
-  const { data: post } = await sb.from("post").select("status").eq("id", id).maybeSingle();
+  const { data: post } = await sb.from("post").select("status,type").eq("id", id).maybeSingle();
   if (!post) return fail("not_found", "Post not found.", 404);
   if (post.status !== "unpublished")
     return fail("invalid_status", "Only an unpublished post can be republished.", 409);
+
+  // ENG-1597 — same publish gate: a video post going back live must not carry
+  // an unfinished video either (e.g. an admin appended a replacement slot
+  // while the post was unpublished).
+  if (post.type === "video") {
+    const gate = await videoGate(sb, id);
+    if (gate) return gate;
+  }
 
   const { data: updated, error } = await sb
     .from("post")

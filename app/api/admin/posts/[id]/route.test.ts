@@ -8,6 +8,19 @@ vi.mock("@/lib/supabase/server", () => ({
   supabaseServer: async () => makeFakeClient(state),
 }));
 
+// ENG-1597 — `cleanupVideos` (via lib/posts/videos.ts) calls out to Mux. Mocked
+// here the same way app/api/admin/posts/route.test.ts mocks it, so a route
+// test can assert WHICH ids cleanup ran for without any real network access.
+const cleanupMuxVideo = vi.fn<
+  (v: { videoId: string; assetId?: string | null; uploadId?: string | null }) => Promise<void>
+>(async () => undefined);
+vi.mock("@/lib/mux", () => ({
+  MuxError: class MuxError extends Error {},
+  createMuxDirectUpload: vi.fn(),
+  cleanupMuxVideo: (v: { videoId: string; assetId?: string | null; uploadId?: string | null }) =>
+    cleanupMuxVideo(v),
+}));
+
 import { PATCH, DELETE } from "./route";
 
 function asAdmin() {
@@ -23,6 +36,7 @@ const patchReq = (body: unknown) => new Request("http://t", { method: "PATCH", b
 
 beforeEach(() => {
   Object.assign(state, blankState());
+  cleanupMuxVideo.mockClear();
 });
 
 describe("DELETE /api/admin/posts/:id — discard draft only", () => {
@@ -53,6 +67,35 @@ describe("DELETE /api/admin/posts/:id — discard draft only", () => {
     state.tables.post = { select: { single: null } };
     const r = await DELETE(new Request("http://t"), ctx("p1"));
     expect(r.status).toBe(404);
+  });
+
+  // ENG-1597 — a discarded video draft's rows must not leak Mux assets/uploads.
+  it("204 for a video draft → cleans up every one of its post_video rows' Mux assets/uploads", async () => {
+    asAdmin();
+    state.tables.post = { select: { single: { status: "draft" } } };
+    state.tables.post_video = {
+      select: {
+        rows: [
+          { id: "pv0", sort_order: 0, status: "ready", mux_upload_id: null, mux_asset_id: "as_0" },
+          { id: "pv1", sort_order: 1, status: "uploading", mux_upload_id: "up_1", mux_asset_id: null },
+        ],
+      },
+    };
+    const r = await DELETE(new Request("http://t"), ctx("p1"));
+    expect(r.status).toBe(204);
+    expect(cleanupMuxVideo).toHaveBeenCalledWith({ videoId: "pv0", assetId: "as_0", uploadId: null });
+    expect(cleanupMuxVideo).toHaveBeenCalledWith({ videoId: "pv1", assetId: null, uploadId: "up_1" });
+  });
+
+  it("a failed post delete → no cleanup call at all", async () => {
+    asAdmin();
+    state.tables.post = { select: { single: { status: "draft" } }, mutate: { error: { message: "nope" } } };
+    state.tables.post_video = {
+      select: { rows: [{ id: "pv0", sort_order: 0, status: "ready", mux_upload_id: null, mux_asset_id: "as_0" }] },
+    };
+    const r = await DELETE(new Request("http://t"), ctx("p1"));
+    expect(r.status).toBe(400);
+    expect(cleanupMuxVideo).not.toHaveBeenCalled();
   });
 });
 
@@ -635,5 +678,222 @@ describe("PATCH — subject & byline (ENG-1268)", () => {
     };
     const r = await PATCH(patchReq({ sourceTrainerId: "t9" }), ctx("p1"));
     expect(r.status).toBe(200);
+  });
+});
+
+describe("PATCH — videos (ENG-1597)", () => {
+  const A = "11111111-1111-1111-1111-111111111111";
+  const B = "22222222-2222-2222-2222-222222222222";
+  const C = "33333333-3333-3333-3333-333333333333";
+
+  /** A video post whose current `post_video` rows are exactly `rows`. */
+  function seedVideoPost(rows: { id: string; sort_order: number }[], opts?: { mutate?: boolean }) {
+    state.tables.post = {
+      select: { single: { id: "p1", type: "video" } },
+      ...(opts?.mutate ? { mutate: { single: { id: "p1", type: "video" } } } : {}),
+    };
+    state.tables.post_video = {
+      select: {
+        rows: rows.map((r) => ({
+          id: r.id,
+          sort_order: r.sort_order,
+          status: "ready",
+          mux_upload_id: null,
+          mux_asset_id: `as_${r.id}`,
+        })),
+      },
+    };
+  }
+
+  function videoWrites() {
+    return state.calls.mutations.filter((m) => m.table === "post_video");
+  }
+
+  it("reorder [C, A, B] → ONE upsert with that exact payload and onConflict 'id'; nothing deleted", async () => {
+    asAdmin();
+    seedVideoPost([
+      { id: A, sort_order: 0 },
+      { id: B, sort_order: 1 },
+      { id: C, sort_order: 2 },
+    ]);
+    const r = await PATCH(patchReq({ videos: [C, A, B] }), ctx("p1"));
+    expect(r.status).toBe(200);
+    const upsert = videoWrites().find((m) => m.op === "upsert");
+    expect(upsert?.payload).toEqual([
+      { id: C, post_id: "p1", sort_order: 0 },
+      { id: A, post_id: "p1", sort_order: 1 },
+      { id: B, post_id: "p1", sort_order: 2 },
+    ]);
+    expect(upsert?.options).toEqual({ onConflict: "id" });
+    expect(videoWrites().some((m) => m.op === "delete")).toBe(false);
+    // The new slot 0 (C) is a genuinely new cover → its poster frame is cleared.
+    expect(videoWrites()).toContainEqual(
+      expect.objectContaining({
+        op: "update",
+        payload: { poster_time_s: null },
+        filters: expect.arrayContaining([{ column: "id", value: C }]),
+      }),
+    );
+  });
+
+  it("removing B → delete filtered to [B] + post_id, then cleanup called with B's mux asset id", async () => {
+    asAdmin();
+    seedVideoPost([
+      { id: A, sort_order: 0 },
+      { id: B, sort_order: 1 },
+    ]);
+    const r = await PATCH(patchReq({ videos: [A] }), ctx("p1"));
+    expect(r.status).toBe(200);
+    const del = videoWrites().find((m) => m.op === "delete");
+    expect(del?.filters).toEqual(
+      expect.arrayContaining([
+        { column: "id", value: [B], op: "in" },
+        { column: "post_id", value: "p1" },
+      ]),
+    );
+    expect(cleanupMuxVideo).toHaveBeenCalledWith({ videoId: B, assetId: `as_${B}`, uploadId: null });
+    // Slot 0 (A) did not change → no poster clear and no reorder upsert.
+    expect(videoWrites().some((m) => m.op === "upsert")).toBe(false);
+  });
+
+  it("slot-0 change clears poster_time_s on the new slot 0", async () => {
+    asAdmin();
+    seedVideoPost([
+      { id: A, sort_order: 0 },
+      { id: B, sort_order: 1 },
+    ]);
+    const r = await PATCH(patchReq({ videos: [B, A] }), ctx("p1"));
+    expect(r.status).toBe(200);
+    expect(videoWrites()).toContainEqual(
+      expect.objectContaining({
+        op: "update",
+        payload: { poster_time_s: null },
+        filters: expect.arrayContaining([{ column: "id", value: B }]),
+      }),
+    );
+  });
+
+  it("unchanged slot 0 → no poster clear, even though the tail reorders", async () => {
+    asAdmin();
+    seedVideoPost([
+      { id: A, sort_order: 0 },
+      { id: B, sort_order: 1 },
+      { id: C, sort_order: 2 },
+    ]);
+    const r = await PATCH(patchReq({ videos: [A, C, B] }), ctx("p1"));
+    expect(r.status).toBe(200);
+    const upsert = videoWrites().find((m) => m.op === "upsert");
+    expect(upsert).toBeTruthy(); // B/C still swap
+    expect(
+      videoWrites().some((m) => m.op === "update" && m.payload?.poster_time_s === null),
+    ).toBe(false);
+  });
+
+  const D = "44444444-4444-4444-4444-444444444444";
+  const E = "55555555-5555-5555-5555-555555555555";
+  const F = "66666666-6666-6666-6666-666666666666";
+
+  it.each([
+    ["empty", []],
+    ["a duplicate", [A, A]],
+    ["a non-uuid", [A, "not-a-uuid"]],
+    ["6 ids", [A, B, C, D, E, F]],
+  ])("videos = %s → 400 invalid_video_set, no post_video write", async (_label, videos) => {
+    asAdmin();
+    seedVideoPost([
+      { id: A, sort_order: 0 },
+      { id: B, sort_order: 1 },
+      { id: C, sort_order: 2 },
+    ]);
+    const r = await PATCH(patchReq({ videos }), ctx("p1"));
+    expect(r.status).toBe(400);
+    const j = await r.json();
+    expect(j.error.code).toBe("invalid_video_set");
+    expect(videoWrites()).toHaveLength(0);
+  });
+
+  it("an id not among the post's current rows → 400 invalid_video_set, no writes", async () => {
+    asAdmin();
+    seedVideoPost([{ id: A, sort_order: 0 }]);
+    const r = await PATCH(patchReq({ videos: [A, B] }), ctx("p1"));
+    expect(r.status).toBe(400);
+    const j = await r.json();
+    expect(j.error.code).toBe("invalid_video_set");
+    expect(videoWrites()).toHaveLength(0);
+  });
+
+  it("knownVideos mismatch → 409 video_set_stale, no writes", async () => {
+    asAdmin();
+    seedVideoPost([
+      { id: A, sort_order: 0 },
+      { id: B, sort_order: 1 },
+    ]);
+    const r = await PATCH(patchReq({ videos: [B, A], knownVideos: [A] }), ctx("p1"));
+    expect(r.status).toBe(409);
+    const j = await r.json();
+    expect(j.error.code).toBe("video_set_stale");
+    expect(videoWrites()).toHaveLength(0);
+  });
+
+  it("videos on a non-video post → 409 not_video_post", async () => {
+    asAdmin();
+    state.tables.post = { select: { single: { id: "p1", type: "photo" } } };
+    const r = await PATCH(patchReq({ videos: [A] }), ctx("p1"));
+    expect(r.status).toBe(409);
+    const j = await r.json();
+    expect(j.error.code).toBe("not_video_post");
+  });
+
+  it("poster_time_s on a video post also updates the slot-0 post_video row", async () => {
+    asAdmin();
+    seedVideoPost([{ id: A, sort_order: 0 }], { mutate: true });
+    const r = await PATCH(patchReq({ poster_time_s: 4.2 }), ctx("p1"));
+    expect(r.status).toBe(200);
+    expect(videoWrites()).toContainEqual(
+      expect.objectContaining({
+        op: "update",
+        payload: { poster_time_s: 4.2 },
+        filters: expect.arrayContaining([{ column: "id", value: A }]),
+      }),
+    );
+    // ...and the ordinary `post` column write still happened, unchanged.
+    const postUpdate = state.calls.mutations.find((m) => m.table === "post" && m.op === "update");
+    expect(postUpdate?.payload).toMatchObject({ poster_time_s: 4.2 });
+  });
+
+  it("poster_time_s on a NON-video post does not touch post_video at all", async () => {
+    asAdmin();
+    state.tables.post = {
+      select: { single: { id: "p1", type: "photo" } },
+      mutate: { single: { id: "p1" } },
+    };
+    const r = await PATCH(patchReq({ poster_time_s: 4.2 }), ctx("p1"));
+    expect(r.status).toBe(200);
+    expect(videoWrites()).toHaveLength(0);
+  });
+
+  it("a Mux cleanup failure never turns a successful save into a non-200", async () => {
+    asAdmin();
+    seedVideoPost([
+      { id: A, sort_order: 0 },
+      { id: B, sort_order: 1 },
+    ]);
+    // Simulates the swallowed-failure contract `cleanupMuxVideo` itself
+    // guarantees (see lib/mux.test.ts) — the route must not depend on it
+    // rejecting cleanly to still return the save's own 200.
+    cleanupMuxVideo.mockResolvedValueOnce(undefined);
+    const r = await PATCH(patchReq({ videos: [A] }), ctx("p1"));
+    expect(r.status).toBe(200);
+  });
+
+  it("videos-only request skips the post-table UPDATE and reads the row instead", async () => {
+    asAdmin();
+    seedVideoPost([
+      { id: A, sort_order: 0 },
+      { id: B, sort_order: 1 },
+    ]);
+    const r = await PATCH(patchReq({ videos: [B, A] }), ctx("p1"));
+    expect(r.status).toBe(200);
+    expect(state.calls.mutations.some((m) => m.table === "post" && m.op === "update")).toBe(false);
   });
 });

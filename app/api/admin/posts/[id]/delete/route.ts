@@ -1,5 +1,6 @@
 import { requireAdmin } from "@/lib/auth/admin";
 import { noContent, fail } from "@/lib/api/envelope";
+import { loadPostVideos, cleanupVideos } from "@/lib/posts/videos";
 
 // DELETE /api/admin/posts/:id/delete — HARD delete a post of ANY status.
 //
@@ -32,7 +33,14 @@ export async function DELETE(_req: Request, { params }: { params: Promise<{ id: 
   if (readErr) return fail("delete_failed", readErr.message, 400);
   if (!post) return fail("not_found", "Post not found.", 404);
 
+  // ENG-1597 — read the video rows BEFORE the delete, so there is something to
+  // hand to Mux cleanup once it has actually committed. A read failure
+  // (including a not-yet-deployed table) reads as "no videos to clean up" —
+  // best-effort courtesy, not a precondition for the delete itself.
+  const { rows: videoRows } = await loadPostVideos(sb, id);
+
   const { error } = await sb.from("post").delete().eq("id", id);
   if (error) return fail("delete_failed", error.message, 400);
+  await cleanupVideos(videoRows); // best-effort; the delete has already committed
   return noContent();
 }

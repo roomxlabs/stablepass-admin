@@ -755,6 +755,33 @@ const POST_MEDIA_FIXTURES = {
   ],
 };
 
+// ENG-1597 — `post_video`, the multi-video sibling of `post_media` above.
+// UNLIKE `POST_MEDIA_FIXTURES` (a read-only fixture backing one loader read),
+// this is a genuinely MUTABLE in-memory table: the create/append/reorder/
+// remove admin routes all insert, upsert, or delete rows here directly, so
+// the mock has to behave like the real table across a whole spec rather than
+// just answer one canned read. Starts empty; rows are created by whichever
+// admin route runs first in a given spec.
+const POST_VIDEO_ROWS = [];
+
+function makePostVideoRow(partial) {
+  const now = new Date().toISOString();
+  return {
+    id: partial.id ?? crypto.randomUUID(),
+    post_id: partial.post_id ?? null,
+    sort_order: partial.sort_order ?? 0,
+    status: partial.status ?? "uploading",
+    mux_upload_id: partial.mux_upload_id ?? null,
+    mux_asset_id: partial.mux_asset_id ?? null,
+    mux_playback_id: partial.mux_playback_id ?? null,
+    poster_url: partial.poster_url ?? null,
+    poster_time_s: partial.poster_time_s ?? null,
+    aspect_ratio: partial.aspect_ratio ?? null,
+    created_at: now,
+    updated_at: now,
+  };
+}
+
 // Active horses for the quiet-horse check. h1 posted this week (loud); h2/h3
 // stale; h5 never posted — so three quiet horses, one retired (matches mockup).
 const DASH_HORSES = [
@@ -1468,6 +1495,130 @@ export function startMockSupabase() {
       sendJson(res, 200, sorted);
       return;
     }
+
+    // ENG-1597 — /rest/v1/post_video, the multi-video sibling of post_media
+    // just above, for exactly the same reasons:
+    //
+    // EXACT pathname match, not `startsWith` — "post_video" starts with
+    // "/rest/v1/post" and would otherwise fall into (or shadow) one of the
+    // `startsWith("/rest/v1/post")` branches around it. In particular the
+    // posts LIBRARY branch immediately below this one keys on
+    // `url.search.includes("status")` — and every admin route here selects a
+    // `status` COLUMN (`VIDEO_ROW_FIELDS` = "id,sort_order,status,..."), so an
+    // unguarded ordering would make the library branch's own discriminator
+    // fire by accident and answer with post-library fixtures instead.
+    //
+    // Its own branch (not the generic read-only `/rest/v1/<table>` dispatcher
+    // further down) because every admin route here WRITES: create mints rows,
+    // append mints more, PATCH reorders/removes/upserts, publish reads
+    // statuses. Placed ahead of that dispatcher for the same reason
+    // `post_label`/`post_byline` are.
+    if (url.pathname === "/rest/v1/post_video") {
+      const accept = req.headers["accept"] ?? "";
+      const idParam = url.searchParams.get("id");
+      const postIdParam = url.searchParams.get("post_id");
+
+      if (req.method === "GET") {
+        let rows = POST_VIDEO_ROWS;
+        // Anchored (`/rest/v1/<table>` house rule): `id=eq.` must never also
+        // catch a bare `post_id=eq.` filter, and vice versa.
+        if (idParam && idParam.startsWith("eq.")) {
+          const wanted = idParam.slice(3);
+          rows = rows.filter((r) => r.id === wanted);
+        } else if (postIdParam && postIdParam.startsWith("eq.")) {
+          const wanted = postIdParam.slice(3);
+          rows = rows.filter((r) => r.post_id === wanted);
+        }
+        const sorted = [...rows].sort((a, b) => a.sort_order - b.sort_order);
+        if (accept.includes("pgrst.object")) {
+          sendJson(res, 200, sorted[0] ?? null);
+        } else {
+          sendJson(res, 200, sorted);
+        }
+        return;
+      }
+
+      if (req.method === "POST") {
+        // Use the ALREADY-DRAINED `rawBody` — never a second `drainBody(req)`
+        // (it hangs the request forever; see the gotcha this file's other
+        // write branches all follow).
+        let parsed = {};
+        try {
+          parsed = JSON.parse(rawBody || "{}");
+        } catch {
+          parsed = {};
+        }
+        const incoming = Array.isArray(parsed) ? parsed : [parsed];
+        // `.upsert(rows, { onConflict: "id" })` (the PATCH reorder) sends the
+        // conflict target as `on_conflict=id` and expects a MERGE by that PK;
+        // a plain `.insert(rows)` (create / append) has no such param and
+        // always mints a fresh row per entry.
+        const onConflict = url.searchParams.get("on_conflict");
+        const written = incoming.map((entry) => {
+          if (onConflict === "id" && entry.id) {
+            const existing = POST_VIDEO_ROWS.find((r) => r.id === entry.id);
+            if (existing) {
+              Object.assign(existing, entry, { updated_at: new Date().toISOString() });
+              return existing;
+            }
+          }
+          const row = makePostVideoRow(entry);
+          POST_VIDEO_ROWS.push(row);
+          return row;
+        });
+        sendJson(res, 201, accept.includes("pgrst.object") ? written[0] : written);
+        return;
+      }
+
+      if (req.method === "PATCH" && idParam && idParam.startsWith("eq.")) {
+        const wanted = idParam.slice(3);
+        const row = POST_VIDEO_ROWS.find((r) => r.id === wanted);
+        if (!row) {
+          sendJson(res, 200, []);
+          return;
+        }
+        let parsed = {};
+        try {
+          parsed = JSON.parse(rawBody || "{}");
+        } catch {
+          parsed = {};
+        }
+        Object.assign(row, parsed, { updated_at: new Date().toISOString() });
+        sendJson(res, 200, accept.includes("pgrst.object") ? row : [row]);
+        return;
+      }
+
+      if (req.method === "DELETE") {
+        // Every shape the admin routes actually send: `id=in.(...)` alone,
+        // `id=in.(...)` PLUS `post_id=eq.` (the mint-rollback / removed-slot
+        // deletes), or a bare `post_id=eq.` (a whole post's rows). Each
+        // present filter narrows the match; absent ones are simply not
+        // checked, exactly like a real `.eq()`/`.in()` chain would.
+        const wantedIds =
+          idParam && idParam.startsWith("in.")
+            ? idParam
+                .slice(3)
+                .replace(/^\(|\)$/g, "")
+                .split(",")
+                .filter(Boolean)
+            : null;
+        const wantedSingleId = idParam && idParam.startsWith("eq.") ? idParam.slice(3) : null;
+        const wantedPostId = postIdParam && postIdParam.startsWith("eq.") ? postIdParam.slice(3) : null;
+
+        const removed = [];
+        for (let i = POST_VIDEO_ROWS.length - 1; i >= 0; i--) {
+          const r = POST_VIDEO_ROWS[i];
+          if (wantedIds && !wantedIds.includes(r.id)) continue;
+          if (wantedSingleId && r.id !== wantedSingleId) continue;
+          if (wantedPostId && r.post_id !== wantedPostId) continue;
+          removed.push(r);
+          POST_VIDEO_ROWS.splice(i, 1);
+        }
+        sendJson(res, 200, accept.includes("pgrst.object") ? (removed[0] ?? null) : removed);
+        return;
+      }
+    }
+
     // Posts library (T7 / ENG-177). The list read selects `status` — which the
     // trainers' post read (source_trainer_id,published_at,created_at) does not —
     // so use that to serve the full post-library fixtures here, ahead of the

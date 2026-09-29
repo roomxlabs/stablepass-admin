@@ -63,6 +63,30 @@ describe("POST /api/admin/posts/:id/schedule", () => {
     const r = await schedule(bodyReq({ scheduledFor: future() }), ctx("p1"));
     expect(r.status).toBe(409);
   });
+
+  // ENG-1597 — the same publish gate, one step earlier.
+  it("409 videos_not_ready for a video post with an unfinished video, no schedule update", async () => {
+    asAdmin();
+    state.tables.post = { select: { single: { status: "draft", type: "video" } } };
+    state.tables.post_video = { select: { rows: [{ id: "pv1", status: "errored" }] } };
+    const r = await schedule(bodyReq({ scheduledFor: future() }), ctx("p1"));
+    expect(r.status).toBe(409);
+    const j = await r.json();
+    expect(j.error.code).toBe("videos_not_ready");
+    expect(state.calls.mutations.some((m) => m.table === "post" && m.op === "update")).toBe(false);
+  });
+
+  it("a video post with every video ready still schedules", async () => {
+    asAdmin();
+    const when = future();
+    state.tables.post = {
+      select: { single: { status: "draft", type: "video" } },
+      mutate: { single: { id: "p1", status: "scheduled", scheduled_for: when } },
+    };
+    state.tables.post_video = { select: { rows: [{ id: "pv1", status: "ready" }] } };
+    const r = await schedule(bodyReq({ scheduledFor: when }), ctx("p1"));
+    expect(r.status).toBe(200);
+  });
 });
 
 describe("POST /api/admin/posts/:id/unpublish", () => {
@@ -116,6 +140,29 @@ describe("POST /api/admin/posts/:id/republish", () => {
     state.tables.post = { select: { single: { status: "published" } } };
     const r = await republish(new Request("http://t"), ctx("p1"));
     expect(r.status).toBe(409);
+  });
+
+  // ENG-1597 — the same publish gate, before the flip back to published.
+  it("409 videos_not_ready for a video post with an unfinished video, no republish update", async () => {
+    asAdmin();
+    state.tables.post = { select: { single: { status: "unpublished", type: "video" } } };
+    state.tables.post_video = { select: { rows: [{ id: "pv1", status: "uploading" }] } };
+    const r = await republish(new Request("http://t"), ctx("p1"));
+    expect(r.status).toBe(409);
+    const j = await r.json();
+    expect(j.error.code).toBe("videos_not_ready");
+    expect(state.calls.mutations.some((m) => m.table === "post" && m.op === "update")).toBe(false);
+  });
+
+  it("a video post with every video ready still republishes", async () => {
+    asAdmin();
+    state.tables.post = {
+      select: { single: { status: "unpublished", type: "video" } },
+      mutate: { single: { id: "p1", status: "published" } },
+    };
+    state.tables.post_video = { select: { rows: [{ id: "pv1", status: "ready" }] } };
+    const r = await republish(new Request("http://t"), ctx("p1"));
+    expect(r.status).toBe(200);
   });
 });
 

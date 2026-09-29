@@ -2,6 +2,7 @@ import { requireAdmin } from "@/lib/auth/admin";
 import { ok, fail } from "@/lib/api/envelope";
 import { dispatchNewPost } from "@/lib/push/dispatch";
 import { isSubject } from "@/lib/posts/subject";
+import { videoGate } from "@/lib/posts/videos";
 
 /**
  * The push-dispatch subject key for a post, or null when it must not dispatch.
@@ -47,7 +48,7 @@ export async function POST(_req: Request, { params }: { params: Promise<{ id: st
 
   const { data: post } = (await sb
     .from("post")
-    .select("id,subject,horse_id,source_trainer_id,status,title,body,published_at")
+    .select("id,subject,horse_id,source_trainer_id,status,title,body,published_at,type")
     .eq("id", id)
     .maybeSingle()) as {
     data: {
@@ -63,11 +64,21 @@ export async function POST(_req: Request, { params }: { params: Promise<{ id: st
       title: string | null;
       body: string | null;
       published_at: string | null;
+      type: string;
     } | null;
   };
   if (!post) return fail("not_found", "Post not found.", 404);
   if (post.status !== "draft" && post.status !== "scheduled")
     return fail("invalid_status", `A ${post.status} post cannot be published.`, 409);
+
+  // ENG-1597 — a video post cannot go live carrying an unfinished video: the
+  // member card has nothing to play. Checked AFTER the status gate (a
+  // draft/scheduled precondition still comes first) and BEFORE the publish
+  // write itself, so a not-ready video never lets the update through.
+  if (post.type === "video") {
+    const gate = await videoGate(sb, id);
+    if (gate) return gate;
+  }
 
   // Defence-in-depth: a post that has EVER been published (published_at
   // non-null) must never re-notify members, even if a future ticket adds a

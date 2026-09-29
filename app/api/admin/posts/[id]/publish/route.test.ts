@@ -428,3 +428,78 @@ describe("POST /api/admin/posts/:id/publish — subject-keyed dispatch (ENG-1269
     spy.mockRestore();
   });
 });
+
+// ---------------------------------------------------------------------------
+// ENG-1597 — the video-post publish gate: a not-`ready` video row must block
+// the flip to published, and the update/push must never even be attempted.
+// ---------------------------------------------------------------------------
+describe("POST /api/admin/posts/:id/publish — video gate (ENG-1597)", () => {
+  it("a video post with one uploading row → 409 videos_not_ready, no post update, no push", async () => {
+    asAdmin();
+    process.env.PUSH_DISPATCH_SECRET = "test-secret";
+    state.tables.post = {
+      select: {
+        single: { id: "p1", horse_id: "h1", status: "draft", title: "T", body: "B", published_at: null, type: "video" },
+      },
+    };
+    state.tables.post_video = {
+      select: { rows: [{ id: "pv1", status: "uploading" }] },
+    };
+
+    const r = await POST(new Request("http://t"), ctx("p1"));
+    expect(r.status).toBe(409);
+    const j = await r.json();
+    expect(j.error.code).toBe("videos_not_ready");
+    expect(j.error.notReady).toEqual(["pv1"]);
+    expect(state.calls.mutations.some((m) => m.table === "post" && m.op === "update")).toBe(false);
+    expect(invokeCalls).toHaveLength(0);
+  });
+
+  it("every video ready → publish proceeds as normal", async () => {
+    asAdmin();
+    process.env.PUSH_DISPATCH_SECRET = "test-secret";
+    state.tables.post = {
+      select: {
+        single: { id: "p1", horse_id: "h1", status: "draft", title: "T", body: "B", published_at: null, type: "video" },
+      },
+      mutate: { single: { id: "p1", status: "published", published_at: "2026-07-11T00:00:00.000Z" } },
+    };
+    state.tables.post_video = { select: { rows: [{ id: "pv1", status: "ready" }] } };
+    state.functions = { "push-dispatch": { data: { notificationsSent: 1 } } };
+
+    const r = await POST(new Request("http://t"), ctx("p1"));
+    expect(r.status).toBe(200);
+    const j = await r.json();
+    expect(j.data.status).toBe("published");
+  });
+
+  it("a non-video post never reads post_video at all", async () => {
+    asAdmin();
+    process.env.PUSH_DISPATCH_SECRET = "test-secret";
+    state.tables.post = {
+      select: {
+        single: { id: "p1", horse_id: "h1", status: "draft", title: "T", body: "B", published_at: null, type: "photo" },
+      },
+      mutate: { single: { id: "p1", status: "published", published_at: "2026-07-11T00:00:00.000Z" } },
+    };
+
+    const r = await POST(new Request("http://t"), ctx("p1"));
+    expect(r.status).toBe(200);
+    expect(state.calls.from).not.toContain("post_video");
+  });
+
+  it("a missing post_video table lets the publish proceed (pre-deploy compat)", async () => {
+    asAdmin();
+    process.env.PUSH_DISPATCH_SECRET = "test-secret";
+    state.tables.post = {
+      select: {
+        single: { id: "p1", horse_id: "h1", status: "draft", title: "T", body: "B", published_at: null, type: "video" },
+      },
+      mutate: { single: { id: "p1", status: "published", published_at: "2026-07-11T00:00:00.000Z" } },
+    };
+    state.tables.post_video = { select: { error: { code: "42P01" } } };
+
+    const r = await POST(new Request("http://t"), ctx("p1"));
+    expect(r.status).toBe(200);
+  });
+});

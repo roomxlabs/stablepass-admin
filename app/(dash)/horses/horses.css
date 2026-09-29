@@ -184,7 +184,14 @@ textarea.adm-input { min-height: 110px; resize: vertical; font-family: var(--fon
    single-line flex broke INSIDE each pair ("3.4k" over "followers"). Keep each
    count + label together and wrap between the pairs instead (ENG-1583). Scoped
    to the 6-column range so the <1280px layouts are untouched. */
+/* The 6-column card is ~141px wide at 1280, and the card clips (overflow:
+   hidden), so a long ONE-word name ("Kingstonheathhorse", 18 chars — the
+   Racing Australia max) was cut off. Tighten the padding + step the name down
+   a touch so most names fit whole, and let a name that still doesn't fit break
+   inside the word rather than be clipped (ENG-1583 review). */
 @media (width >= 1280px) {
+  .horse-card-adm .body { padding: 12px; }
+  .horse-card-adm .name { font-size: 16px; overflow-wrap: anywhere; }
   .horse-card-adm .stats { flex-wrap: wrap; row-gap: 4px; }
   .horse-card-adm .stats span { white-space: nowrap; }
 }

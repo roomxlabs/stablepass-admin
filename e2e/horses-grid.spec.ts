@@ -52,8 +52,17 @@ for (const width of [1280, 1440]) {
     expect(await firstRowCount(page, ".horse-card-adm")).toBe(6);
     expect(await skeletonFirstRow(page)).toBe(6);
 
+    // The fixture names are all short, so swap real-length single-word names
+    // into the first two cards: "Kingstonheathhorse" is 18 chars, the Racing
+    // Australia maximum; "Superstitiousness" is a long dictionary word. Both
+    // were clipped by the card's overflow:hidden at 6 columns (ENG-1583 review).
+    await page.$$eval(".horse-card-adm .name", (names) => {
+      names[0].textContent = "Kingstonheathhorse";
+      names[1].textContent = "Superstitiousness";
+    });
+
     // The tile must still read at 6 columns: nothing is clipped horizontally.
-    // The name may wrap; the stats line wraps BETWEEN its "N followers" /
+    // The name may wrap (a long one-word name breaks inside the word); the stats line wraps BETWEEN its "N followers" /
     // "N posts" pairs (each pair is nowrap), so a pair wider than the card
     // would show up here as overflow.
     const overflow = await page.$$eval(".horse-card-adm", (cards) =>
@@ -62,6 +71,11 @@ for (const width of [1280, 1440]) {
         const stats = c.querySelector(".stats") as HTMLElement;
         const bad: string[] = [];
         if (name.scrollWidth > name.clientWidth + 1) bad.push(`name:${name.textContent}`);
+        // Belt and braces: the name's text must end inside the card's box.
+        const range = document.createRange();
+        range.selectNodeContents(name);
+        const textRight = Math.max(...Array.from(range.getClientRects(), (r) => r.right));
+        if (textRight > name.getBoundingClientRect().right + 1) bad.push(`name-edge:${name.textContent}`);
         if (stats.scrollWidth > stats.clientWidth + 1) bad.push(`stats:${name.textContent}`);
         return bad;
       }),

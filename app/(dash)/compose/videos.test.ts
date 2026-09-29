@@ -18,6 +18,9 @@ import {
   videoSaveBlockReason,
   videoUploadTargets,
   waitingMessage,
+  VIDEO_SET_STALE_MESSAGE,
+  isVideoSetStale,
+  reloadVideoSet,
   type ComposeVideo,
 } from "./videos";
 
@@ -238,5 +241,43 @@ describe("tiles from existing rows", () => {
     expect(tileStateLabel(tile("a", { state: "uploading", pct: 42 }))).toBe("uploading 42%");
     expect(tileStateLabel(tile("a", { state: "processing" }))).toBe("processing…");
     expect(tileStateLabel(tile("a", { state: "failed" }))).toBe("failed — remove and re-add");
+  });
+});
+
+// ENG-1611 — a `409 video_set_stale` from the MV-A1 PATCH: another admin added
+// or removed a video since this screen loaded. The screen reloads the server
+// set into the tiles and says so, instead of a dead-end error.
+describe("video_set_stale", () => {
+  it("recognises the code structurally, and nothing else", () => {
+    expect(isVideoSetStale({ code: "video_set_stale", status: 409 })).toBe(true);
+    expect(isVideoSetStale({ code: "videos_not_ready" })).toBe(false);
+    expect(isVideoSetStale(new Error("video_set_stale"))).toBe(false);
+    expect(isVideoSetStale(null)).toBe(false);
+  });
+
+  it("the message is the ticket's words", () => {
+    expect(VIDEO_SET_STALE_MESSAGE).toBe("This post's videos changed elsewhere — reloaded");
+  });
+
+  it("replaces the tiles with the server set, in the server's order, keeping a surviving tile's local media", () => {
+    const local = [tile("a"), tile("b"), tile("c", { state: "processing" })];
+    const { tiles, dropped } = reloadVideoSet(local, [
+      { id: "id-new", sortOrder: 1, status: "uploading", posterUrl: null, playbackUrl: null },
+      { id: "id-c", sortOrder: 0, status: "ready", posterUrl: "p", playbackUrl: "h" },
+    ]);
+    expect(tiles.map((t) => t.id)).toEqual(["id-c", "id-new"]);
+    // The surviving tile keeps its key + local blob, and takes the server status.
+    expect(tiles[0]).toMatchObject({ key: "c", localUrl: "blob:c", state: "ready", posterUrl: "p", playbackUrl: "h" });
+    // A row this screen never saw becomes a fresh tile.
+    expect(tiles[1]).toMatchObject({ key: "existing-id-new", state: "processing", localUrl: null });
+    expect(dropped.map((t) => t.key)).toEqual(["a", "b"]);
+  });
+
+  it("an id-less (legacy) tile is dropped", () => {
+    const { tiles, dropped } = reloadVideoSet([tile("a", { id: null })], [
+      { id: "x", sortOrder: 0, status: "ready", posterUrl: null, playbackUrl: null },
+    ]);
+    expect(tiles.map((t) => t.id)).toEqual(["x"]);
+    expect(dropped.map((t) => t.key)).toEqual(["a"]);
   });
 });

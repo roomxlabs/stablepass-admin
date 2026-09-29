@@ -53,13 +53,17 @@ import {
   MAX_VIDEOS,
   VIDEO_POLL_MS,
   VIDEO_POLL_MAX_MS,
+  VIDEO_SET_STALE_MESSAGE,
+  VIDEO_SET_STALE_RELOAD_FAILED,
   anyUploading,
   applyServerStatus,
   coverSource,
   moveVideo,
   nonVideoError,
   plural,
+  isVideoSetStale,
   pollableIds,
+  reloadVideoSet,
   removeVideoAt,
   slot0Changed,
   tileFromRow,
@@ -72,6 +76,7 @@ import {
   videoUploadTargets,
   waitingMessage,
   type ComposeVideo,
+  type VideoStatusRow,
   type VideoUploadTarget,
 } from "./videos";
 import type {
@@ -1697,6 +1702,38 @@ export default function ComposeScreen({
   }
 
   /**
+   * ENG-1611 — a save's PATCH came back `409 video_set_stale`: another admin
+   * added or removed a video on this post since the screen loaded, so the set
+   * we sent describes nothing the server holds. Refetch the server's set, put
+   * it in the tiles AND in the known ids the next save diffs against, and say
+   * what happened — rather than a dead-end error the operator can only escape
+   * by reloading the page. Returns the message to show, or null when `e` is
+   * any other error (the caller's own message then applies).
+   */
+  async function reloadStaleVideoSet(e: unknown, postId: string | null | undefined): Promise<string | null> {
+    if (!isVideoSetStale(e)) return null;
+    let rows: VideoStatusRow[] | null = null;
+    if (postId) {
+      try {
+        rows = await fetchPostVideos(postId);
+      } catch {
+        rows = null;
+      }
+    }
+    if (!rows) return VIDEO_SET_STALE_RELOAD_FAILED;
+    const { tiles, dropped } = reloadVideoSet(videos, rows);
+    abortUploads(dropped.map((v) => v.key));
+    revokeVideoUrls(dropped);
+    if (slot0Changed(videos, tiles)) onCoverChanged(tiles[0]);
+    const ids = tiles.flatMap((v) => (v.id ? [v.id] : []));
+    setVideos(tiles);
+    setServerVideoIds(ids);
+    serverIdsRef.current = ids;
+    setPendingAppends(pendingAppendsRef.current.filter((id) => ids.includes(id)));
+    return VIDEO_SET_STALE_MESSAGE;
+  }
+
+  /**
    * ENG-1598 — PUT each tile's bytes straight to its own Mux direct-upload URL,
    * IN PARALLEL (a video set is a handful of large files, unlike the ten-photo
    * Storage case), each settling its own tile. A tile whose bytes land waits
@@ -1876,7 +1913,7 @@ export default function ComposeScreen({
           await patchPost(postId, order);
         } catch (e) {
           if (stale()) return;
-          setVideoError((e as Error).message);
+          setVideoError((await reloadStaleVideoSet(e, postId)) ?? (e as Error).message);
           return;
         }
         known = order.videos;
@@ -1890,7 +1927,8 @@ export default function ComposeScreen({
       targets = await requestVideoUploads(postId, picked.length);
     } catch (e) {
       if (stale()) return;
-      setVideoError((e as Error).message);
+      // ENG-1611 — the append route 409s `video_set_stale` too (two admins appending at once).
+      setVideoError((await reloadStaleVideoSet(e, postId)) ?? (e as Error).message);
       return;
     } finally {
       setAppending(false);
@@ -2118,6 +2156,7 @@ export default function ComposeScreen({
       setAction({
         kind: "error",
         message:
+          (await reloadStaleVideoSet(e, draft?.id)) ??
           videosNotReadyMessage(e) ??
           (next === "schedule" ? scheduleErrorMessage(e) : (e as Error).message),
       });
@@ -2347,7 +2386,10 @@ export default function ComposeScreen({
       router.push("/posts");
       router.refresh();
     } catch (e) {
-      setAction({ kind: "error", message: (e as Error).message });
+      setAction({
+        kind: "error",
+        message: (await reloadStaleVideoSet(e, initial.id)) ?? (e as Error).message,
+      });
     }
   }
 
@@ -2393,7 +2435,11 @@ export default function ComposeScreen({
       router.push("/posts");
       router.refresh();
     } catch (e) {
-      setAction({ kind: "error", message: videosNotReadyMessage(e) ?? (e as Error).message });
+      setAction({
+        kind: "error",
+        message:
+          (await reloadStaleVideoSet(e, initial.id)) ?? videosNotReadyMessage(e) ?? (e as Error).message,
+      });
     }
   }
 
@@ -2454,7 +2500,11 @@ export default function ComposeScreen({
       router.push("/posts");
       router.refresh();
     } catch (e) {
-      setAction({ kind: "error", message: videosNotReadyMessage(e) ?? scheduleErrorMessage(e) });
+      setAction({
+        kind: "error",
+        message:
+          (await reloadStaleVideoSet(e, initial.id)) ?? videosNotReadyMessage(e) ?? scheduleErrorMessage(e),
+      });
     }
   }
 

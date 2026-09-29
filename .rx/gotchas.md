@@ -2235,3 +2235,22 @@ columns are simply clipped — assert every element's right edge ≤ viewport, n
   ENG-1269 subject tag) — stack extra badges on their own line.
 - Running the e2e suite rewrites the committed baselines of OTHER specs (`e2e/__screenshots__/*.png`); revert
   those before committing so a ticket's diff carries only its own screenshots.
+## MV-A2 fix (ENG-1611): legacy reconcile, loader test, poll pins, nowrap grid inflation
+- **A `post_video` write that sets `mux_playback_id` must carry `poster_url` / `poster_time_s` / `aspect_ratio`.**
+  The slot-0 mirror fires on that column and copies the row's (NULL) poster columns over `post`.
+  `reconcilePostVideos`' legacy branch now reads `post` first ("post wins"). A failed `post` read skips the
+  fallback, and when `post.mux_playback_id` is already set it copies all five columns with no Mux call.
+  `PostVideoWriteDb` gained `select().eq().maybeSingle()`, so a hand-rolled fake must implement it.
+- **`page.tsx` is testable:** `await ComposePage({ searchParams: Promise.resolve({ id }) })`, mock
+  `@/lib/auth/admin` to hand back `makeFakeClient(state)`, and mock `./ComposeScreen`. The returned
+  element's `.props.initial` is what the loader built (`page.test.tsx`). Mock `@/lib/mux`, never call real Mux.
+- **Poll pins need plain `vi.useFakeTimers()`, not `{ shouldAdvanceTime: true }`,** plus
+  `act(() => vi.advanceTimersByTimeAsync(ms))`. With real time leaking in you cannot count requests per window.
+- **`white-space: nowrap` inside a `1.4fr 1fr` grid inflates the LEFT track.** An `fr` track's minimum is its
+  min-content, and a nowrap line's min-content is the whole line, even with `min-width: 0` +
+  `overflow: hidden` on the flex item. The compose form column ran ~897px instead of the intended 558px
+  at 1280. So letting `.uploadMeta` wrap also re-proportions the grid. That changes the eng1598 shots, and
+  also eng1584 `01-before-pick` / `02-after-pick`, which this ticket's surface did not let it re-shoot.
+- Phone baselines (`eng1590/phone-compose-*`, `phone-posts`) differ from a fresh run by the same pixel
+  count whether or not this ticket's CSS reaches phone width. The phone rule already wrapped the line, so
+  the difference is pre-existing drift. Measured, not proven against a base run.

@@ -387,3 +387,16 @@ describe("the Step 3 drop zone stacks icon / title / subtitle / button (ENG-1299
     expect(rule(".dropIcon")).toMatch(/margin:\s*0\s+auto\s+12px/);
   });
 });
+
+describe("the Step 3 upload meta line never truncates its status (ENG-1611)", () => {
+  // At 1280 a multi-video cover's line — "name · size · cover of 3 · uploaded
+  // · processing" — outgrew the row beside "Replace all" / "Remove" and was
+  // ellipsised to "· uploaded · proces…", hiding the one word that matters.
+  it("wraps instead of clipping", () => {
+    const meta = rule(".uploadMeta");
+    expect(meta).not.toMatch(/white-space:\s*nowrap/);
+    expect(meta).not.toMatch(/text-overflow:\s*ellipsis/);
+    expect(meta).not.toMatch(/overflow:\s*hidden/);
+    expect(meta).toMatch(/overflow-wrap:\s*anywhere/);
+  });
+});

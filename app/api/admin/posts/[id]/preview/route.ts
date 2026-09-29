@@ -1,6 +1,7 @@
 import { requireAdmin } from "@/lib/auth/admin";
 import { ok, fail } from "@/lib/api/envelope";
-import { resolveVideoPlayback } from "@/lib/mux-playback";
+import { muxSignedStreamUrl, resolveVideoPlayback, type ResolvedPlayback } from "@/lib/mux-playback";
+import { readPostVideoStatus } from "@/lib/posts/video-status";
 import { subjectLabel } from "@/lib/posts/subject";
 
 // GET /api/admin/posts/:id/preview — render data for the mobile + web preview
@@ -35,9 +36,9 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
     byline: post.byline as string | null,
   });
 
-  const playback =
+  const playback: ResolvedPlayback =
     post.type === "video"
-      ? await resolveVideoPlayback(sb, { id: post.id, mux_playback_id: post.mux_playback_id })
+      ? await videoPlayback(sb, { id: post.id, mux_playback_id: post.mux_playback_id })
       : { playbackId: post.mux_playback_id, playbackUrl: null };
 
   const frame = {
@@ -67,4 +68,31 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
   };
 
   return ok({ mobile: frame, web: frame });
+}
+
+/**
+ * ENG-1609 — the preview's video reconcile writes the `post_video` ROW, never
+ * `post`. A `post`-only write (the old `resolveVideoPlayback` call) left a
+ * backfilled slot-0 row NULL, and the next `post_video` write (poster PATCH,
+ * reorder, append) mirrored that NULL back over `post`, erasing the video.
+ * `readPostVideoStatus(..., { reconcile: true })` matches the row by its own
+ * passthrough, falls back to passthrough = `post.id` for a legacy row, and
+ * keeps the post's own values ("post wins", ENG-1611); the deferred mirror
+ * carries slot 0 onto `post`. Same shape as the compose edit loader.
+ *
+ * - `post_video` missing (pre-migration): no mirror to fight, so the
+ *   post-level `resolveVideoPlayback` still reconciles onto `post`.
+ * - any other read failure: sign what `post` holds, write nothing.
+ */
+async function videoPlayback(
+  sb: Parameters<typeof readPostVideoStatus>[0],
+  post: { id: string; mux_playback_id: string | null },
+): Promise<ResolvedPlayback> {
+  const result = await readPostVideoStatus(sb, post.id, { reconcile: true });
+  if ("unavailable" in result) return resolveVideoPlayback(sb, post);
+
+  const stored = post.mux_playback_id ? muxSignedStreamUrl(post.mux_playback_id) : null;
+  if ("error" in result) return { playbackId: post.mux_playback_id, playbackUrl: stored };
+  // Slot 0 IS the post's video; its URL is fresher when `post` lags the mirror.
+  return { playbackId: post.mux_playback_id, playbackUrl: result.videos[0]?.playbackUrl ?? stored };
 }

@@ -218,7 +218,10 @@ export default async function DashboardPage() {
           {recent.length === 0 ? (
             <div className="adm-empty">No published posts yet.</div>
           ) : (
-            <table className="adm-table">
+            // `stack-phone` = the ENG-1590 stacked-card treatment below 768px
+            // (globals.css); `data-label` captions a cell once its column
+            // header is gone. Engagement reads "12 reactions" on its own.
+            <table className="adm-table stack-phone" data-testid="recent-posts">
               <thead>
                 <tr>
                   <th>Post</th>
@@ -245,7 +248,7 @@ export default async function DashboardPage() {
                         <div className="row-sub">{typeLabel(p.type)}</div>
                       </div>
                     </td>
-                    <td>
+                    <td className="stack-full" data-label="Posted as">
                       {/* `text` is the formatter's own one-line flattening —
                           "Mahogany", "Sam Rice · Trainer", "stablepass ·
                           Newsroom" — so this cell can never disagree with the
@@ -258,7 +261,7 @@ export default async function DashboardPage() {
                         <div className="row-sub">{p.subject.detail}</div>
                       )}
                     </td>
-                    <td>{timeAgo(p.publishedAt)}</td>
+                    <td data-label="Published">{timeAgo(p.publishedAt)}</td>
                     <td>
                       <strong>{fmt(p.likeCount)}</strong> reactions
                     </td>

@@ -2254,3 +2254,14 @@ columns are simply clipped — assert every element's right edge ≤ viewport, n
 - Phone baselines (`eng1590/phone-compose-*`, `phone-posts`) differ from a fresh run by the same pixel
   count whether or not this ticket's CSS reaches phone width. The phone rule already wrapped the line, so
   the difference is pre-existing drift. Measured, not proven against a base run.
+
+## Dashboard at phone width (ENG-1639, A3a-fix)
+- **The dashboard's tile step-down is 899px, not 767px.** The loading skeleton (`globals.css` `.sk-stats`)
+  already went 2-up at `max-width: 899px`; stepping the real `.adm-stats` at 767px would make the tiles
+  jump 2-up → 4-up on swap-in between 768 and 899px. `phone-stack-css.test.ts` pins the two to the same
+  width and value. The panels (`.adm-grid-2`) and the table still stack at 767px like every other screen.
+- **A new table reuses `.adm-table.stack-phone` (globals.css) by class + `data-label`. No per-screen card CSS.**
+  The globals rules are `.admin-main`-prefixed, so they outrank a screen's own later-loading `.adm-table` copy
+  (dashboard.css, posts.css …). A table with no sortable `th` loses its header on a phone automatically.
+- **A grid track that has to shrink on a phone needs `minmax(0, 1fr)`, not `1fr`.** A bare `1fr` has an `auto`
+  minimum and grows to its widest row.

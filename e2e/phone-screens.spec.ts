@@ -13,6 +13,7 @@ test.describe.configure({ mode: "serial" });
 
 const PHONE = { width: 390, height: 844 };
 const SHOTS = "e2e/__screenshots__/eng1590";
+const DASH_SHOTS = "e2e/__screenshots__/eng1639";
 // Synthetic 8s ball+timestamp clip (ENG-1584's fixture): it has a duration,
 // so the poster scrubber enables. Never real client footage.
 const FIXTURE = readFileSync(path.join(__dirname, "fixtures", "poster-frame.webm"));
@@ -232,6 +233,57 @@ test.describe("phone (390×844)", () => {
     await fitsPhone(page, "compose preview modal");
     await page.screenshot({ path: `${SHOTS}/phone-compose-preview-modal.png` });
   });
+
+  // ENG-1639 (A3a-fix) — the dashboard itself, which ENG-1590 never covered.
+  test("dashboard: tiles 2 per row, panels stacked, recently published as cards", async ({ page }) => {
+    test.setTimeout(120000);
+    await signIn(page); // lands on "/"
+
+    const tiles = page.locator(".adm-stats .adm-stat");
+    await expect(tiles).toHaveCount(4, { timeout: 30000 });
+    await expect(tiles.nth(3).locator(".label")).toHaveText("Members");
+    const tileBoxes = await tiles.evaluateAll((els) =>
+      els.map((e) => {
+        const b = e.getBoundingClientRect();
+        return { top: Math.round(b.top), left: Math.round(b.left) };
+      }),
+    );
+    expect(tileBoxes[0].top).toBe(tileBoxes[1].top); // two side by side…
+    expect(tileBoxes[2].top).toBeGreaterThan(tileBoxes[0].top); // …then a new row
+    expect(tileBoxes[2].left).toBe(tileBoxes[0].left);
+
+    // Race day above Quiet horses, both full width — not two narrow columns.
+    const panels = page.locator(".adm-grid-2 > .adm-card");
+    await expect(panels.nth(0).locator("h2")).toContainText("Race day");
+    await expect(panels.nth(1).locator("h2")).toContainText("Quiet horses");
+    const [race, quiet] = await panels.evaluateAll((els) =>
+      els.map((e) => {
+        const b = e.getBoundingClientRect();
+        return { top: b.top, bottom: b.bottom, left: b.left, width: b.width };
+      }),
+    );
+    expect(quiet.top).toBeGreaterThanOrEqual(race.bottom);
+    expect(quiet.left).toBe(race.left);
+    expect(quiet.width).toBe(race.width);
+    await expect(page.locator(".adm-race-row").first()).toContainText("MAHOGANY (AUS)");
+
+    // Recently published: a stacked card per post, its captions on screen.
+    const table = page.getByTestId("recent-posts");
+    const first = table.locator("tbody tr").first();
+    await expect(first).toBeVisible({ timeout: 30000 });
+    expect(await table.evaluate((e) => getComputedStyle(e).display)).toBe("block");
+    await expect(table.locator("thead")).toBeHidden(); // no sortable column → no sort bar
+    const card = await first.boundingBox();
+    const postCell = await first.locator("td.with-thumb").boundingBox();
+    expect(postCell!.width).toBeGreaterThan(card!.width - 40);
+    await expect(first.locator('td[data-label="Posted as"]')).toBeVisible();
+    await expect(first.locator('td[data-label="Published"]')).toBeVisible();
+    await expect(first).toContainText("reactions"); // ENGAGEMENT was the clipped column
+    await expect(first.getByRole("link", { name: "Edit" })).toBeVisible();
+
+    await fitsPhone(page, "/ (dashboard)");
+    await page.screenshot({ path: `${DASH_SHOTS}/phone-390-dashboard.png`, fullPage: true });
+  });
 });
 
 test.describe("desktop (1280×900) — unchanged", () => {
@@ -273,3 +325,49 @@ test.describe("desktop (1280×900) — unchanged", () => {
     await page.screenshot({ path: `${SHOTS}/desktop-compose.png`, fullPage: true });
   });
 });
+
+// ENG-1639 — the phone step-down must leave the dashboard's desktop layout as
+// it was: 4 tiles in one row, the two panels side by side, a real table.
+for (const vp of [
+  { name: "laptop-1280", width: 1280, height: 720 },
+  { name: "desktop-1920", width: 1920, height: 1080 },
+]) {
+  test.describe(`dashboard at ${vp.width}×${vp.height} — unchanged`, () => {
+    test.use({ viewport: { width: vp.width, height: vp.height } });
+
+    test("4 tiles in a row, two panels side by side, recently published is a table", async ({ page }) => {
+      test.setTimeout(120000);
+      await signIn(page);
+
+      const tiles = page.locator(".adm-stats .adm-stat");
+      await expect(tiles).toHaveCount(4, { timeout: 30000 });
+      const tops = await tiles.evaluateAll((els) => els.map((e) => Math.round(e.getBoundingClientRect().top)));
+      expect(tops.every((t) => t === tops[0])).toBe(true);
+
+      const panels = page.locator(".adm-grid-2 > .adm-card");
+      const [race, quiet] = await panels.evaluateAll((els) =>
+        els.map((e) => {
+          const b = e.getBoundingClientRect();
+          return { top: Math.round(b.top), left: b.left, width: b.width };
+        }),
+      );
+      expect(quiet.top).toBe(race.top);
+      expect(quiet.left).toBeGreaterThan(race.left);
+      expect(race.width).toBeGreaterThan(quiet.width); // 1.4fr vs 1fr
+
+      const table = page.getByTestId("recent-posts");
+      await expect(table.locator("tbody tr").first()).toBeVisible({ timeout: 30000 });
+      expect(await table.evaluate((e) => getComputedStyle(e).display)).toBe("table");
+      await expect(table.locator("thead th", { hasText: "Engagement" })).toBeVisible();
+      // The phone caption must not leak onto the desktop table.
+      const caption = await table
+        .locator('td[data-label="Posted as"]')
+        .first()
+        .evaluate((e) => getComputedStyle(e, "::before").content);
+      expect(caption === "none" || caption === "normal" || caption === "").toBe(true);
+      expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(vp.width);
+
+      await page.screenshot({ path: `${DASH_SHOTS}/${vp.name}-dashboard.png`, fullPage: true });
+    });
+  });
+}

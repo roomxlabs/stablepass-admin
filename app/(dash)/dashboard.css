@@ -303,3 +303,46 @@
   font-size: 13.5px;
   text-align: center;
 }
+
+/* ====================================================================
+   Phone width (ENG-1639, the A3a-fix for the dashboard). ENG-1590 made the
+   list screens phone-ready but never covered this page, which had no media
+   query at all: at 390px the 4 tiles stayed in one row, the two panels sat
+   side by side and the "Recently published" table was clipped (page
+   scrollWidth 476).
+
+   Tiles step to 2 per row at 899px, NOT 767px, because that is where the
+   loading skeleton already steps `.sk-stats` down (globals.css). Stepping at
+   a different width made the tiles jump 2-up to 4-up on swap-in between 768
+   and 899px. 1280px and wider are untouched.
+   ==================================================================== */
+@media (max-width: 899px) {
+  .adm-stats { grid-template-columns: repeat(2, 1fr); }
+}
+
+@media (max-width: 767px) {
+  /* The two panels stack. `minmax(0, 1fr)`, not `1fr`: a bare `1fr` track
+     has an `auto` minimum and grows to its widest row instead of shrinking. */
+  .adm-grid-2 { grid-template-columns: minmax(0, 1fr); }
+
+  /* Phone gutters, the same 16px as the ENG-1590 stacked cards. */
+  .adm-card-head { padding: 14px 16px; }
+  .adm-card-head.tight { padding: 12px 16px; }
+  .adm-empty { padding: 24px 16px; }
+
+  /* Race-day rows: time | name + meta | Post. The status pill moves under
+     the name instead of taking a fourth column that crushed the name. */
+  .adm-race-row {
+    padding: 12px 16px;
+    grid-template-columns: 50px minmax(0, 1fr) auto;
+    row-gap: 6px;
+  }
+  .adm-race-row .time { grid-row: 1 / span 2; align-self: start; padding-top: 1px; }
+  .adm-race-row .pill { grid-column: 2; grid-row: 2; justify-self: start; }
+  .adm-race-row .adm-link { grid-column: 3; grid-row: 1 / span 2; }
+
+  .adm-quiet-row { padding: 9px 16px; grid-template-columns: 28px minmax(0, 1fr) auto; }
+
+  /* "Recently published" opts into the shared `.adm-table.stack-phone`
+     stacked cards (globals.css, ENG-1590) from page.tsx; nothing to add here. */
+}

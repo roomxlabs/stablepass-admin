@@ -153,7 +153,7 @@ export default function PostsLibrary({
             </div>
           ) : (
             <>
-              <table className="adm-table">
+              <table className="adm-table stack-phone">
                 <thead>
                   <tr>
                     <th style={{ width: "44%" }}>Post</th>

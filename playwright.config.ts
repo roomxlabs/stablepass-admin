@@ -33,6 +33,12 @@ export default defineConfig({
     env: {
       NEXT_PUBLIC_SUPABASE_URL: "http://127.0.0.1:8787",
       NEXT_PUBLIC_SUPABASE_ANON_KEY: "fake-anon-key",
+      // ENG-1194: pinned EMPTY so the e2e server can never reach real RevenueCat.
+      // The comp spec calls the real /api/admin/subscribers/:id/comp route and
+      // expects 503; with a key in .env.local it would grant a real promotional
+      // entitlement. @next/env does not refill a key already defined (even as
+      // ""), so this wins over any .env* file.
+      REVENUECAT_SECRET_API_KEY: "",
     },
   },
 });

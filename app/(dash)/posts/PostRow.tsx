@@ -78,7 +78,7 @@ export default function PostRow({ post: p }: { post: PostView }) {
           `stablepass` over its byline. One <strong> line plus an optional muted
           sub-line in every case, so the three subjects sit on the same baseline
           and the column does not change height per row. */}
-      <td className="subject-cell" data-testid="post-subject">
+      <td className="subject-cell stack-full" data-label="Posted as" data-testid="post-subject">
         <strong className="subject-name">{p.subject.name}</strong>
         {/* The tag sits on the SUB-LINE, not beside the name. Inline, the
             cell's min-content became `name + tag` on one unbreakable line
@@ -96,12 +96,23 @@ export default function PostRow({ post: p }: { post: PostView }) {
       </td>
       <td className="nowrap">
         <span className="pill">{p.typeLabel}</span>
+        {/* ENG-1598 — "N videos", only when a video post has more than one
+            `post_video` row. On its OWN LINE under the pill, never beside it:
+            inline, the nowrap cell's min-content grew by a second pill and
+            `table-layout: auto` took that width out of the Post column,
+            wrapping every excerpt to 5-6 lines (the ENG-1269 subject-tag trap,
+            caught in the library screenshot). */}
+        {p.type === "video" && (p.videoCount ?? 0) > 1 ? (
+          <div className="row-sub" data-testid="post-video-count">
+            {p.videoCount} videos
+          </div>
+        ) : null}
       </td>
       <td className="nowrap">
         <span className={p.statusPillClass}>{p.statusLabel}</span>
       </td>
-      <td className="nowrap">{iso ? <LocalTime kind="when" iso={iso} /> : "—"}</td>
-      <td className="nowrap">
+      <td className={iso ? "nowrap" : "nowrap stack-hide"} data-label={p.status === "scheduled" ? "Goes live" : "Published"}>{iso ? <LocalTime kind="when" iso={iso} /> : "—"}</td>
+      <td className={p.likeCount === null ? "nowrap stack-hide" : "nowrap"}>
         {p.likeCount === null ? (
           "—"
         ) : (

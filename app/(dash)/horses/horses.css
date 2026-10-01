@@ -139,7 +139,19 @@ textarea.adm-input { min-height: 110px; resize: vertical; font-family: var(--fon
 .admin-topbar .search input::placeholder { color: var(--muted); }
 
 /* Horse grid -------------------------------------------------------- */
-.horse-grid-adm { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; }
+/* Six per row (Justin, 28 Sep — ENG-1583). Below 1280px it steps back to the
+   old four so a narrow window / phone is no worse than before; the proper
+   responsive pass is ENG-1590 (A3b). `.sk-grid` (globals.css) mirrors both values so
+   the loading skeleton resolves into the same columns. */
+.horse-grid-adm { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 16px; }
+@media (width < 1280px) {
+  .horse-grid-adm { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+}
+/* Phone (ENG-1590): two per row. A 2-up card is ~155px wide at 390px — about
+   the 6-up desktop card's width — so it takes the same compact body below. */
+@media (max-width: 767px) {
+  .horse-grid-adm { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+}
 .horse-card-adm {
   display: block;
   background: var(--white);
@@ -173,6 +185,21 @@ textarea.adm-input { min-height: 110px; resize: vertical; font-family: var(--fon
 .horse-card-adm .meta { font-size: 12.5px; color: var(--muted); margin-top: 3px; }
 .horse-card-adm .stats { display: flex; gap: 12px; margin-top: 10px; font-size: 11.5px; color: var(--muted); }
 .horse-card-adm .stats strong { color: var(--ink); font-size: 13px; font-weight: 600; }
+/* At six columns the stats line no longer fits one row at 1280px, and the old
+   single-line flex broke INSIDE each pair ("3.4k" over "followers"). Keep each
+   count + label together and wrap between the pairs instead (ENG-1583). Scoped
+   to the 6-column range so the <1280px layouts are untouched. */
+/* The 6-column card is ~141px wide at 1280, and the card clips (overflow:
+   hidden), so a long ONE-word name ("Kingstonheathhorse", 18 chars — the
+   Racing Australia max) was cut off. Tighten the padding + step the name down
+   a touch so most names fit whole, and let a name that still doesn't fit break
+   inside the word rather than be clipped (ENG-1583 review). */
+@media (width >= 1280px), (max-width: 767px) {
+  .horse-card-adm .body { padding: 12px; }
+  .horse-card-adm .name { font-size: 16px; overflow-wrap: anywhere; }
+  .horse-card-adm .stats { flex-wrap: wrap; row-gap: 4px; }
+  .horse-card-adm .stats span { white-space: nowrap; }
+}
 
 /* Upload zone (add / edit photo) ------------------------------------ */
 .upload-zone {

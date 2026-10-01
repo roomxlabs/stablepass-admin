@@ -539,17 +539,28 @@ function monthsAgo(n) {
 function daysAgo(n) {
   return new Date(Date.now() - n * 864e5).toISOString();
 }
+// `user_id` (ENG-1194): the member's auth uid, which the Comp action addresses —
+// uuid-shaped because the comp route 400s anything else.
+// `provider` (ENG-1193): at least one of each channel, plus a NULL one (sub-2)
+// that must render as "Web". App Store is on one active and one cancelled row so
+// the provider filter can be seen narrowing across statuses.
+//
+// `period_type` (ENG-1329): sub-2 and sub-3 are Pricing v2 trialists — status
+// `active` with period_type `trial`, proving the filter reads period_type and
+// never status. sub-6 (canceled) and sub-4 (the legacy status-`trial` row) are
+// NULL — "Unknown" — because a NULL carries no fact, not even for a row whose
+// status happens to say `trial`. Everything else is `normal` (paid).
 const SUBSCRIPTION_FIXTURES = [
-  { id: "sub-8", status: "active",   created_at: monthsAgo(19), updated_at: monthsAgo(19), current_period_end: daysAgo(-12), user: { name: "Mei Lin",        email: "mei.lin@example.com",   is_admin: false } },
-  { id: "sub-1", status: "active",   created_at: monthsAgo(14), updated_at: monthsAgo(14), current_period_end: daysAgo(-21), user: { name: "Harriet Vale",   email: "harriet@example.com",   is_admin: false } },
-  { id: "sub-7", status: "lapsed",   created_at: monthsAgo(11), updated_at: monthsAgo(1),  current_period_end: daysAgo(34),  user: { name: "Rafael Costa",   email: "rafael@example.com",    is_admin: false } },
-  { id: "sub-2", status: "active",   created_at: monthsAgo(8),  updated_at: monthsAgo(8),  current_period_end: daysAgo(-6),  user: { name: "Tom Ashcroft",   email: "tom@example.com",       is_admin: false } },
-  { id: "sub-5", status: "canceled", created_at: monthsAgo(7),  updated_at: daysAgo(3),    current_period_end: daysAgo(-9),  user: { name: "Douglas Byrne",  email: "douglas@example.com",   is_admin: false } },
-  { id: "sub-3", status: "active",   created_at: monthsAgo(4),  updated_at: monthsAgo(4),  current_period_end: daysAgo(-17), user: { name: "Priya Raman",    email: "priya@example.com",     is_admin: false } },
-  { id: "sub-6", status: "canceled", created_at: monthsAgo(2),  updated_at: daysAgo(9),    current_period_end: daysAgo(-2),  user: { name: "Simone Clark",   email: "simone@example.com",    is_admin: false } },
-  { id: "sub-4", status: "trial",    created_at: daysAgo(11),   updated_at: daysAgo(11),   current_period_end: null,         user: { name: "Nina Okafor",    email: "nina@example.com",      is_admin: false } },
+  { id: "sub-8", user_id: "00000000-0000-4000-8000-000000000008", status: "active",   provider: "stripe", period_type: "normal", created_at: monthsAgo(19), updated_at: monthsAgo(19), current_period_end: daysAgo(-12), user: { name: "Mei Lin",        email: "mei.lin@example.com",   is_admin: false } },
+  { id: "sub-1", user_id: "00000000-0000-4000-8000-000000000001", status: "active",   provider: "app_store", period_type: "normal", created_at: monthsAgo(14), updated_at: monthsAgo(14), current_period_end: daysAgo(-21), user: { name: "Harriet Vale",   email: "harriet@example.com",   is_admin: false } },
+  { id: "sub-7", user_id: "00000000-0000-4000-8000-000000000007", status: "lapsed",   provider: "play_store", period_type: "normal", created_at: monthsAgo(11), updated_at: monthsAgo(1),  current_period_end: daysAgo(34),  user: { name: "Rafael Costa",   email: "rafael@example.com",    is_admin: false } },
+  { id: "sub-2", user_id: "00000000-0000-4000-8000-000000000002", status: "active",   provider: null, period_type: "trial", created_at: monthsAgo(8),  updated_at: monthsAgo(8),  current_period_end: daysAgo(-6),  user: { name: "Tom Ashcroft",   email: "tom@example.com",       is_admin: false } },
+  { id: "sub-5", user_id: "00000000-0000-4000-8000-000000000005", status: "canceled", provider: "app_store", period_type: "normal", created_at: monthsAgo(7),  updated_at: daysAgo(3),    current_period_end: daysAgo(-9),  user: { name: "Douglas Byrne",  email: "douglas@example.com",   is_admin: false } },
+  { id: "sub-3", user_id: "00000000-0000-4000-8000-000000000003", status: "active",   provider: "promotional", period_type: "trial", created_at: monthsAgo(4),  updated_at: monthsAgo(4),  current_period_end: daysAgo(-17), user: { name: "Priya Raman",    email: "priya@example.com",     is_admin: false } },
+  { id: "sub-6", user_id: "00000000-0000-4000-8000-000000000006", status: "canceled", provider: "play_store", period_type: null, created_at: monthsAgo(2),  updated_at: daysAgo(9),    current_period_end: daysAgo(-2),  user: { name: "Simone Clark",   email: "simone@example.com",    is_admin: false } },
+  { id: "sub-4", user_id: "00000000-0000-4000-8000-000000000004", status: "trial",    provider: "stripe", period_type: null, created_at: daysAgo(11),   updated_at: daysAgo(11),   current_period_end: null,         user: { name: "Nina Okafor",    email: "nina@example.com",      is_admin: false } },
   // The operator. Excluded by the staff guardrail — never rendered, never exported.
-  { id: "sub-admin", status: "active", created_at: monthsAgo(22), updated_at: monthsAgo(22), current_period_end: daysAgo(-30), user: { name: "StablePass Ops", email: "ops@stablepass.co", is_admin: true } },
+  { id: "sub-admin", user_id: "00000000-0000-4000-8000-00000000000a", status: "active", provider: "stripe", period_type: "normal", created_at: monthsAgo(22), updated_at: monthsAgo(22), current_period_end: daysAgo(-30), user: { name: "StablePass Ops", email: "ops@stablepass.co", is_admin: true } },
 ];
 
 // Waitlist (ENG-976) — 28 pre-launch signups, deliberately more than one
@@ -731,6 +742,8 @@ const COMPOSE_EDIT_POSTS = [
   // edit-mode strip load + reorder + save e2e. `media_url` mirrors row 0 of
   // POST_MEDIA_FIXTURES.ce3, exactly as the real writer keeps them in step.
   { id: "ce3", type: "photo", status: "draft", title: null, body: "Two from this morning's session.", label: null, subject: "horse", byline: null, source_trainer_id: "t1", source_trainer: null, scheduled_for: null, media_url: "ce3/original", mux_playback_id: null, horse: HORSE_EMBED },
+  // ENG-1598 — a published 2-video post for the multi-video edit spec.
+  { id: "ce4", type: "video", status: "published", title: null, body: "Three angles from this morning's gallop.", label: null, subject: "horse", byline: null, source_trainer_id: "t1", source_trainer: null, scheduled_for: null, media_url: null, mux_playback_id: null, horse: HORSE_EMBED },
 ];
 
 // ENG-1266 — `post_media` rows behind the compose EDIT loader's multi-photo
@@ -743,6 +756,81 @@ const POST_MEDIA_FIXTURES = {
     { media_url: "ce3/photo-1", sort_order: 1 },
   ],
 };
+
+// ENG-1597 — `post_video`, the multi-video sibling of `post_media` above.
+// UNLIKE `POST_MEDIA_FIXTURES` (a read-only fixture backing one loader read),
+// this is a genuinely MUTABLE in-memory table: the create/append/reorder/
+// remove admin routes all insert, upsert, or delete rows here directly, so
+// the mock has to behave like the real table across a whole spec rather than
+// just answer one canned read. Starts empty; rows are created by whichever
+// admin route runs first in a given spec.
+const POST_VIDEO_ROWS = [];
+
+function makePostVideoRow(partial) {
+  const now = new Date().toISOString();
+  return {
+    id: partial.id ?? crypto.randomUUID(),
+    post_id: partial.post_id ?? null,
+    sort_order: partial.sort_order ?? 0,
+    status: partial.status ?? "uploading",
+    mux_upload_id: partial.mux_upload_id ?? null,
+    mux_asset_id: partial.mux_asset_id ?? null,
+    mux_playback_id: partial.mux_playback_id ?? null,
+    poster_url: partial.poster_url ?? null,
+    poster_time_s: partial.poster_time_s ?? null,
+    aspect_ratio: partial.aspect_ratio ?? null,
+    created_at: now,
+    updated_at: now,
+  };
+}
+
+// ENG-1598 — seed fixture rows (after both `POST_VIDEO_ROWS` and
+// `makePostVideoRow` exist, per that const's declaration order): three READY
+// rows for the posts-library "p1" video post (so its "N videos" badge and
+// status poll have real rows to read), and two READY rows for a NEW
+// compose-edit fixture post "ce4" (the multi-video edit spec, below).
+POST_VIDEO_ROWS.push(
+  makePostVideoRow({
+    id: "00000000-0000-4000-8000-0000000001a0",
+    post_id: "p1",
+    sort_order: 0,
+    status: "ready",
+    mux_playback_id: null,
+    poster_url: null,
+  }),
+  makePostVideoRow({
+    id: "00000000-0000-4000-8000-0000000001a1",
+    post_id: "p1",
+    sort_order: 1,
+    status: "ready",
+    mux_playback_id: null,
+    poster_url: null,
+  }),
+  makePostVideoRow({
+    id: "00000000-0000-4000-8000-0000000001a2",
+    post_id: "p1",
+    sort_order: 2,
+    status: "ready",
+    mux_playback_id: null,
+    poster_url: null,
+  }),
+  makePostVideoRow({
+    id: "00000000-0000-4000-8000-0000000004a0",
+    post_id: "ce4",
+    sort_order: 0,
+    status: "ready",
+    mux_playback_id: null,
+    poster_url: null,
+  }),
+  makePostVideoRow({
+    id: "00000000-0000-4000-8000-0000000004a1",
+    post_id: "ce4",
+    sort_order: 1,
+    status: "ready",
+    mux_playback_id: null,
+    poster_url: null,
+  }),
+);
 
 // Active horses for the quiet-horse check. h1 posted this week (loud); h2/h3
 // stale; h5 never posted — so three quiet horses, one retired (matches mockup).
@@ -1457,6 +1545,140 @@ export function startMockSupabase() {
       sendJson(res, 200, sorted);
       return;
     }
+
+    // ENG-1597 — /rest/v1/post_video, the multi-video sibling of post_media
+    // just above, for exactly the same reasons:
+    //
+    // EXACT pathname match, not `startsWith` — "post_video" starts with
+    // "/rest/v1/post" and would otherwise fall into (or shadow) one of the
+    // `startsWith("/rest/v1/post")` branches around it. In particular the
+    // posts LIBRARY branch immediately below this one keys on
+    // `url.search.includes("status")` — and every admin route here selects a
+    // `status` COLUMN (`VIDEO_ROW_FIELDS` = "id,sort_order,status,..."), so an
+    // unguarded ordering would make the library branch's own discriminator
+    // fire by accident and answer with post-library fixtures instead.
+    //
+    // Its own branch (not the generic read-only `/rest/v1/<table>` dispatcher
+    // further down) because every admin route here WRITES: create mints rows,
+    // append mints more, PATCH reorders/removes/upserts, publish reads
+    // statuses. Placed ahead of that dispatcher for the same reason
+    // `post_label`/`post_byline` are.
+    if (url.pathname === "/rest/v1/post_video") {
+      const accept = req.headers["accept"] ?? "";
+      const idParam = url.searchParams.get("id");
+      const postIdParam = url.searchParams.get("post_id");
+
+      if (req.method === "GET") {
+        let rows = POST_VIDEO_ROWS;
+        // Anchored (`/rest/v1/<table>` house rule): `id=eq.` must never also
+        // catch a bare `post_id=eq.` filter, and vice versa.
+        if (idParam && idParam.startsWith("eq.")) {
+          const wanted = idParam.slice(3);
+          rows = rows.filter((r) => r.id === wanted);
+        } else if (postIdParam && postIdParam.startsWith("eq.")) {
+          const wanted = postIdParam.slice(3);
+          rows = rows.filter((r) => r.post_id === wanted);
+        } else if (postIdParam && postIdParam.startsWith("in.")) {
+          // ENG-1598 — the posts-library "N videos" badge tally:
+          // `.select("post_id").in("post_id", ids)`. Parsed the same way the
+          // DELETE branch below parses its own `id=in.(...)`.
+          const wantedIds = postIdParam
+            .slice(3)
+            .replace(/^\(|\)$/g, "")
+            .split(",")
+            .filter(Boolean);
+          rows = rows.filter((r) => wantedIds.includes(r.post_id));
+        }
+        const sorted = [...rows].sort((a, b) => a.sort_order - b.sort_order);
+        if (accept.includes("pgrst.object")) {
+          sendJson(res, 200, sorted[0] ?? null);
+        } else {
+          sendJson(res, 200, sorted);
+        }
+        return;
+      }
+
+      if (req.method === "POST") {
+        // Use the ALREADY-DRAINED `rawBody` — never a second `drainBody(req)`
+        // (it hangs the request forever; see the gotcha this file's other
+        // write branches all follow).
+        let parsed = {};
+        try {
+          parsed = JSON.parse(rawBody || "{}");
+        } catch {
+          parsed = {};
+        }
+        const incoming = Array.isArray(parsed) ? parsed : [parsed];
+        // `.upsert(rows, { onConflict: "id" })` (the PATCH reorder) sends the
+        // conflict target as `on_conflict=id` and expects a MERGE by that PK;
+        // a plain `.insert(rows)` (create / append) has no such param and
+        // always mints a fresh row per entry.
+        const onConflict = url.searchParams.get("on_conflict");
+        const written = incoming.map((entry) => {
+          if (onConflict === "id" && entry.id) {
+            const existing = POST_VIDEO_ROWS.find((r) => r.id === entry.id);
+            if (existing) {
+              Object.assign(existing, entry, { updated_at: new Date().toISOString() });
+              return existing;
+            }
+          }
+          const row = makePostVideoRow(entry);
+          POST_VIDEO_ROWS.push(row);
+          return row;
+        });
+        sendJson(res, 201, accept.includes("pgrst.object") ? written[0] : written);
+        return;
+      }
+
+      if (req.method === "PATCH" && idParam && idParam.startsWith("eq.")) {
+        const wanted = idParam.slice(3);
+        const row = POST_VIDEO_ROWS.find((r) => r.id === wanted);
+        if (!row) {
+          sendJson(res, 200, []);
+          return;
+        }
+        let parsed = {};
+        try {
+          parsed = JSON.parse(rawBody || "{}");
+        } catch {
+          parsed = {};
+        }
+        Object.assign(row, parsed, { updated_at: new Date().toISOString() });
+        sendJson(res, 200, accept.includes("pgrst.object") ? row : [row]);
+        return;
+      }
+
+      if (req.method === "DELETE") {
+        // Every shape the admin routes actually send: `id=in.(...)` alone,
+        // `id=in.(...)` PLUS `post_id=eq.` (the mint-rollback / removed-slot
+        // deletes), or a bare `post_id=eq.` (a whole post's rows). Each
+        // present filter narrows the match; absent ones are simply not
+        // checked, exactly like a real `.eq()`/`.in()` chain would.
+        const wantedIds =
+          idParam && idParam.startsWith("in.")
+            ? idParam
+                .slice(3)
+                .replace(/^\(|\)$/g, "")
+                .split(",")
+                .filter(Boolean)
+            : null;
+        const wantedSingleId = idParam && idParam.startsWith("eq.") ? idParam.slice(3) : null;
+        const wantedPostId = postIdParam && postIdParam.startsWith("eq.") ? postIdParam.slice(3) : null;
+
+        const removed = [];
+        for (let i = POST_VIDEO_ROWS.length - 1; i >= 0; i--) {
+          const r = POST_VIDEO_ROWS[i];
+          if (wantedIds && !wantedIds.includes(r.id)) continue;
+          if (wantedSingleId && r.id !== wantedSingleId) continue;
+          if (wantedPostId && r.post_id !== wantedPostId) continue;
+          removed.push(r);
+          POST_VIDEO_ROWS.splice(i, 1);
+        }
+        sendJson(res, 200, accept.includes("pgrst.object") ? (removed[0] ?? null) : removed);
+        return;
+      }
+    }
+
     // Posts library (T7 / ENG-177). The list read selects `status` — which the
     // trainers' post read (source_trainer_id,published_at,created_at) does not —
     // so use that to serve the full post-library fixtures here, ahead of the

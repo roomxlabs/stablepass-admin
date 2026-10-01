@@ -4,7 +4,7 @@
 // badge, omitting the reaction bar, putting the caption in the wrong place and
 // cropping every reel to 16:9. These tests pin each of those.
 import { useState } from "react";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import PostPreview, { type PostPreviewData } from "./PostPreview";
 import PreviewModal from "./PreviewModal";
@@ -555,13 +555,17 @@ describe("reel chrome, across the whole portrait range (ENG-769)", () => {
       expect(card.dataset.chrome).toBe(c.reel ? "reel" : "classic");
 
       if (c.reel) {
-        // The white header row stands down, taking the label pill and the race
-        // badge with it — exactly as the member card's `{isReel ? null : ...}`
-        // suppresses the whole head.
+        // The white header row stands down, taking the RACE BADGE with it —
+        // mobile slots that node into the classic head only.
         expect(screen.queryByTestId("preview-label")).toBeNull();
         expect(screen.queryByTestId("preview-race-badge")).toBeNull();
         // ...and the identity is overlaid on the frame instead.
         expect(screen.getByTestId("preview-reel-head")).toBeTruthy();
+        // ENG-1438 — the LABEL PILL does NOT stand down. It moves onto the
+        // scrim, because mobile now slots the same pill into both heads. The
+        // pair above and below is the point: one id disappears, the other
+        // appears, and a revert of either half turns this red.
+        expect(screen.getByTestId("preview-reel-label").textContent).toBe("Trackwork");
       } else {
         expect(screen.getByTestId("preview-label").textContent).toBe("Trackwork");
         expect(screen.queryByTestId("preview-reel-head")).toBeNull();
@@ -572,28 +576,34 @@ describe("reel chrome, across the whole portrait range (ENG-769)", () => {
     });
   }
 
-  it("tells the operator WHY the label vanished, and only on a reel", () => {
-    // The acceptance criterion this ticket turns on: a label picked for a
-    // portrait video reaches no member, and until now nothing said so.
+  it("draws the operator's label on the reel, and nothing when they picked none", () => {
+    // ENG-1438 — replaces "tells the operator WHY the label vanished". The
+    // label no longer vanishes: mobile slots the pill into both heads, so the
+    // preview draws it, and the note that explained its absence is gone. The
+    // note's OWN absence is asserted below so a revert cannot restore a
+    // sentence that is now false.
     renderMeasured(1080, 1920, "video", { label: "Trackwork" });
-    const note = screen.getByTestId("preview-reel-label-note");
-    expect(note.textContent).toContain("Trackwork");
-    expect(note.textContent).toContain("will not appear");
+    expect(screen.getByTestId("preview-reel-label").textContent).toBe("Trackwork");
+    expect(screen.queryByTestId("preview-reel-label-note")).toBeNull();
     cleanup();
 
-    // No label picked: nothing to warn about, so no note.
+    // No label picked: no pill, and still no note.
     renderMeasured(1080, 1920, "video", { label: null });
+    expect(screen.queryByTestId("preview-reel-label")).toBeNull();
     expect(screen.queryByTestId("preview-reel-label-note")).toBeNull();
     cleanup();
 
-    // Label picked on a CLASSIC card: it renders, so again no note.
+    // Label picked on a CLASSIC card: it renders in the header row instead, and
+    // the reel's pill is absent — the two chromes each draw exactly one.
     renderMeasured(1000, 1000, "video", { label: "Trackwork" });
-    expect(screen.queryByTestId("preview-reel-label-note")).toBeNull();
+    expect(screen.getByTestId("preview-label").textContent).toBe("Trackwork");
+    expect(screen.queryByTestId("preview-reel-label")).toBeNull();
   });
 
   it("follows the operator when they swap a square video for a portrait one", () => {
     // The ticket's own edge case: pick a label, then change the media. The
-    // preview has to stop promising the pill, not keep a stale card.
+    // preview has to MOVE the pill from the header row to the scrim (ENG-1438;
+    // it used to have to withdraw it), not keep a stale card either way.
     const { rerender } = render(
       <MeasuringHarness mediaUrl="blob:video" mediaType="video" label="Trackwork" />,
     );
@@ -611,7 +621,9 @@ describe("reel chrome, across the whole portrait range (ENG-769)", () => {
 
     expect(screen.getByTestId("post-preview").dataset.chrome).toBe("reel");
     expect(screen.queryByTestId("preview-label")).toBeNull();
-    expect(screen.getByTestId("preview-reel-label-note")).toBeTruthy();
+    // Moved, not withdrawn — and the note that used to appear here must not.
+    expect(screen.getByTestId("preview-reel-label").textContent).toBe("Trackwork");
+    expect(screen.queryByTestId("preview-reel-label-note")).toBeNull();
   });
 
   it("never reaches reel chrome on a post with no media box", () => {
@@ -705,5 +717,90 @@ describe("head by subject (ENG-1268)", () => {
   it("ONE PREVIEW COMPONENT: exactly one post-preview renders for a stablepass post", () => {
     renderPreview({ subject: "stablepass", byline: "Racing TV" });
     expect(screen.getAllByTestId("post-preview")).toHaveLength(1);
+  });
+});
+
+// ENG-1584 — the preview sat on frame 0 whatever frame was picked, which read
+// as "Use this frame does nothing".
+describe("the video preview parks on the picked poster frame (ENG-1584)", () => {
+  function stubSeek(video: HTMLVideoElement, readyState: number) {
+    const seek = vi.fn();
+    Object.defineProperty(video, "readyState", { configurable: true, get: () => readyState });
+    Object.defineProperty(video, "currentTime", { configurable: true, get: () => 0, set: seek });
+    return seek;
+  }
+
+  it("seeks to posterTimeS once metadata loads", () => {
+    renderPreview({ posterTimeS: 3.2 });
+    const video = screen.getByTestId("preview-video") as HTMLVideoElement;
+    const seek = stubSeek(video, 0);
+    fireEvent.loadedMetadata(video);
+    expect(seek).toHaveBeenCalledWith(3.2);
+  });
+
+  it("seeks when the pick lands after the video already loaded", () => {
+    const { rerender } = render(<PostPreview data={BASE} />);
+    const video = screen.getByTestId("preview-video") as HTMLVideoElement;
+    const seek = stubSeek(video, 1);
+    rerender(<PostPreview data={{ ...BASE, posterTimeS: 8 }} />);
+    expect(seek).toHaveBeenCalledWith(8);
+  });
+
+  it("never seeks without a pick, or for a photo", () => {
+    renderPreview({ posterTimeS: null });
+    const video = screen.getByTestId("preview-video") as HTMLVideoElement;
+    const seek = stubSeek(video, 1);
+    fireEvent.loadedMetadata(video);
+    expect(seek).not.toHaveBeenCalled();
+    cleanup();
+    renderPreview({ mediaType: "photo", posterTimeS: 2 });
+    expect(screen.queryByTestId("preview-video")).toBeNull();
+  });
+
+  it("leaves a playing video alone", () => {
+    render(<PostPreview data={{ ...BASE, posterTimeS: 1 }} />);
+    const video = screen.getByTestId("preview-video") as HTMLVideoElement;
+    const seek = stubSeek(video, 1);
+    fireEvent.play(video);
+    fireEvent.loadedMetadata(video);
+    expect(seek).not.toHaveBeenCalled();
+  });
+});
+
+describe("ENG-1598 · the video carousel", () => {
+  const SET = [
+    { posterUrl: null, localUrl: "blob:v0", ready: true },
+    { posterUrl: "https://p/1.jpg", localUrl: null, ready: true },
+    { posterUrl: null, localUrl: "blob:v2", ready: false },
+  ];
+
+  it("one video is the single-video card: no dots, no count", () => {
+    renderPreview({ videos: [SET[0]] });
+    expect(screen.queryByTestId("preview-dots")).toBeNull();
+    expect(screen.queryByTestId("preview-count")).toBeNull();
+    expect(screen.getByTestId("preview-video")).toBeTruthy();
+  });
+
+  it("2+ videos: dots + n/m, slide 1 is the cover video parked on the picked frame", () => {
+    renderPreview({ videos: SET, posterTimeS: 2.5 });
+    expect(screen.getAllByTestId(/^preview-dot-\d+$/)).toHaveLength(3);
+    expect(screen.getByTestId("preview-count").textContent).toBe("1/3");
+    expect(screen.getByTestId("preview-video").dataset.posterTime).toBe("2.5");
+    expect(screen.getByLabelText("Show video 2 of 3")).toBeTruthy();
+  });
+
+  it("later slides show their poster once ready, and say so while processing", () => {
+    renderPreview({ videos: SET });
+    fireEvent.click(screen.getByTestId("preview-dot-1"));
+    expect(screen.getByTestId("preview-video-poster").getAttribute("src")).toBe("https://p/1.jpg");
+    expect(screen.queryByTestId("preview-video")).toBeNull();
+    fireEvent.click(screen.getByTestId("preview-dot-2"));
+    expect(screen.getByTestId("preview-video-processing").textContent).toBe("Processing video 3…");
+    expect(screen.getByTestId("preview-count").textContent).toBe("3/3");
+  });
+
+  it("a photo post ignores `videos` entirely", () => {
+    renderPreview({ mediaType: "photo", mediaUrl: "blob:p", videos: SET });
+    expect(screen.queryByTestId("preview-dots")).toBeNull();
   });
 });

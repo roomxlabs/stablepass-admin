@@ -125,4 +125,17 @@ describe("<WaitlistTable>", () => {
     expect(buildWaitlistHref({ q: "mel", offset: 25 })).toBe("/waitlist?q=mel&offset=25");
     expect(buildWaitlistHref({ q: undefined, offset: 0 })).toBe("/waitlist");
   });
+
+  it("opts the table into phone-stacking, with the Source/Joined cells labelled (ENG-1590)", () => {
+    const { container } = render(
+      <WaitlistTable rows={[row(1)]} total={1} matching={1} offset={0} limit={25} />,
+    );
+
+    expect(container.querySelector("table")?.className).toContain("stack-phone");
+
+    const cells = container.querySelectorAll("tbody td");
+    expect(cells[0].className).toContain("stack-full"); // email
+    expect(cells[1].getAttribute("data-label")).toBe("Source");
+    expect(cells[2].getAttribute("data-label")).toBe("Joined");
+  });
 });

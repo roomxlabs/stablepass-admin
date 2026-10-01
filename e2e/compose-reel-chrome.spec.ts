@@ -1,8 +1,13 @@
 import { test, expect, type Page } from "@playwright/test";
 
 // ENG-769 screenshot proofs: the reel chrome (overlaid header, ink scrim, no
-// label pill / race badge, "Trackwork" reel note) on the preview panel, and
-// that a square video or a portrait PHOTO both stay on the classic card.
+// race badge) on the preview panel, and that a square video or a portrait
+// PHOTO both stay on the classic card.
+//
+// ENG-1438 updated this file twice over. Mobile now slots the label pill into
+// BOTH heads, so a reel SHOWS one and the "Trackwork reel note" this file used
+// to prove is gone; and the last two cases here shoot the reel head for the
+// TRAINER and STABLEPASS subjects, which is the evidence that ticket asks for.
 //
 // Its own spec file rather than more cases in compose.spec.ts (ENG-558's
 // aspect-ratio evidence) or compose-label.spec.ts (ENG-745's label picker):
@@ -241,7 +246,116 @@ async function shootPreviewPanel(page: Page, path: string) {
   return panel;
 }
 
-test("reel chrome: a 9:16 video shows the overlaid head and the Trackwork reel note", async ({
+// ── ENG-1438: the reel head for the OTHER TWO SUBJECTS ─────────────────────
+//
+// Mobile's ENG-1271 made the head three-way (horse / trainer / stablepass) and
+// gave the reel the SAME head as the classic card. The cases above only ever
+// shot a horse reel, so nothing proved a trainer or a StablePass post gets a
+// correct overlaid head — which is exactly where a three-way branch drawn twice
+// goes wrong (mobile's own ENG-750 reel byline died that way). One shot each.
+//
+// These two shoot the RAIL card, not the modal, unlike the cases above. The
+// rail is the surface the operator actually composes against (case 05 makes
+// the same choice for the same reason), and it avoids the modal's duplicate
+// testids entirely — which is what lets these assert with plain page-level
+// queries instead of a scoped panel locator.
+//
+// THEY LEAD THE FILE. `mode: "serial"` runs these in declaration order, and
+// placed last — after four cases that each record and decode their own webm in
+// the same browser — the trainer case intermittently got `measure: "done"` with
+// NULL dimensions ("Dimensions unavailable"), i.e. the decoder gave up under
+// load. Both pass in isolation; running them first makes the whole file
+// deterministic. Order is load-bearing here, so do not sort these to the end.
+
+async function composeReelForSubject(
+  page: Page,
+  subject: "trainer" | "stablepass",
+): Promise<void> {
+  await mockUploads(page, "video");
+  await page.goto("/compose");
+  // The subject picker is client-rendered — the right hydration sentinel here
+  // (same reasoning as compose-subject.spec.ts's openCompose).
+  await expect(page.getByTestId("subject-picker")).toBeVisible({ timeout: 30000 });
+  await page.getByTestId(`subject-option-${subject}`).click();
+
+  if (subject === "trainer") {
+    await page.getByTestId("trainer-search").click();
+    await page.getByTestId("trainer-results").getByRole("button").first().click();
+    await expect(page.getByTestId("trainer-pick")).toBeVisible();
+  } else {
+    const select = page.getByTestId("byline-name-select");
+    await expect(select).toBeVisible();
+    await select.selectOption({ label: "Racing TV" });
+  }
+
+  await page
+    .getByTestId("caption")
+    .fill("Last fast gallop before Saturday — he's spot-on. Came home strong over the final 200.");
+  await chooseType(page, "video");
+  await page.getByTestId("label-select").selectOption("Trackwork");
+
+  const bytes = await recordVideo(page, 1080, 1920);
+  await page.getByTestId("media-input").setInputFiles({
+    name: `reel-9x16-${subject}.webm`,
+    mimeType: "video/webm",
+    buffer: Buffer.from(bytes),
+  });
+  await expect(page.getByTestId("upload-done")).toBeVisible({ timeout: 30000 });
+
+  // The paint gate, stated as facts rather than a blind wait: the file has been
+  // MEASURED (the readout prints the real intrinsic size, which only happens
+  // after the <video> reported metadata), the card has switched to reel chrome
+  // on the strength of it, and the overlaid head is on screen. That is exactly
+  // what these two cases are evidence of.
+  await expect(page.getByTestId("preview-readout")).toContainText("1080×1920", {
+    timeout: 30000,
+  });
+  await expect(page.getByTestId("post-preview")).toHaveAttribute("data-chrome", "reel");
+  await expect(page.getByTestId("preview-reel-head")).toBeVisible();
+  await page.evaluate(
+    () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => r(null)))),
+  );
+}
+
+test("reel chrome: a TRAINER 9:16 video overlays the trainer head and the label pill", async ({
+  page,
+}) => {
+  test.setTimeout(120000);
+  await signIn(page);
+  await composeReelForSubject(page, "trainer");
+
+  const head = page.getByTestId("preview-reel-head");
+  await expect(head).toHaveAttribute("data-subject", "trainer");
+  // The pill rides on the scrim (ENG-1438), and the race badge does not — a
+  // trainer post has no horse, so race day is not a fact about it.
+  await expect(page.getByTestId("preview-reel-label")).toContainText("Trackwork");
+  await expect(page.getByTestId("preview-race-badge")).toHaveCount(0);
+  await expect(page.getByTestId("preview-reel-label-note")).toHaveCount(0);
+
+  await page.getByTestId("post-preview").screenshot({
+    path: "e2e/__screenshots__/eng769/06-reel-trainer.png",
+  });
+});
+
+test("reel chrome: a STABLEPASS 9:16 video overlays the S-mark head and the label pill", async ({
+  page,
+}) => {
+  test.setTimeout(120000);
+  await signIn(page);
+  await composeReelForSubject(page, "stablepass");
+
+  const head = page.getByTestId("preview-reel-head");
+  await expect(head).toHaveAttribute("data-subject", "stablepass");
+  await expect(page.getByTestId("preview-reel-label")).toContainText("Trackwork");
+  await expect(page.getByTestId("preview-race-badge")).toHaveCount(0);
+  await expect(page.getByTestId("preview-reel-label-note")).toHaveCount(0);
+
+  await page.getByTestId("post-preview").screenshot({
+    path: "e2e/__screenshots__/eng769/07-reel-stablepass.png",
+  });
+});
+
+test("reel chrome: a 9:16 video shows the overlaid head and the Trackwork label pill", async ({
   page,
 }) => {
   test.setTimeout(120000);
@@ -279,8 +393,12 @@ test("reel chrome: a 9:16 video shows the overlaid head and the Trackwork reel n
   await expect(panel.getByTestId("preview-reel-head")).toBeVisible();
   await expect(panel.getByTestId("preview-label")).toHaveCount(0);
   await expect(panel.getByTestId("preview-race-badge")).toHaveCount(0);
-  await expect(panel.getByTestId("preview-reel-label-note")).toBeVisible();
-  await expect(panel.getByTestId("preview-reel-label-note")).toContainText("Trackwork");
+  // ENG-1438 — the pill MOVED to the scrim, it did not vanish. The note that
+  // used to explain its absence is gone, and its absence is asserted so a
+  // revert cannot put a now-false sentence back under the card.
+  await expect(panel.getByTestId("preview-reel-label")).toBeVisible();
+  await expect(panel.getByTestId("preview-reel-label")).toContainText("Trackwork");
+  await expect(panel.getByTestId("preview-reel-label-note")).toHaveCount(0);
 });
 
 test("reel chrome: a 0.9 portrait video is still a reel", async ({ page }) => {
@@ -309,8 +427,12 @@ test("reel chrome: a 0.9 portrait video is still a reel", async ({ page }) => {
   await expect(panel.getByTestId("preview-reel-head")).toBeVisible();
   await expect(panel.getByTestId("preview-label")).toHaveCount(0);
   await expect(panel.getByTestId("preview-race-badge")).toHaveCount(0);
-  await expect(panel.getByTestId("preview-reel-label-note")).toBeVisible();
-  await expect(panel.getByTestId("preview-reel-label-note")).toContainText("Trackwork");
+  // ENG-1438 — the pill MOVED to the scrim, it did not vanish. The note that
+  // used to explain its absence is gone, and its absence is asserted so a
+  // revert cannot put a now-false sentence back under the card.
+  await expect(panel.getByTestId("preview-reel-label")).toBeVisible();
+  await expect(panel.getByTestId("preview-reel-label")).toContainText("Trackwork");
+  await expect(panel.getByTestId("preview-reel-label-note")).toHaveCount(0);
 });
 
 test("reel chrome: a square video stays on the classic card with a visible label", async ({
@@ -341,6 +463,8 @@ test("reel chrome: a square video stays on the classic card with a visible label
   await expect(panel.getByTestId("preview-reel-head")).toHaveCount(0);
   await expect(panel.getByTestId("preview-label")).toBeVisible();
   await expect(panel.getByTestId("preview-label")).toContainText("Trackwork");
+  // The classic card draws exactly one pill — the header row's, not the reel's.
+  await expect(panel.getByTestId("preview-reel-label")).toHaveCount(0);
   await expect(panel.getByTestId("preview-reel-label-note")).toHaveCount(0);
 });
 

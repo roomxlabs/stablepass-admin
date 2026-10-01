@@ -424,13 +424,15 @@
   background: var(--white);
   border-top: 1px solid var(--line);
 }
+/* ENG-1611 — wraps, never ellipsises: a multi-video cover's line ("… · cover
+   of 3 · uploaded · processing") outgrew the row at 1280 and was clipped to
+   "· uploaded · proces…". A long file name breaks anywhere rather than
+   pushing the Replace / Remove buttons off the row. */
 .uploadMeta {
   font-size: 12.5px;
   color: var(--muted);
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
 }
 .uploadActions {
   display: flex;
@@ -746,23 +748,60 @@
   gap: 12px;
   margin: 0 18px 12px;
 }
+/* THE HEAD AVATAR — a 72px ROUNDED BOX, both chromes (ENG-1441).
+
+   It was a 44px circle here for as long as this preview has existed, and mobile
+   stopped drawing a circle at ENG-869: `HeadAvatar` renders
+   `<Avatar size="row" shape="rounded">`, i.e. `HEAD_AVATAR_BOX` (72) square with
+   `AVATAR_BOX_RADIUS` (`Radius.md`, 14) corners, and the StablePass S-mark box
+   takes the identical treatment so a stablepass head has the same footprint as
+   the horse head above it. The browse rows went boxy at ENG-833 and the card
+   heads followed; a circle here was the one disc left in a column of boxes.
+
+   EVERY NUMBER IS MOBILE'S and is read back out of post-head.tsx / ui/avatar.tsx
+   by reel-chrome-parity.test.ts — box, radius and the monogram's size — so the
+   next time mobile re-tunes the head this goes red instead of leaving the
+   operator looking at a card no member sees. The monogram also follows the NAME
+   face (Inter 500) rather than Cormorant, for the reason mobile's avatar.tsx
+   gives: the initial stands in for the name, so it took option D with it. */
 .postAvatar {
-  width: 44px;
-  height: 44px;
-  border-radius: 50%;
+  width: 72px;
+  height: 72px;
+  border-radius: 14px;
   background: linear-gradient(135deg, var(--brand-green-light), var(--brand-green));
   display: flex;
   align-items: center;
   justify-content: center;
   color: var(--cream);
-  font-family: var(--font-serif);
-  font-size: 18px;
-  font-weight: 600;
+  font-family: var(--font-sans);
+  font-size: 28px;
+  font-weight: 500;
   flex-shrink: 0;
+  overflow: hidden;
 }
+/* A COLUMN since ENG-1441: the label pill now closes the stack under the byline
+   (mobile's `labelPillStacked`), and it has to hug its own text via
+   `align-self: flex-start` rather than filling the column — which only works
+   when the parent is a flex column. The reel's `.reelMeta` has been one since
+   ENG-1438 for exactly the same reason, so the two heads now stack alike.
+
+   They do NOT yet agree on SCALE, and that is a drift ENG-1441 found but did
+   not close: `.reelHorse` is pinned to mobile's `HEAD_NAME_SIZE` (15/20) by the
+   parity guard, while `.postHorse` below is 17px/1.2 and `.postByline` 12.5px —
+   mobile's classic head is 15/20 and 12/16, the SAME numbers as its reel
+   (ENG-869 tied them to one set of constants precisely so they could not
+   diverge). So admin's two chromes currently render the name at two sizes.
+   Unguarded, out of ENG-1441's declared drift list, and named here rather than
+   changed quietly — it moves every classic-card screenshot in the repo. */
 .postMetaWrap {
   flex: 1;
   min-width: 0;
+  display: flex;
+  flex-direction: column;
+  /* Deliberately NOT `align-items: flex-start`: mobile's `meta` View stretches
+     its children (RN's default) and the pill opts out with its own
+     `alignSelf: 'flex-start'`. Stretching here keeps the name's ellipsis box
+     the full column width, exactly as it is on the card. */
 }
 /* Option D typography: Inter 500 on #3A3A38, matching mobile M1 and web W2.
    Was var(--font-serif)/600 — the member card left Cormorant in ENG-419, and
@@ -872,10 +911,18 @@
   gap: 10px;
   margin: 0 14px 10px;
 }
+/* The rail's scale — 58/72 = 0.81, matching the name's 14/17 = 0.82. (The
+   byline's 11.5/12.5 is looser at 0.92; small type stops scaling before
+   furniture does.) The FULL scale is the one the
+   parity guard pins to mobile's `HEAD_AVATAR_BOX`; this is admin's own
+   compact rendering of the same component, and the radius is scaled with the
+   box so the corner keeps its proportion rather than reading as a bigger
+   rounding on a smaller tile. */
 .previewCompact .postAvatar {
-  width: 36px;
-  height: 36px;
-  font-size: 14px;
+  width: 58px;
+  height: 58px;
+  border-radius: 11px;
+  font-size: 22px;
 }
 .previewCompact .postHorse {
   font-size: 14px;
@@ -1057,10 +1104,20 @@
    REEL CHROME (ENG-769)
 
    The member card gives a portrait VIDEO Instagram's reel treatment: no white
-   header row, the identity overlaid on the frame on a soft ink scrim. Values
-   mirror mobile's `reelTopScrim` / `reelHorse` / `reelByline` block in
-   stablepass-mobile `src/components/post-card.tsx` (Spacing.lg/xl = 16/20px,
-   Colors.ink #1A1A1A at 55%, white at 85%).
+   header row, the identity overlaid on the frame on a soft ink scrim.
+
+   WHERE THE VALUES COME FROM (updated ENG-1438). Mobile's ENG-1271 split the
+   card head into its own component, so the mirror is now two files in
+   stablepass-mobile:
+     - `src/components/post-card.tsx` — `reelCard`, `reelTopScrim`, and the
+       label pill (`labelPill` + `labelPillStacked`), which the card builds and
+       slots into BOTH heads.
+     - `src/components/post-head.tsx` — `reelName` (was `reelHorse`), and
+       `reelByline` / `reelMeta`.
+   Spacing.xs/sm/lg/xl = 4/8/16/20px, Colors.ink #1A1A1A at 55%, white at 85%.
+   `.reelHorse` keeps its old spelling against mobile's `reelName` — see the
+   note in reel-chrome-parity.test.ts, which asserts the mapping so the
+   misnomer cannot hide a drift.
 
    These are CSS facts no render test can see — Vitest stubs CSS modules — so
    compose-css.test.ts pins them, per the note at the top of that file.
@@ -1100,16 +1157,26 @@
   pointer-events: none;
 }
 
-/* The same avatar as the classic head (mobile reuses <Avatar size="sm"> in
-   both), plus a hairline so it separates from a bright frame. */
+/* The same avatar as the classic head — one `HeadAvatar` on mobile, one
+   `.postAvatar` here — plus a hairline so the box separates from a bright
+   frame. ENG-1441 closed the drift this comment used to record: both chromes
+   now draw the 72px rounded box, and the box + radius are read out of mobile by
+   reel-chrome-parity.test.ts. The ring follows `border-radius` on its own, so
+   there is nothing to re-round here. */
 .reelAvatar {
   box-shadow: 0 0 0 1.5px rgba(255, 255, 255, 0.35);
 }
 
+/* Mobile's `reelMeta` (post-head.tsx): the column beside the disc. A flex
+   COLUMN since ENG-1438, because the label pill below the byline has to hug its
+   own text (`align-self: flex-start`) instead of filling the column — which is
+   what mobile's `labelPillStacked` does. */
 .reelMeta {
   flex: 1;
   min-width: 0;
   padding-right: 8px;
+  display: flex;
+  flex-direction: column;
 }
 
 .reelHorse {
@@ -1124,7 +1191,13 @@
   text-overflow: ellipsis;
 }
 
+/* `white-space: nowrap` + ellipsis is mobile's `numberOfLines={reel ? 1 :
+   undefined}` — ONE line on the reel, unlimited on the classic head. The
+   weight is mobile's `FontFamily.sans` (Inter_400Regular) rather than an
+   inherited default; both are read back by reel-chrome-parity.test.ts. */
 .reelByline {
+  font-family: var(--font-sans);
+  font-weight: 400;
   font-size: 12px;
   line-height: 16px;
   color: rgba(255, 255, 255, 0.85);
@@ -1133,32 +1206,79 @@
   text-overflow: ellipsis;
 }
 
-/* ENG-769 — the editorial label pill (ENG-745's picker, mobile ENG-750's
-   pill). Brand green with cream type, sitting ABOVE the horse name. Classic
-   cards only: it lives inside the header row, which a reel does not draw. */
-.labelPill {
+/* THE HEAD'S LABEL PILL — ONE pill, BOTH chromes (ENG-1438, ENG-1441).
+
+   It used to not exist on the reel: the pill lived inside mobile's white header
+   row, a reel drew no header row, so a label chosen for a portrait video reached
+   no member and this preview said so in a note. Mobile changed that — the card
+   now builds the pill ONCE (`renderLabelPill`) and slots it into BOTH heads via
+   `PostHead`'s `below` prop (Naufal, 31 Aug 2026: "the reel follows the post
+   format") — so the note was telling the operator something false, and it is
+   gone with it.
+
+   ENG-1441 finished the job. These classes were `.reelLabelPill*` and the
+   CLASSIC head kept a separate `.labelPill` carrying the old uppercase 10.5px
+   chip ABOVE the name — a pre-existing drift from mobile's sentence-case 11.5px
+   stacked pill, and two admin chromes disagreeing with each other as well as
+   with mobile. The classic chip is deleted, not re-tuned: mobile has one pill
+   style, so admin has one, renamed `.headLabelPill*` because it is no longer
+   the reel's. Two copies of a value is two chances for them to drift, which is
+   the disease this whole file is being treated for.
+
+   Values are mobile's `labelPill` + `labelPillStacked` + `labelPillText` +
+   `labelDot`, read back by reel-chrome-parity.test.ts. */
+.headLabelPill {
+  display: inline-flex;
+  align-items: center;
+  align-self: flex-start;
+  max-width: 100%;
+  flex-shrink: 0;
+  gap: 5px;
+  height: 20px;
+  margin-top: 4px;
+  padding: 0 10px;
+  border-radius: 999px;
   background: var(--brand-green);
   color: var(--cream);
-  font-size: 10.5px;
-  letter-spacing: 0.945px;
-  text-transform: uppercase;
-  padding: 5px 12px;
-  gap: 6px;
-  margin-bottom: 6px;
 }
 
-/* Why the pill is missing, said out loud rather than left for the operator to
-   notice. Amber-ish muted note under the card, not an error. */
-.previewReelNote {
-  font-size: 12px;
-  line-height: 1.45;
-  color: var(--muted);
-  background: var(--cream-dark);
-  border-left: 2px solid var(--brand-green);
-  border-radius: 4px;
-  padding: 8px 10px;
-  margin: 8px 0 0;
+/* `labelDot` — 5px cream. (The race badge's dot is 6px; this one is not it.) */
+.headLabelPillDot {
+  width: 5px;
+  height: 5px;
+  flex-shrink: 0;
+  border-radius: 999px;
+  background: var(--cream);
 }
+
+/* `labelPillText` — SENTENCE CASE on both heads now (Justin, 26 Aug: titles are
+   free text, and ALL-CAPS made a truncated title read as shouting). A long
+   title ellipsises within the pill rather than forcing it wider. The face is
+   mobile's `FontFamily.sansSemiBold`, read back by the parity guard. */
+.headLabelPillText {
+  font-family: var(--font-sans);
+  font-weight: 600;
+  font-size: 11.5px;
+  letter-spacing: 0.2px;
+  /* mobile `labelPillText.lineHeight` — 16, inside the 20px pill. */
+  line-height: 16px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* `.labelPill` — the classic head's own uppercase 10.5px chip, sitting ABOVE
+   the name — was DELETED by ENG-1441 rather than re-tuned. Mobile builds one
+   pill and stacks it under the byline on both heads (`labelPillStacked`), so
+   admin draws `.headLabelPill` in both chromes and there is no second chip left
+   to disagree with it. The 0.945px tracking went with it: that number was for
+   caps, and the pill has been sentence case since 26 Aug. */
+
+/* `.previewReelNote` ("Reels show no label pill…") was REMOVED by ENG-1438
+   rather than reworded: mobile now draws the pill on the reel, so there is no
+   longer anything to explain away. A note that survives the fact it described
+   is the same quiet lie it was written to prevent. */
 
 /* The sidebar scale, matching the compact rules for the classic head. */
 .previewCompact .reelScrim {
@@ -1173,8 +1293,8 @@
   font-size: 11px;
   line-height: 14px;
 }
-.previewCompact .previewReelNote {
-  font-size: 11.5px;
+.previewCompact .headLabelPillText {
+  font-size: 10.5px;
 }
 
 /* ENG-979 — the Add-new row under the title picker.
@@ -1280,9 +1400,11 @@
   display: block;
 }
 
-/* A trainer's photo, cropped to the same circle. Falls back to the initial
-   avatar in the component when there is no photo — this rule is never reached
-   for a photoless trainer. */
+/* A trainer's photo, cropped to the same ROUNDED BOX (the radius comes from
+   `.postAvatar`, which this sits on). Falls back to the initial avatar in the
+   component when there is no photo AND when the signed URL fails to load — so
+   this rule is never reached for a photoless trainer, and a dead URL no longer
+   leaves a broken-image glyph in the head (ENG-1441). */
 .photoAvatar {
   background: none;
   overflow: hidden;
@@ -1371,4 +1493,110 @@
   padding: 6px 8px;
   font-size: 12.5px;
   color: var(--muted);
+}
+
+/* ---- Phone width (ENG-1590 / A3b) ----------------------------------------
+   Compose is already one column below 1080px; these are the pieces that still
+   fought a 390px screen. Indented inside the query on purpose: compose-css
+   .test.ts counts only TOP-LEVEL selectors, so none of these read as a
+   redeclaration of the desktop rule they adjust. */
+@media (max-width: 767px) {
+  /* The five topbar actions wrap to two rows under the title, so the sticky
+     topbar would stand ~150px tall under the 56px brand bar and cover a
+     quarter of the screen for the whole compose. Let it scroll away here:
+     the Publish panel at the foot of the steps carries the same Publish /
+     Preview actions. Doubled class = (0,2,0), so it beats globals'
+     `.admin-topbar { position: sticky }` whatever order the sheets load in. */
+  .topbar.topbar {
+    position: static;
+  }
+
+  /* The file row: the name + "uploading 42%" status used to be one
+     ellipsised line next to Replace / Remove, so on a phone the progress
+     figure was the part that got cut off. Let it wrap above the buttons. */
+  .uploadTools {
+    flex-wrap: wrap;
+    padding: 12px 14px;
+  }
+  .uploadMeta {
+    flex: 1 1 100%;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+  .uploadBtn {
+    min-height: 36px;
+    padding: 6px 14px;
+  }
+
+  /* PosterScrubber: the native range is a ~16px-tall target with a tiny
+     thumb on iOS. Draw our own: a 44px-tall hit area (the iOS minimum), an
+     8px track like the upload progress bar, and a 28px thumb. */
+  .posterScrubRange {
+    -webkit-appearance: none;
+    appearance: none;
+    height: 44px;
+    margin: 4px 0;
+    background: transparent;
+    touch-action: pan-y;
+    cursor: pointer;
+  }
+  .posterScrubRange::-webkit-slider-runnable-track {
+    height: 8px;
+    background: var(--line-dark);
+    border-radius: var(--radius-pill);
+  }
+  .posterScrubRange::-moz-range-track {
+    height: 8px;
+    background: var(--line-dark);
+    border-radius: var(--radius-pill);
+  }
+  .posterScrubRange::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 28px;
+    height: 28px;
+    margin-top: -10px; /* centre the 28px thumb on the 8px track */
+    border-radius: 50%;
+    background: var(--brand-green);
+    border: 3px solid var(--white);
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.3);
+  }
+  /* Firefox sizes the thumb content-box (border outside), WebKit border-box;
+     22px + 2×3px border = the same 28px thumb. */
+  .posterScrubRange::-moz-range-thumb {
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    background: var(--brand-green);
+    border: 3px solid var(--white);
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.3);
+  }
+  .posterScrubRange:disabled {
+    cursor: default;
+    opacity: 0.5;
+  }
+  .posterScrubRange:focus-visible {
+    outline: 2px solid var(--brand-green);
+    outline-offset: 2px;
+  }
+}
+
+/* ENG-1598 — the video set reuses the photo strip's tiles (.photoTile and
+   friends, owner decision: no new mockup). Only two things are new: the tile's
+   own progress bar — the Step 3 .progressTrack at tile scale — and the glyph a
+   tile shows before it has a poster or a local frame. */
+.videoTileTrack {
+  height: 4px;
+  margin: 0 5px 4px;
+  background: var(--line-dark);
+  border-radius: var(--radius-pill);
+  overflow: hidden;
+}
+.videoTileGlyph {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: rgba(255, 255, 255, 0.75);
 }

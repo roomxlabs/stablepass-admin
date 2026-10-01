@@ -202,7 +202,8 @@ describe("the caption counter has no over-limit state (ENG-745)", () => {
 // half of this ticket could be reverted with every other suite green.
 //
 // The values are the member card's own (stablepass-mobile
-// `src/components/post-card.tsx`: reelTopScrim / reelHorse / reelByline,
+// `src/components/post-card.tsx`: reelTopScrim + the label pill; and, since
+// ENG-1271, `src/components/post-head.tsx`: reelName (was reelHorse) / reelByline,
 // Spacing.lg/xl = 16/20px, Colors.ink #1A1A1A at 55%), so this is a fidelity
 // guard rather than a restatement of arbitrary numbers.
 describe("reel chrome fidelity (ENG-769)", () => {
@@ -236,20 +237,54 @@ describe("reel chrome fidelity (ENG-769)", () => {
     expect(rule(".previewCompact .postCardReel")).toMatch(/padding-top:\s*0/);
   });
 
-  it("draws the label pill in brand green with cream type", () => {
-    const pill = rule(".labelPill");
+  it("draws ONE label pill for both heads, stacked under the byline", () => {
+    // ENG-1438 gave the reel a pill; ENG-1441 deleted the classic head's own.
+    //
+    // There used to be TWO tests here, for two rules: `.labelPill` (the classic
+    // chip — uppercase, 10.5px, above the name) and `.reelLabelPill` (mobile's
+    // current sentence-case stacked pill). Mobile has ONE `labelPill`, built by
+    // one factory and slotted into both heads, so admin has one too and it is
+    // spelled `.headLabelPill` — it is no longer the reel's.
+    const pill = rule(".headLabelPill");
     expect(pill).toMatch(/background:\s*var\(--brand-green\)/);
     expect(pill).toMatch(/color:\s*var\(--cream\)/);
-    expect(pill).toMatch(/text-transform:\s*uppercase/);
+    // `labelPillStacked` — hugs its text under the byline, not centred in the
+    // name's row and not stretched to the column's width.
+    expect(pill).toMatch(/align-self:\s*flex-start/);
+    expect(pill).toMatch(/max-width:\s*100%/);
+    // Sentence case, NOT the old chip's uppercase (Justin, 26 Aug).
+    expect(rule(".headLabelPillText")).not.toMatch(/text-transform/);
     // Tokens, never eyeballed hex.
     expect(pill).not.toMatch(/#[0-9a-f]{3,6}/i);
+    expect(rule(".headLabelPillDot")).toMatch(/background:\s*var\(--cream\)/);
   });
 
-  it("styles the note that explains a dropped label as a note, not an error", () => {
-    const note = rule(".previewReelNote");
-    expect(note).toMatch(/color:\s*var\(--muted\)/);
-    // Never red: the label is not a mistake, it just will not render here.
-    expect(note).not.toMatch(/var\(--danger\)|#c0392b|red/i);
+  it("no longer ships the classic head's separate uppercase chip", () => {
+    // The ABSENCE is the assertable fact, exactly as it is for `.previewReelNote`
+    // below: a revert that restored `.labelPill` would put two pill treatments
+    // back on one screen and quietly un-fix ENG-1441's third drift, with every
+    // other assertion in this file still green.
+    expect(
+      CSS,
+      "`.labelPill` is back — the classic head must draw `.headLabelPill`, the " +
+        "same pill mobile slots into both heads",
+      // Anchored on any selector boundary, not just a line start: a re-add as
+      // `.previewCompact .labelPill {` or `.pill, .labelPill {` is the same
+      // chip coming back, and a `\n`-anchored pattern would not see either.
+    ).not.toMatch(/(^|[\s,>])\.labelPill\s*\{/m);
+  });
+
+  it("no longer ships the note that told the operator the pill would vanish", () => {
+    // The note is a CSS fact too, and its ABSENCE is the assertable one: a
+    // revert that brought `.previewReelNote` back would put a false sentence
+    // under every reel, and nothing else in this repo would notice.
+    //
+    // Anchored on the RULE (a selector at the start of a line, opening a block),
+    // not on the bare name: the stylesheet still MENTIONS `.previewReelNote` in
+    // the comment that records why it went, and a guard that a tombstone can
+    // trip is a guard nobody will be able to keep.
+    expect(CSS).not.toMatch(/^\s*\.previewReelNote\s*\{/m);
+    expect(CSS).not.toMatch(/^\s*\.previewCompact\s+\.previewReelNote\s*\{/m);
   });
 });
 
@@ -350,5 +385,18 @@ describe("the Step 3 drop zone stacks icon / title / subtitle / button (ENG-1299
     // them: without either one the column drifts left and the icon detaches.
     expect(rule(".uploadZone")).toMatch(/text-align:\s*center/);
     expect(rule(".dropIcon")).toMatch(/margin:\s*0\s+auto\s+12px/);
+  });
+});
+
+describe("the Step 3 upload meta line never truncates its status (ENG-1611)", () => {
+  // At 1280 a multi-video cover's line — "name · size · cover of 3 · uploaded
+  // · processing" — outgrew the row beside "Replace all" / "Remove" and was
+  // ellipsised to "· uploaded · proces…", hiding the one word that matters.
+  it("wraps instead of clipping", () => {
+    const meta = rule(".uploadMeta");
+    expect(meta).not.toMatch(/white-space:\s*nowrap/);
+    expect(meta).not.toMatch(/text-overflow:\s*ellipsis/);
+    expect(meta).not.toMatch(/overflow:\s*hidden/);
+    expect(meta).toMatch(/overflow-wrap:\s*anywhere/);
   });
 });

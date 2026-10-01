@@ -1,11 +1,37 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { makeFakeClient, blankState, type FakeState } from "@/lib/testing/supabase-fake";
+import { makeFakeClient, blankState, type FakeState, type TableScript } from "@/lib/testing/supabase-fake";
 import { POST_LABEL_PRESETS } from "@/lib/posts/labels";
 
 const state: FakeState = blankState();
 
 vi.mock("@/lib/supabase/server", () => ({
   supabaseServer: async () => makeFakeClient(state),
+}));
+
+// ENG-1597 — `cleanupVideos` (via lib/posts/videos.ts) calls out to Mux. Mocked
+// here the same way app/api/admin/posts/route.test.ts mocks it, so a route
+// test can assert WHICH ids cleanup ran for without any real network access.
+const cleanupMuxVideo = vi.fn<
+  (v: { videoId: string; assetId?: string | null; uploadId?: string | null }) => Promise<void>
+>(async () => undefined);
+vi.mock("@/lib/mux", () => ({
+  MuxError: class MuxError extends Error {},
+  createMuxDirectUpload: vi.fn(),
+  // Mirrors the real `cleanupMuxVideo`'s own contract (lib/mux.ts): it NEVER
+  // rejects — any failure is caught and swallowed internally. The route's own
+  // `await cleanupVideos(...)` carries no try/catch of its own; it relies
+  // entirely on that contract. Wrapping the spy the same way lets a test
+  // actually simulate a failure (`cleanupMuxVideo.mockRejectedValueOnce(...)`)
+  // and still prove the route survives it, rather than calling a spy that
+  // already resolves by default and proves nothing (see "a Mux cleanup
+  // failure never turns a successful save into a non-200" below).
+  cleanupMuxVideo: async (v: { videoId: string; assetId?: string | null; uploadId?: string | null }) => {
+    try {
+      await cleanupMuxVideo(v);
+    } catch {
+      // swallowed, exactly like the real implementation.
+    }
+  },
 }));
 
 import { PATCH, DELETE } from "./route";
@@ -23,6 +49,7 @@ const patchReq = (body: unknown) => new Request("http://t", { method: "PATCH", b
 
 beforeEach(() => {
   Object.assign(state, blankState());
+  cleanupMuxVideo.mockClear();
 });
 
 describe("DELETE /api/admin/posts/:id — discard draft only", () => {
@@ -34,7 +61,9 @@ describe("DELETE /api/admin/posts/:id — discard draft only", () => {
 
   it("204 when the post is a draft", async () => {
     asAdmin();
-    state.tables.post = { select: { single: { status: "draft" } } };
+    // ENG-1597 — the delete now scopes `.select("id")` off the mutation, so a
+    // successful discard has to return the row it actually removed.
+    state.tables.post = { select: { single: { status: "draft" } }, mutate: { rows: [{ id: "p1" }] } };
     const r = await DELETE(new Request("http://t"), ctx("p1"));
     expect(r.status).toBe(204);
   });
@@ -53,6 +82,53 @@ describe("DELETE /api/admin/posts/:id — discard draft only", () => {
     state.tables.post = { select: { single: null } };
     const r = await DELETE(new Request("http://t"), ctx("p1"));
     expect(r.status).toBe(404);
+  });
+
+  // ENG-1597 — a discarded video draft's rows must not leak Mux assets/uploads.
+  it("204 for a video draft → cleans up every one of its post_video rows' Mux assets/uploads", async () => {
+    asAdmin();
+    state.tables.post = { select: { single: { status: "draft" } }, mutate: { rows: [{ id: "p1" }] } };
+    state.tables.post_video = {
+      select: {
+        rows: [
+          { id: "pv0", sort_order: 0, status: "ready", mux_upload_id: null, mux_asset_id: "as_0" },
+          { id: "pv1", sort_order: 1, status: "uploading", mux_upload_id: "up_1", mux_asset_id: null },
+        ],
+      },
+    };
+    const r = await DELETE(new Request("http://t"), ctx("p1"));
+    expect(r.status).toBe(204);
+    expect(cleanupMuxVideo).toHaveBeenCalledWith({ videoId: "pv0", assetId: "as_0", uploadId: null });
+    expect(cleanupMuxVideo).toHaveBeenCalledWith({ videoId: "pv1", assetId: null, uploadId: "up_1" });
+  });
+
+  it("a failed post delete → no cleanup call at all", async () => {
+    asAdmin();
+    state.tables.post = { select: { single: { status: "draft" } }, mutate: { error: { message: "nope" } } };
+    state.tables.post_video = {
+      select: { rows: [{ id: "pv0", sort_order: 0, status: "ready", mux_upload_id: null, mux_asset_id: "as_0" }] },
+    };
+    const r = await DELETE(new Request("http://t"), ctx("p1"));
+    expect(r.status).toBe(400);
+    expect(cleanupMuxVideo).not.toHaveBeenCalled();
+  });
+
+  // ENG-1597 — a concurrent publish can win the race between the status check
+  // above and the scoped delete: the delete's own `.eq("status","draft")`
+  // matches nothing, so it comes back with NO error and ZERO rows. The post is
+  // live now, so its (possibly video) Mux assets must survive — no cleanup,
+  // and the caller is told the draft never was discarded.
+  it("a concurrent publish wins the race (delete matches 0 rows, no error) → 409 not_a_draft, no Mux fetch/cleanup", async () => {
+    asAdmin();
+    state.tables.post = { select: { single: { status: "draft" } }, mutate: { rows: [] } };
+    state.tables.post_video = {
+      select: { rows: [{ id: "pv0", sort_order: 0, status: "ready", mux_upload_id: null, mux_asset_id: "as_0" }] },
+    };
+    const r = await DELETE(new Request("http://t"), ctx("p1"));
+    expect(r.status).toBe(409);
+    const j = await r.json();
+    expect(j.error.code).toBe("not_a_draft");
+    expect(cleanupMuxVideo).not.toHaveBeenCalled();
   });
 });
 
@@ -635,5 +711,709 @@ describe("PATCH — subject & byline (ENG-1268)", () => {
     };
     const r = await PATCH(patchReq({ sourceTrainerId: "t9" }), ctx("p1"));
     expect(r.status).toBe(200);
+  });
+});
+
+describe("PATCH — videos (ENG-1597)", () => {
+  const A = "11111111-1111-1111-1111-111111111111";
+  const B = "22222222-2222-2222-2222-222222222222";
+  const C = "33333333-3333-3333-3333-333333333333";
+
+  /** A video post whose current `post_video` rows are exactly `rows`. */
+  function seedVideoPost(rows: { id: string; sort_order: number }[], opts?: { mutate?: boolean }) {
+    state.tables.post = {
+      select: { single: { id: "p1", type: "video" } },
+      ...(opts?.mutate ? { mutate: { single: { id: "p1", type: "video" } } } : {}),
+    };
+    state.tables.post_video = {
+      select: {
+        rows: rows.map((r) => ({
+          id: r.id,
+          sort_order: r.sort_order,
+          status: "ready",
+          mux_upload_id: null,
+          mux_asset_id: `as_${r.id}`,
+        })),
+      },
+    };
+  }
+
+  function videoWrites() {
+    return state.calls.mutations.filter((m) => m.table === "post_video");
+  }
+
+  /** One `post_video` row in the fixture shape `seedVideoPost` uses. */
+  function videoRow(
+    id: string,
+    sortOrder: number,
+    opts?: { status?: string; mux_upload_id?: string | null; mux_asset_id?: string | null },
+  ) {
+    return {
+      id,
+      sort_order: sortOrder,
+      status: opts?.status ?? "ready",
+      mux_upload_id: opts?.mux_upload_id ?? null,
+      mux_asset_id: opts?.mux_asset_id ?? `as_${id}`,
+    };
+  }
+
+  /**
+   * ENG-1597 — `writeVideoSet` now makes SEVERAL separate reads/writes off
+   * `post_video` in one `videos` PATCH: the route's own initial load, an
+   * optional kept-rows check ((b), only when something is removed), the
+   * removal delete's own `.select("*")` ((a)), the reorder upsert ((c)), and
+   * a final re-read ((e)) that the route compares against what it asked for.
+   * The fake (`lib/testing/supabase-fake.ts`) never actually mutates its own
+   * state, so a single shared script cannot express "what this request's
+   * OWN earlier write changed" — the initial load and the final re-read
+   * would otherwise both see the exact same (pre-write) rows, and a reorder
+   * or removal would always 409 as stale.
+   *
+   * `sequencePostVideo` scripts one `TableScript` per access to
+   * `state.tables.post_video` (each `.then()`/`.single()` off a fresh
+   * `sb.from("post_video")` builder advances the cursor by one), so each
+   * stage of the request sees exactly what IT would see. The LAST step
+   * repeats for every access beyond the list — a step a test does not care
+   * about (e.g. the poster-clear update, whose result is only checked for
+   * `error`) rides along on whichever neighbouring stage already has the
+   * right shape.
+   */
+  function sequencePostVideo(steps: TableScript[]) {
+    let i = 0;
+    Object.defineProperty(state.tables, "post_video", {
+      configurable: true,
+      get() {
+        const step = steps[Math.min(i, steps.length - 1)];
+        i += 1;
+        return step;
+      },
+    });
+  }
+
+  it("reorder [C, A, B] → ONE upsert with that exact payload and onConflict 'id'; nothing deleted", async () => {
+    asAdmin();
+    seedVideoPost([
+      { id: A, sort_order: 0 },
+      { id: B, sort_order: 1 },
+      { id: C, sort_order: 2 },
+    ]);
+    // Step 0: the route's own initial load, still in the ORIGINAL order.
+    // Step 1: everything after the reorder upsert — its own `.select(...)`
+    // (no created_at collisions, so no ghosts), the poster-clear update (only
+    // its `error` is read), and the final re-read, which must now show the
+    // ordered set the request actually asked for.
+    sequencePostVideo([
+      { select: { rows: [videoRow(A, 0), videoRow(B, 1), videoRow(C, 2)] } },
+      { mutate: { rows: [] }, select: { rows: [videoRow(C, 0), videoRow(A, 1), videoRow(B, 2)] } },
+    ]);
+    const r = await PATCH(patchReq({ videos: [C, A, B] }), ctx("p1"));
+    expect(r.status).toBe(200);
+    const upsert = videoWrites().find((m) => m.op === "upsert");
+    expect(upsert?.payload).toEqual([
+      { id: C, post_id: "p1", sort_order: 0 },
+      { id: A, post_id: "p1", sort_order: 1 },
+      { id: B, post_id: "p1", sort_order: 2 },
+    ]);
+    expect(upsert?.options).toEqual({ onConflict: "id" });
+    expect(videoWrites().some((m) => m.op === "delete")).toBe(false);
+    // The new slot 0 (C) is a genuinely new cover → its poster frame is cleared.
+    expect(videoWrites()).toContainEqual(
+      expect.objectContaining({
+        op: "update",
+        payload: { poster_time_s: null },
+        filters: expect.arrayContaining([{ column: "id", value: C }]),
+      }),
+    );
+  });
+
+  it("removing B → delete filtered to [B] + post_id, then cleanup called with B's mux asset id", async () => {
+    asAdmin();
+    seedVideoPost([
+      { id: A, sort_order: 0 },
+      { id: B, sort_order: 1 },
+    ]);
+    // Step 0: initial load, both rows still present.
+    // Step 1: the removal delete's own `.select("*")` RETURNS the row it
+    // removed — that is the only source `out.removed`/Mux cleanup reads.
+    // Step 2: the kept-rows check ((b)) and the final re-read ((e)) both
+    // want to see exactly the surviving set, so one step covers both.
+    sequencePostVideo([
+      { select: { rows: [videoRow(A, 0), videoRow(B, 1)] } },
+      { mutate: { rows: [videoRow(B, 1)] } },
+      { select: { rows: [videoRow(A, 0)] } },
+    ]);
+    const r = await PATCH(patchReq({ videos: [A] }), ctx("p1"));
+    expect(r.status).toBe(200);
+    const del = videoWrites().find((m) => m.op === "delete");
+    expect(del?.filters).toEqual(
+      expect.arrayContaining([
+        { column: "id", value: [B], op: "in" },
+        { column: "post_id", value: "p1" },
+      ]),
+    );
+    expect(cleanupMuxVideo).toHaveBeenCalledWith({ videoId: B, assetId: `as_${B}`, uploadId: null });
+    // Cleanup ran for EXACTLY the removed row — a kept row (A) is not this
+    // request's to reach out to Mux for, however it got there.
+    expect(cleanupMuxVideo).toHaveBeenCalledTimes(1);
+    expect(cleanupMuxVideo).not.toHaveBeenCalledWith(expect.objectContaining({ videoId: A }));
+    // Slot 0 (A) did not change → no poster clear and no reorder upsert.
+    expect(videoWrites().some((m) => m.op === "upsert")).toBe(false);
+  });
+
+  it("slot-0 change clears poster_time_s on the new slot 0", async () => {
+    asAdmin();
+    seedVideoPost([
+      { id: A, sort_order: 0 },
+      { id: B, sort_order: 1 },
+    ]);
+    sequencePostVideo([
+      { select: { rows: [videoRow(A, 0), videoRow(B, 1)] } },
+      { mutate: { rows: [] }, select: { rows: [videoRow(B, 0), videoRow(A, 1)] } },
+    ]);
+    const r = await PATCH(patchReq({ videos: [B, A] }), ctx("p1"));
+    expect(r.status).toBe(200);
+    expect(videoWrites()).toContainEqual(
+      expect.objectContaining({
+        op: "update",
+        payload: { poster_time_s: null },
+        filters: expect.arrayContaining([{ column: "id", value: B }]),
+      }),
+    );
+  });
+
+  it("unchanged slot 0 → no poster clear, even though the tail reorders", async () => {
+    asAdmin();
+    seedVideoPost([
+      { id: A, sort_order: 0 },
+      { id: B, sort_order: 1 },
+      { id: C, sort_order: 2 },
+    ]);
+    sequencePostVideo([
+      { select: { rows: [videoRow(A, 0), videoRow(B, 1), videoRow(C, 2)] } },
+      { mutate: { rows: [] }, select: { rows: [videoRow(A, 0), videoRow(C, 1), videoRow(B, 2)] } },
+    ]);
+    const r = await PATCH(patchReq({ videos: [A, C, B] }), ctx("p1"));
+    expect(r.status).toBe(200);
+    const upsert = videoWrites().find((m) => m.op === "upsert");
+    expect(upsert).toBeTruthy(); // B/C still swap
+    expect(
+      videoWrites().some((m) => m.op === "update" && m.payload?.poster_time_s === null),
+    ).toBe(false);
+  });
+
+  const D = "44444444-4444-4444-4444-444444444444";
+  const E = "55555555-5555-5555-5555-555555555555";
+  const F = "66666666-6666-6666-6666-666666666666";
+
+  it.each([
+    ["empty", []],
+    ["a duplicate", [A, A]],
+    ["a non-uuid", [A, "not-a-uuid"]],
+    ["6 ids", [A, B, C, D, E, F]],
+  ])("videos = %s → 400 invalid_video_set, no post_video write", async (_label, videos) => {
+    asAdmin();
+    seedVideoPost([
+      { id: A, sort_order: 0 },
+      { id: B, sort_order: 1 },
+      { id: C, sort_order: 2 },
+    ]);
+    const r = await PATCH(patchReq({ videos }), ctx("p1"));
+    expect(r.status).toBe(400);
+    const j = await r.json();
+    expect(j.error.code).toBe("invalid_video_set");
+    expect(videoWrites()).toHaveLength(0);
+  });
+
+  it("an id not among the post's current rows → 400 invalid_video_set, no writes", async () => {
+    asAdmin();
+    seedVideoPost([{ id: A, sort_order: 0 }]);
+    const r = await PATCH(patchReq({ videos: [A, B] }), ctx("p1"));
+    expect(r.status).toBe(400);
+    const j = await r.json();
+    expect(j.error.code).toBe("invalid_video_set");
+    expect(videoWrites()).toHaveLength(0);
+  });
+
+  it("knownVideos mismatch → 409 video_set_stale, no writes", async () => {
+    asAdmin();
+    seedVideoPost([
+      { id: A, sort_order: 0 },
+      { id: B, sort_order: 1 },
+    ]);
+    const r = await PATCH(patchReq({ videos: [B, A], knownVideos: [A] }), ctx("p1"));
+    expect(r.status).toBe(409);
+    const j = await r.json();
+    expect(j.error.code).toBe("video_set_stale");
+    expect(videoWrites()).toHaveLength(0);
+  });
+
+  it("videos on a non-video post → 409 not_video_post", async () => {
+    asAdmin();
+    state.tables.post = { select: { single: { id: "p1", type: "photo" } } };
+    const r = await PATCH(patchReq({ videos: [A] }), ctx("p1"));
+    expect(r.status).toBe(409);
+    const j = await r.json();
+    expect(j.error.code).toBe("not_video_post");
+  });
+
+  it("poster_time_s on a video post also updates the slot-0 post_video row", async () => {
+    asAdmin();
+    seedVideoPost([{ id: A, sort_order: 0 }], { mutate: true });
+    const r = await PATCH(patchReq({ poster_time_s: 4.2 }), ctx("p1"));
+    expect(r.status).toBe(200);
+    expect(videoWrites()).toContainEqual(
+      expect.objectContaining({
+        op: "update",
+        payload: { poster_time_s: 4.2 },
+        filters: expect.arrayContaining([{ column: "id", value: A }]),
+      }),
+    );
+    // ...and the ordinary `post` column write still happened, unchanged.
+    const postUpdate = state.calls.mutations.find((m) => m.table === "post" && m.op === "update");
+    expect(postUpdate?.payload).toMatchObject({ poster_time_s: 4.2 });
+  });
+
+  it("poster_time_s on a NON-video post does not touch post_video at all", async () => {
+    asAdmin();
+    state.tables.post = {
+      select: { single: { id: "p1", type: "photo" } },
+      mutate: { single: { id: "p1" } },
+    };
+    const r = await PATCH(patchReq({ poster_time_s: 4.2 }), ctx("p1"));
+    expect(r.status).toBe(200);
+    expect(videoWrites()).toHaveLength(0);
+  });
+
+  it("a Mux cleanup failure never turns a successful save into a non-200", async () => {
+    asAdmin();
+    seedVideoPost([
+      { id: A, sort_order: 0 },
+      { id: B, sort_order: 1 },
+    ]);
+    sequencePostVideo([
+      { select: { rows: [videoRow(A, 0), videoRow(B, 1)] } },
+      { mutate: { rows: [videoRow(B, 1)] } },
+      { select: { rows: [videoRow(A, 0)] } },
+    ]);
+    // Actually simulate the failure this test claims to guard against — the
+    // mocked `cleanupMuxVideo` REJECTS, same as a real Mux 500 would surface
+    // before its own internal swallow. The wrapper above (not this bare spy)
+    // is what has to catch it, exactly like the real implementation does —
+    // a spy that merely resolves (the old version of this test) proves nothing.
+    cleanupMuxVideo.mockRejectedValueOnce(new Error("mux down"));
+    const r = await PATCH(patchReq({ videos: [A] }), ctx("p1"));
+    expect(r.status).toBe(200);
+  });
+
+  it("videos-only request skips the post-table UPDATE and reads the row instead", async () => {
+    asAdmin();
+    seedVideoPost([
+      { id: A, sort_order: 0 },
+      { id: B, sort_order: 1 },
+    ]);
+    sequencePostVideo([
+      { select: { rows: [videoRow(A, 0), videoRow(B, 1)] } },
+      { mutate: { rows: [] }, select: { rows: [videoRow(B, 0), videoRow(A, 1)] } },
+    ]);
+    const r = await PATCH(patchReq({ videos: [B, A] }), ctx("p1"));
+    expect(r.status).toBe(200);
+    expect(state.calls.mutations.some((m) => m.table === "post" && m.op === "update")).toBe(false);
+  });
+
+  // ENG-1597 — the removal's own delete+cleanup does not depend on whether a
+  // LATER step (the reorder upsert) succeeds: `out.removed` is filled in as
+  // soon as the delete + kept-rows check both succeed, and the route's
+  // `finally` runs `cleanupVideos(out.removed)` on every exit path — success
+  // OR a later failure — so a reorder failure cannot strand (or hide) a
+  // removal that already committed.
+  it("remove + reorder where the reorder upsert fails → 400, but the removed row's Mux cleanup still ran", async () => {
+    asAdmin();
+    state.tables.post = { select: { single: { id: "p1", type: "video" } } };
+    sequencePostVideo([
+      // 1. the route's own initial load
+      { select: { rows: [videoRow(A, 0), videoRow(B, 1), videoRow(C, 2)] } },
+      // 2. the removal delete's own `.select("*")` — returns B
+      { mutate: { rows: [videoRow(B, 1)] } },
+      // 3. the kept-rows check — A and C both still exist
+      { select: { rows: [videoRow(A, 0), videoRow(C, 2)] } },
+      // 4. the reorder upsert fails
+      { mutate: { error: { code: "XX000", message: "internal error" } } },
+    ]);
+    const r = await PATCH(patchReq({ videos: [A, C] }), ctx("p1"));
+    expect(r.status).toBe(400);
+    const j = await r.json();
+    expect(j.error.code).toBe("update_failed");
+    expect(cleanupMuxVideo).toHaveBeenCalledWith({ videoId: B, assetId: `as_${B}`, uploadId: null });
+    // Cleanup ran for EXACTLY the removed row — neither kept row (A, C) is
+    // this request's to reach out to Mux for, even though the reorder that
+    // would have touched them failed.
+    expect(cleanupMuxVideo).toHaveBeenCalledTimes(1);
+    expect(cleanupMuxVideo).not.toHaveBeenCalledWith(expect.objectContaining({ videoId: A }));
+    expect(cleanupMuxVideo).not.toHaveBeenCalledWith(expect.objectContaining({ videoId: C }));
+  });
+
+  it("reorder upsert error 23505 → 409 video_set_stale", async () => {
+    asAdmin();
+    seedVideoPost([
+      { id: A, sort_order: 0 },
+      { id: B, sort_order: 1 },
+    ]);
+    state.tables.post_video = {
+      ...state.tables.post_video,
+      mutate: { error: { code: "23505", message: "duplicate key value violates unique constraint" } },
+    };
+    const r = await PATCH(patchReq({ videos: [B, A] }), ctx("p1"));
+    expect(r.status).toBe(409);
+    const j = await r.json();
+    expect(j.error.code).toBe("video_set_stale");
+  });
+
+  it("removal delete error → 400 update_failed, no upsert attempted", async () => {
+    asAdmin();
+    seedVideoPost([
+      { id: A, sort_order: 0 },
+      { id: B, sort_order: 1 },
+    ]);
+    state.tables.post_video = {
+      ...state.tables.post_video,
+      mutate: { error: { code: "XX000", message: "internal error" } },
+    };
+    const r = await PATCH(patchReq({ videos: [A] }), ctx("p1"));
+    expect(r.status).toBe(400);
+    const j = await r.json();
+    expect(j.error.code).toBe("update_failed");
+    expect(videoWrites().some((m) => m.op === "upsert")).toBe(false);
+    expect(cleanupMuxVideo).not.toHaveBeenCalled();
+  });
+
+  // ENG-1597 — the upsert is INSERT ... ON CONFLICT: if a racing request
+  // deleted B after this route's own read, B comes back from the upsert as a
+  // GHOST — a re-inserted row with a new `created_at`. The route must catch
+  // that, delete the ghost, and 409 rather than silently reordering a set the
+  // operator never saw.
+  it("a ghost re-insert after the reorder upsert → delete scoped to the ghost's own id + created_at, survivors REPACKED to 0..n-1, 409 video_set_stale", async () => {
+    asAdmin();
+    state.tables.post = { select: { single: { id: "p1", type: "video" } } };
+    const loadedAt = "2026-01-01T00:00:00Z";
+    let reads = 0;
+    Object.defineProperty(state.tables, "post_video", {
+      configurable: true,
+      get() {
+        reads += 1;
+        if (reads === 1)
+          return {
+            select: {
+              rows: [
+                { id: A, sort_order: 0, status: "ready", mux_upload_id: null, mux_asset_id: `as_${A}`, created_at: loadedAt },
+                { id: B, sort_order: 1, status: "ready", mux_upload_id: null, mux_asset_id: `as_${B}`, created_at: loadedAt },
+              ],
+            },
+          };
+        if (reads === 2)
+          return {
+            mutate: {
+              rows: [
+                { id: A, created_at: loadedAt },
+                { id: B, created_at: "2026-02-02T00:00:00Z" }, // ghost — re-created, different created_at
+              ],
+            },
+          };
+        // reads 3/4: the ghost delete + the cover poster clear. Read 5: the
+        // final re-read — B (the ghost) is gone, and our upsert already moved
+        // A to slot 1, so slot 0 is EMPTY (a blanked live post) until repacked.
+        if (reads === 5)
+          return {
+            select: {
+              rows: [
+                { id: A, sort_order: 1, status: "ready", mux_upload_id: null, mux_asset_id: `as_${A}`, created_at: loadedAt },
+              ],
+            },
+          };
+        return { mutate: {} };
+      },
+    });
+    const r = await PATCH(patchReq({ videos: [B, A] }), ctx("p1"));
+    expect(r.status).toBe(409);
+    const j = await r.json();
+    expect(j.error.code).toBe("video_set_stale");
+    const ghostDelete = videoWrites().find((m) => m.op === "delete");
+    // Scoped by the GHOST's created_at, so a real row a concurrent request
+    // restored under the same id survives it.
+    expect(ghostDelete?.filters).toEqual(
+      expect.arrayContaining([
+        { column: "id", value: B },
+        { column: "post_id", value: "p1" },
+        { column: "created_at", value: "2026-02-02T00:00:00Z" },
+      ]),
+    );
+    // Not an early return: the survivor is repacked into slot 0.
+    const upserts = videoWrites().filter((m) => m.op === "upsert");
+    expect(upserts.at(-1)?.payload).toEqual([{ id: A, post_id: "p1", sort_order: 0 }]);
+  });
+
+  // ENG-1597 — a LIVE post's cover must be playable: moving a still-uploading
+  // row into slot 0 would blank the video for every reader of `post`.
+  it("moving an UPLOADING row into slot 0 on a PUBLISHED post → 409 videos_not_ready, no writes", async () => {
+    asAdmin();
+    state.tables.post = { select: { single: { id: "p1", type: "video", status: "published" } } };
+    state.tables.post_video = {
+      select: {
+        rows: [
+          { id: A, sort_order: 0, status: "ready", mux_upload_id: null, mux_asset_id: `as_${A}` },
+          { id: B, sort_order: 1, status: "uploading", mux_upload_id: "up_B", mux_asset_id: null },
+        ],
+      },
+    };
+    const r = await PATCH(patchReq({ videos: [B, A] }), ctx("p1"));
+    expect(r.status).toBe(409);
+    const j = await r.json();
+    expect(j.error.code).toBe("videos_not_ready");
+    expect(j.error.notReady).toEqual([B]);
+    expect(videoWrites()).toHaveLength(0);
+    expect(state.calls.mutations.some((m) => m.table === "post")).toBe(false);
+  });
+
+  it("the same move on a DRAFT post → 200 (a draft's cover need not be ready yet)", async () => {
+    asAdmin();
+    state.tables.post = { select: { single: { id: "p1", type: "video", status: "draft" } } };
+    sequencePostVideo([
+      {
+        select: {
+          rows: [
+            videoRow(A, 0, { status: "ready" }),
+            videoRow(B, 1, { status: "uploading", mux_upload_id: "up_B", mux_asset_id: null }),
+          ],
+        },
+      },
+      {
+        mutate: {},
+        select: {
+          rows: [
+            videoRow(B, 0, { status: "uploading", mux_upload_id: "up_B", mux_asset_id: null }),
+            videoRow(A, 1, { status: "ready" }),
+          ],
+        },
+      },
+    ]);
+    const r = await PATCH(patchReq({ videos: [B, A] }), ctx("p1"));
+    expect(r.status).toBe(200);
+  });
+
+  // ENG-1597 — Mux cleanup for a removal must not fire until AFTER the
+  // renumber upsert has been ATTEMPTED (whichever way it goes) — a removed
+  // cover leaving `post`'s mirrored video columns blank is a one-statement
+  // window, not the length of however long Mux takes to answer.
+  it("Mux cleanup for a removal fires only AFTER the reorder upsert was attempted (success path)", async () => {
+    asAdmin();
+    seedVideoPost([
+      { id: A, sort_order: 0 },
+      { id: B, sort_order: 1 },
+      { id: C, sort_order: 2 },
+    ]);
+    sequencePostVideo([
+      { select: { rows: [videoRow(A, 0), videoRow(B, 1), videoRow(C, 2)] } },
+      { mutate: { rows: [videoRow(B, 1)] } }, // the removal delete returns B
+      { select: { rows: [videoRow(A, 0), videoRow(C, 2)] } }, // kept-rows check: A, C survive
+      { mutate: { rows: [] }, select: { rows: [videoRow(C, 0), videoRow(A, 1)] } }, // reorder + final re-read
+    ]);
+    let upsertAttemptsWhenCleanupRan = -1;
+    cleanupMuxVideo.mockImplementationOnce(async () => {
+      upsertAttemptsWhenCleanupRan = videoWrites().filter((m) => m.op === "upsert").length;
+    });
+    const r = await PATCH(patchReq({ videos: [C, A] }), ctx("p1"));
+    expect(r.status).toBe(200);
+    expect(upsertAttemptsWhenCleanupRan).toBe(1);
+  });
+
+  it("Mux cleanup for a removal still fires — and still only after the reorder upsert was attempted — when that reorder FAILS", async () => {
+    asAdmin();
+    state.tables.post = { select: { single: { id: "p1", type: "video" } } };
+    sequencePostVideo([
+      { select: { rows: [videoRow(A, 0), videoRow(B, 1), videoRow(C, 2)] } },
+      { mutate: { rows: [videoRow(B, 1)] } },
+      { select: { rows: [videoRow(A, 0), videoRow(C, 2)] } },
+      { mutate: { error: { code: "XX000", message: "internal error" } } },
+    ]);
+    let upsertAttemptsWhenCleanupRan = -1;
+    cleanupMuxVideo.mockImplementationOnce(async () => {
+      upsertAttemptsWhenCleanupRan = videoWrites().filter((m) => m.op === "upsert").length;
+    });
+    const r = await PATCH(patchReq({ videos: [A, C] }), ctx("p1"));
+    expect(r.status).toBe(400);
+    const j = await r.json();
+    expect(j.error.code).toBe("update_failed");
+    expect(upsertAttemptsWhenCleanupRan).toBe(1);
+    expect(cleanupMuxVideo).toHaveBeenCalledWith({ videoId: B, assetId: `as_${B}`, uploadId: null });
+  });
+
+  // Only rows the delete's OWN `.select("*")` actually returned are ever
+  // handed to Mux cleanup — a row a concurrent request already removed is
+  // that request's to clean up, not this one's (double-cleanup would be
+  // harmless against a real Mux, but it is not this request's job).
+  it("cleanup runs only for rows the delete itself returned — a row already gone (C) is not cleaned up twice", async () => {
+    asAdmin();
+    seedVideoPost([
+      { id: A, sort_order: 0 },
+      { id: B, sort_order: 1 },
+      { id: C, sort_order: 2 },
+    ]);
+    sequencePostVideo([
+      { select: { rows: [videoRow(A, 0), videoRow(B, 1), videoRow(C, 2)] } },
+      // The request asks to remove both B and C, but only B still existed
+      // to delete by the time this ran — C was already gone.
+      { mutate: { rows: [videoRow(B, 1)] } },
+      { select: { rows: [videoRow(A, 0)] } },
+    ]);
+    const r = await PATCH(patchReq({ videos: [A] }), ctx("p1"));
+    expect(r.status).toBe(200);
+    expect(cleanupMuxVideo).toHaveBeenCalledTimes(1);
+    expect(cleanupMuxVideo).toHaveBeenCalledWith({ videoId: B, assetId: `as_${B}`, uploadId: null });
+    expect(cleanupMuxVideo).not.toHaveBeenCalledWith(expect.objectContaining({ videoId: C }));
+  });
+
+  // ENG-1597 (b) — two concurrent PATCHes removing OPPOSITE videos ({A,B,C}
+  // → [A,C] and → [A,B]) both pass up-front validation; without the
+  // kept-rows re-read they would together empty a published post. Here C
+  // is gone by the time this request's kept-rows check runs (the other
+  // PATCH beat it), so this request must undo its OWN delete rather than
+  // leave the set short of what it validated against.
+  it("opposite-removal race: the kept-rows re-read comes up short → the just-deleted row is RE-INSERTED, no Mux cleanup, 409 video_set_stale", async () => {
+    asAdmin();
+    seedVideoPost([
+      { id: A, sort_order: 0 },
+      { id: B, sort_order: 1 },
+      { id: C, sort_order: 2 },
+    ]);
+    sequencePostVideo([
+      { select: { rows: [videoRow(A, 0), videoRow(B, 1), videoRow(C, 2)] } },
+      { mutate: { rows: [videoRow(B, 1)] } }, // this request's own delete removes B
+      { select: { rows: [videoRow(A, 0)] } }, // C is ALSO gone — a concurrent PATCH won that race
+      { mutate: {} }, // the restore of B succeeds
+    ]);
+    const r = await PATCH(patchReq({ videos: [A, C] }), ctx("p1"));
+    expect(r.status).toBe(409);
+    const j = await r.json();
+    expect(j.error.code).toBe("video_set_stale");
+    // An upsert on the PK, so the real row overwrites any ghost of the same id.
+    const restore = videoWrites().find((m) => m.op === "upsert");
+    expect(restore?.payload).toEqual([videoRow(B, 1)]);
+    expect(restore?.options).toEqual({ onConflict: "id" });
+    expect(cleanupMuxVideo).not.toHaveBeenCalled();
+  });
+
+  it("opposite-removal race, restore FAILS → the deleted row's Mux asset is an orphan now, so cleanup runs for it after all", async () => {
+    asAdmin();
+    seedVideoPost([
+      { id: A, sort_order: 0 },
+      { id: B, sort_order: 1 },
+      { id: C, sort_order: 2 },
+    ]);
+    sequencePostVideo([
+      { select: { rows: [videoRow(A, 0), videoRow(B, 1), videoRow(C, 2)] } },
+      { mutate: { rows: [videoRow(B, 1)] } },
+      { select: { rows: [videoRow(A, 0)] } },
+      { mutate: { error: { code: "XX000", message: "internal error" } } }, // the restore itself fails
+      { select: { rows: [] } }, // …and a fresh read confirms B really is gone
+    ]);
+    const r = await PATCH(patchReq({ videos: [A, C] }), ctx("p1"));
+    expect(r.status).toBe(409);
+    const j = await r.json();
+    expect(j.error.code).toBe("video_set_stale");
+    expect(cleanupMuxVideo).toHaveBeenCalledWith({ videoId: B, assetId: `as_${B}`, uploadId: null });
+  });
+
+  it("restore fails AMBIGUOUSLY (the row is back per a fresh read) → its Mux asset is NOT deleted", async () => {
+    asAdmin();
+    seedVideoPost([
+      { id: A, sort_order: 0 },
+      { id: B, sort_order: 1 },
+      { id: C, sort_order: 2 },
+    ]);
+    sequencePostVideo([
+      { select: { rows: [videoRow(A, 0), videoRow(B, 1), videoRow(C, 2)] } },
+      { mutate: { rows: [videoRow(B, 1)] } },
+      { select: { rows: [videoRow(A, 0)] } },
+      { mutate: { error: { code: "XX000", message: "connection reset" } } },
+      { select: { rows: [{ id: B }] } }, // the write had committed after all
+    ]);
+    const r = await PATCH(patchReq({ videos: [A, C] }), ctx("p1"));
+    expect(r.status).toBe(409);
+    expect(cleanupMuxVideo).not.toHaveBeenCalled();
+  });
+
+  it("restore fails and the confirming read ALSO fails → assets leaked (logged), never deleted", async () => {
+    asAdmin();
+    seedVideoPost([
+      { id: A, sort_order: 0 },
+      { id: B, sort_order: 1 },
+      { id: C, sort_order: 2 },
+    ]);
+    sequencePostVideo([
+      { select: { rows: [videoRow(A, 0), videoRow(B, 1), videoRow(C, 2)] } },
+      { mutate: { rows: [videoRow(B, 1)] } },
+      { select: { rows: [videoRow(A, 0)] } },
+      { mutate: { error: { code: "XX000", message: "connection reset" } } },
+      { select: { error: { code: "XX000", message: "connection reset" } } },
+    ]);
+    const r = await PATCH(patchReq({ videos: [A, C] }), ctx("p1"));
+    expect(r.status).toBe(409);
+    expect(cleanupMuxVideo).not.toHaveBeenCalled();
+  });
+
+  // ENG-1597 (e) — a concurrent append (a new upload finishing, say) can land
+  // a row between this request's writes and its own final re-read, leaving a
+  // gap (here: A0, C1, D3 — D landed at 3, not 2). Every reader assumes a
+  // contiguous 0..n-1 prefix, so this repacks whatever is actually there
+  // (keeping ITS order) and 409s so the client refetches instead of silently
+  // shipping a gapped set.
+  it("concurrent append gap: the final re-read shows A0,C1,D3 → repacked to A→0,C→1,D→2, 409 video_set_stale", async () => {
+    asAdmin();
+    seedVideoPost([
+      { id: A, sort_order: 0 },
+      { id: B, sort_order: 1 },
+      { id: C, sort_order: 2 },
+    ]);
+    sequencePostVideo([
+      { select: { rows: [videoRow(A, 0), videoRow(B, 1), videoRow(C, 2)] } },
+      { mutate: { rows: [videoRow(B, 1)] } }, // this request removes B
+      { select: { rows: [videoRow(A, 0), videoRow(C, 2)] } }, // kept check: A, C survive
+      { mutate: { rows: [] } }, // the ordinary renumber upsert (A→0, C→1) succeeds
+      // The final re-read: D has been appended (by a concurrent upload) at 3,
+      // leaving a gap at 2 — not the [A,C] this request asked for.
+      { select: { rows: [videoRow(A, 0), videoRow(C, 1), videoRow(D, 3)] } },
+      { mutate: { rows: [] } }, // the repack upsert
+    ]);
+    const r = await PATCH(patchReq({ videos: [A, C] }), ctx("p1"));
+    expect(r.status).toBe(409);
+    const j = await r.json();
+    expect(j.error.code).toBe("video_set_stale");
+    const upserts = videoWrites().filter((m) => m.op === "upsert");
+    // The LAST upsert is the repack — over whatever the re-read actually
+    // found (A, C, D), keeping THEIR order, not the request's [A, C].
+    expect(upserts.at(-1)?.payload).toEqual([
+      { id: A, post_id: "p1", sort_order: 0 },
+      { id: C, post_id: "p1", sort_order: 1 },
+      { id: D, post_id: "p1", sort_order: 2 },
+    ]);
+  });
+
+  // ENG-1597 review — a failed poster_time_s write to the slot-0 post_video
+  // row used to be log-only (the response still said 200); the value on
+  // `post` alone would then be reverted by the very next post_video write,
+  // so reporting success there was a lie. It now fails the request.
+  it("a failed poster_time_s write to the slot-0 post_video row → 400 update_failed (not log-only)", async () => {
+    asAdmin();
+    state.tables.post = {
+      select: { single: { id: "p1", type: "video" } },
+      mutate: { single: { id: "p1" } },
+    };
+    state.tables.post_video = {
+      select: { rows: [videoRow(A, 0)] },
+      mutate: { error: { code: "XX000", message: "internal error" } },
+    };
+    const r = await PATCH(patchReq({ poster_time_s: 4.2 }), ctx("p1"));
+    expect(r.status).toBe(400);
+    const j = await r.json();
+    expect(j.error.code).toBe("update_failed");
   });
 });

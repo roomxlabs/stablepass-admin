@@ -333,6 +333,259 @@ a { color: inherit; text-decoration: none; }
 .admin-topbar .search .ic { width: 16px; height: 16px; }
 .admin-content { padding: 32px 40px; }
 
+/* ====================================================================
+   PHONE SHELL (ENG-1585) — below 768px the sidebar becomes a drawer.
+
+   No mockup draws a phone shell, so this reuses the sidebar's own tokens:
+   the drawer IS `.admin-sidebar`, unchanged inside, just moved off-canvas,
+   opened from a slim `--brand-green-darker` bar carrying the same wordmark +
+   "Admin" badge. Markup + open/close state: app/(dash)/SidebarDrawer.tsx.
+
+   `--admin-mobilebar-h` is 0 on desktop, so the page topbar and the sticky
+   table header (which park under it) are unchanged there.
+   ==================================================================== */
+:root { --admin-mobilebar-h: 0px; }
+.admin-mobilebar,
+.admin-drawer-scrim,
+.admin-drawer-close { display: none; }
+.admin-topbar { top: var(--admin-mobilebar-h); }
+
+@media (max-width: 767px) {
+  :root { --admin-mobilebar-h: 56px; }
+
+  .admin-shell { grid-template-columns: minmax(0, 1fr); align-content: start; }
+
+  .admin-mobilebar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    height: var(--admin-mobilebar-h);
+    padding: 0 8px 0 16px;
+    background: var(--brand-green-darker);
+    color: var(--cream);
+    position: sticky;
+    top: 0;
+    z-index: 20;
+  }
+  .admin-mobilebar img { height: 26px; display: block; }
+  .admin-mobilebar .badge {
+    font-size: 9.5px;
+    font-weight: 700;
+    letter-spacing: 0.14em;
+    background: rgba(250, 247, 242, 0.14);
+    color: var(--cream);
+    padding: 3px 8px;
+    border-radius: 4px;
+    text-transform: uppercase;
+  }
+  .admin-mobilebar-toggle,
+  .admin-drawer-close {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 44px; height: 44px; /* iOS minimum touch target */
+    border: none;
+    border-radius: 8px;
+    background: transparent;
+    color: var(--cream);
+    cursor: pointer;
+  }
+  .admin-mobilebar-toggle { margin-left: auto; }
+  .admin-mobilebar-toggle:hover,
+  .admin-drawer-close:hover { background: rgba(250, 247, 242, 0.08); }
+  .admin-mobilebar-toggle .ic,
+  .admin-drawer-close .ic { width: 22px; height: 22px; }
+
+  .admin-sidebar {
+    position: fixed;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    height: auto;
+    width: min(280px, 85vw);
+    z-index: 40;
+    overflow-y: auto;
+    padding-top: max(24px, env(safe-area-inset-top));
+    padding-bottom: max(24px, env(safe-area-inset-bottom));
+    box-shadow: 0 24px 60px rgba(0, 0, 0, 0.25);
+    transform: translateX(-100%);
+    /* Closed = hidden, so the off-canvas links leave the tab order. The
+       visibility flip waits for the slide-out to finish. */
+    visibility: hidden;
+    transition: transform 0.22s ease, visibility 0s linear 0.22s;
+  }
+  .admin-sidebar[data-open] {
+    transform: none;
+    visibility: visible;
+    transition: transform 0.22s ease;
+  }
+  .admin-drawer-close { position: absolute; top: 12px; right: 8px; }
+  /* The foot follows the nav instead of pinning to the drawer's bottom edge.
+     `bottom: 0` resolves against the LAYOUT viewport, and mobile browsers
+     grow that past the screen while any page content is wider than the
+     phone (the tables/grids ENG-1590 fixes), which pushed a bottom-pinned
+     sign-out off-screen. Following the nav it is always in view. */
+  .admin-sidebar-foot { margin-top: 20px; }
+  .signout-btn { width: 44px; height: 44px; }
+
+  .admin-drawer-scrim {
+    display: block;
+    position: fixed;
+    inset: 0;
+    z-index: 30;
+    background: rgba(0, 0, 0, 0.45);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.22s ease;
+  }
+  .admin-drawer-scrim[data-open] { opacity: 1; pointer-events: auto; }
+
+  /* Page chrome at phone width: tighter gutters, and let a screen's topbar
+     actions wrap under its title instead of pushing the page sideways. */
+  .admin-topbar { padding: 12px 16px; flex-wrap: wrap; gap: 10px; }
+  .admin-topbar h1 { font-size: 21px; }
+  .admin-topbar .actions { flex-wrap: wrap; }
+  .admin-topbar .search { min-width: 0; }
+  .admin-content { padding: 20px 16px; }
+
+  /* The ENG-964 sticky table header parks at `--admin-topbar-h` (72px), but a
+     phone topbar WRAPS (title, then search, then actions) and is ~150px tall,
+     so the header would tuck under it and be painted over. Unstick it here;
+     ENG-1590 (A3b) owns tables at phone width and can re-pin it once the
+     phone topbar has a known height. (0,2,2) outranks the base (0,1,2) rule,
+     which sits later in the file. */
+  .admin-main .adm-table thead th { position: static; }
+
+  /* ------------------------------------------------------------------
+     Lists at phone width (ENG-1590 / A3b). Every rule is prefixed with
+     `.admin-main` so it outranks the per-screen copies of `.adm-table` /
+     `.adm-filter-bar` (posts.css, trainers.css, horses.css, waitlist.css),
+     which load AFTER this file and would win a specificity tie.
+     ------------------------------------------------------------------ */
+
+  /* Topbar with a search: the search takes the row, the primary action sits
+     beside it (compose's five-button topbar keeps the wrap set above).
+     `.search.wide` (trainers.css, 260px) is named so it cannot re-impose its
+     desktop floor (globals.css:331's 280px is already zeroed above). */
+  .admin-main .admin-topbar .actions:has(.search) { flex: 1 1 100%; flex-wrap: nowrap; min-width: 0; }
+  .admin-main .admin-topbar .actions > form { flex: 1 1 auto; min-width: 0; }
+  .admin-main .admin-topbar .search,
+  .admin-main .admin-topbar .search.wide { min-width: 0; flex: 1 1 auto; }
+  .admin-main .admin-topbar .actions > .btn { flex: none; }
+
+  /* Filter bars: chips wrap onto as many lines as they need, and the mini
+     search drops to its own full-width line (it had a 220-240px floor that
+     pushed the card sideways). */
+  .admin-main .adm-filter-bar { flex-wrap: wrap; padding: 12px 16px; gap: 8px; }
+  .admin-main .adm-filter-bar .spacer { display: none; }
+  .admin-main .adm-filter-bar .search-mini { min-width: 0; flex: 1 1 100%; }
+  .admin-main .adm-filter-bar .sort-select { flex: 1 1 100%; }
+  .admin-main .adm-scope-bar { flex-wrap: wrap; padding: 12px 16px; }
+
+  /* Tables → stacked cards (`.adm-table.stack-phone`, opt-in per screen:
+     posts, trainers, waitlist). Each row becomes one card: the first cell
+     (thumb + name) spans the width, the short cells follow on a wrapping
+     line, and the row actions sit on their own line at a thumb-sized height.
+     A cell that needs a caption once its column header is gone carries
+     `data-label`. */
+  .admin-main .adm-table.stack-phone,
+  .admin-main .adm-table.stack-phone tbody { display: block; width: 100%; }
+  .admin-main .adm-table.stack-phone tbody tr {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px 12px;
+    padding: 14px 16px;
+    border-bottom: 1px solid var(--line);
+  }
+  .admin-main .adm-table.stack-phone tbody tr:last-child { border-bottom: 0; }
+  .admin-main .adm-table.stack-phone td {
+    display: block;
+    padding: 0;
+    border: 0;
+    min-width: 0;
+    background: none;
+  }
+  .admin-main .adm-table.stack-phone td.with-thumb { display: flex; flex: 1 1 100%; }
+  /* A cell that only holds the desktop "—" placeholder says nothing in a card. */
+  .admin-main .adm-table.stack-phone td.stack-hide { display: none; }
+  .admin-main .adm-table.stack-phone td.stack-full { flex: 1 1 100%; max-width: none; }
+  .admin-main .adm-table.stack-phone td[data-label]::before {
+    content: attr(data-label);
+    display: inline;
+    margin-right: 6px;
+    font-size: 10.5px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--muted);
+  }
+  .admin-main .adm-table.stack-phone td.stack-full[data-label]::before {
+    display: block;
+    margin: 0 0 2px;
+  }
+  .admin-main .adm-table.stack-phone td.actions {
+    flex: 1 1 100%;
+    text-align: left;
+    white-space: normal;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 4px 16px;
+  }
+  .admin-main .adm-table.stack-phone td.actions:empty { display: none; }
+  .admin-main .adm-table.stack-phone td.actions a,
+  .admin-main .adm-table.stack-phone td.actions button {
+    margin-left: 0;
+    min-height: 36px;
+    display: inline-flex;
+    align-items: center;
+  }
+
+  /* The header row becomes the phone's sort bar: the sortable headers stay
+     (they are the only way to sort posts and trainers), laid out as a
+     wrapping line of links; the plain headers go, and a table with no
+     sortable header (waitlist) drops its header entirely. The `!important`
+     beats the inline `width: 28%/44%` the desktop column hints set. */
+  .admin-main .adm-table.stack-phone thead { display: block; }
+  .admin-main .adm-table.stack-phone thead:not(:has(th[aria-sort])) { display: none; }
+  .admin-main .adm-table.stack-phone thead tr {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px 16px;
+    padding: 10px 16px;
+    background: var(--cream);
+    border-bottom: 1px solid var(--line);
+  }
+  .admin-main .adm-table.stack-phone thead tr::before {
+    content: "Sort";
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--muted-light, var(--muted));
+  }
+  .admin-main .adm-table.stack-phone thead th {
+    display: block;
+    width: auto !important;
+    padding: 0;
+    border: 0;
+  }
+  .admin-main .adm-table.stack-phone thead th:not([aria-sort]) { display: none; }
+  .admin-main .adm-table.stack-phone thead .th-sort { min-height: 32px; }
+
+  /* Sign-in (ENG-370 two-step card) — the 44px desktop padding leaves a
+     270px column on a 390px phone; give the fields their width back. */
+  .admin-signin-card { padding: 32px 22px; }
+}
+
+@media (max-width: 767px) and (prefers-reduced-motion: reduce) {
+  .admin-sidebar,
+  .admin-sidebar[data-open],
+  .admin-drawer-scrim { transition: none; }
+}
+
 /* Placeholder landing (real content lands in ENG-174/T4) ------------ */
 .dash-placeholder {
   background: var(--white);
@@ -457,10 +710,20 @@ a { color: inherit; text-decoration: none; }
 .sk-row .sk-thumb { width: 36px; height: 36px; flex: 0 0 36px; }
 .sk-row .sk-grow { flex: 1 1 auto; min-width: 0; }
 .sk-head { background: var(--cream); }
+/* Mirrors `.horse-grid-adm` (horses.css) — 6 columns, 4 below 1280px, 16px
+   gap, 130px photo — so the skeleton swaps in with the same column count and
+   cover height (tile body height and the page's 20px card inset still differ). */
 .sk-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
-  gap: 18px;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 16px;
+}
+@media (width < 1280px) {
+  .sk-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+}
+/* …and 2 on a phone (ENG-1590), with the phone card gap. */
+@media (max-width: 767px) {
+  .sk-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
 }
 .sk-tile {
   background: var(--white);
@@ -468,7 +731,8 @@ a { color: inherit; text-decoration: none; }
   border-radius: 12px;
   overflow: clip;
 }
-.sk-tile .sk-photo { height: 150px; border-radius: 0; }
+/* 130px = `.horse-card-adm .cover` (horses.css) — the tile swaps in at the same height (ENG-1583). */
+.sk-tile .sk-photo { height: 130px; border-radius: 0; }
 .sk-tile .sk-body { padding: 14px 16px; }
 .sk-tile .sk-body .sk + .sk { margin-top: 10px; }
 @media (max-width: 899px) {

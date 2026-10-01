@@ -22,11 +22,88 @@ export type SubscriberStatus = "trial" | "active" | "lapsed" | "canceled";
 
 export const SUBSCRIBER_STATUSES: SubscriberStatus[] = ["trial", "active", "lapsed", "canceled"];
 
+// Where the member pays (ENG-1193, epic ENG-1183). `subscription.provider` is a
+// CHECK-constrained column added by stablepass-be ENG-1185; a NULL (a row the
+// backfill has not stamped) is a web/Stripe subscription, which is what every
+// subscription was before in-app purchase existed.
+export type SubscriberProvider = "stripe" | "app_store" | "play_store" | "promotional";
+
+export const SUBSCRIBER_PROVIDERS: SubscriberProvider[] = [
+  "stripe",
+  "app_store",
+  "play_store",
+  "promotional",
+];
+
+// Only NULL defaults. A non-null value is passed through as-is: were the CHECK
+// ever widened, a new channel must not be silently relabelled "Web" — the
+// table renders an unrecognised id verbatim instead (see providerLabel).
+function providerFrom(raw: string | null | undefined): SubscriberProvider {
+  return (raw ?? "stripe") as SubscriberProvider;
+}
+
+// Trial vs Paid (ENG-1329, epic ENG-1321). `subscription.period_type` is the
+// RevenueCat period type of the entitlement-granting subscription, added by
+// stablepass-be ENG-1323 with CHECK (period_type in ('trial','normal')) and NO
+// default. Under Pricing v2 a trialling member is `status = 'active'` too — the
+// free month is an active entitlement — so status alone cannot say who is on
+// trial; period_type can.
+//
+// NULL IS UNKNOWN, NOT PAID. Every row that predates Pricing v2 (and every row
+// never activated through RevenueCat) carries a NULL. Unlike `provider`, where
+// a NULL genuinely was a Stripe row, a NULL here carries no fact at all, so it
+// maps to its own `"unknown"` bucket and renders as "Unknown" — the screen must
+// not assert "Paid" about a row the data says nothing about.
+export type SubscriberPeriod = "trial" | "normal" | "unknown";
+
+export const SUBSCRIBER_PERIODS: SubscriberPeriod[] = ["trial", "normal", "unknown"];
+
+// Only NULL maps to "unknown". A non-null value outside the CHECK (were it ever
+// widened — B5 flags the App Store intro-offer value as unmeasured) is passed
+// through verbatim, the same rule providerFrom follows, so a new period type is
+// neither silently relabelled nor silently dropped by the filter.
+function periodFrom(raw: string | null | undefined): SubscriberPeriod {
+  return (raw ?? "unknown") as SubscriberPeriod;
+}
+
+/**
+ * The Trial / Paid label — the ONE mapping both the table cell and the CSV
+ * `period` column read, so the export can never disagree with the screen.
+ * `normal` is RevenueCat's word for a paid period; operators say "Paid".
+ */
+export function periodLabel(period: string): string {
+  switch (period) {
+    case "trial":
+      return "Trial";
+    case "normal":
+      return "Paid";
+    case "unknown":
+      return "Unknown";
+    default:
+      return period;
+  }
+}
+
+// The ONE projection every subscriber read uses — list and CSV alike. `user_id`
+// (ENG-1194) is the member's auth uid = RevenueCat App User ID, which the Comp
+// action needs; it is never rendered and never exported. Pinned by
+// literal in data.test.ts: naming `provider` here 42703s against a database
+// without ENG-1185's migration, and fetchAllSubscribers throws on that rather
+// than rendering an empty list. The same holds for `period_type` (ENG-1329):
+// it 42703s until ENG-1323's migration is deployed, so B5 ships first.
+export const SUBSCRIPTION_SELECT =
+  "id,user_id,status,provider,period_type,created_at,updated_at,current_period_end,user:user_id(name,email,is_admin)";
+
 export type SubscriberRow = {
   id: string;
+  /** `subscription.user_id` — auth uid / RevenueCat App User ID (ENG-1194). Never rendered. */
+  userId: string;
   name: string | null;
   email: string;
   status: string;
+  provider: SubscriberProvider;
+  /** Trial vs Paid from `period_type`; `"unknown"` for a NULL (ENG-1329). */
+  period: SubscriberPeriod;
   startedAt: string | null;
   currentPeriodEnd: string | null;
   // Derived, NOT a real column — see the comment on canceledAtFrom below.
@@ -46,6 +123,10 @@ export type SubscribersList = {
 
 export type SubscriberFilters = {
   status?: string;
+  /** A SubscriberProvider id; `"all"` / undefined = no filter. */
+  provider?: string;
+  /** A SubscriberPeriod id; `"all"` / undefined = no filter. Never touches `status`. */
+  period?: string;
   minMonths?: number;
   maxMonths?: number;
   q?: string;
@@ -58,7 +139,10 @@ type SubscriptionUserEmbed = { name?: string | null; email?: string | null; is_a
 
 type SubscriptionDbRow = {
   id: string;
+  user_id: string;
   status: string | null;
+  provider: string | null;
+  period_type: string | null;
   created_at: string | null;
   updated_at: string | null;
   current_period_end: string | null;
@@ -132,9 +216,12 @@ function mapRows(rows: SubscriptionDbRow[], now: Date): SubscriberRow[] {
       const user = one(r.user);
       return {
         id: r.id,
+        userId: r.user_id,
         name: user?.name?.trim() || null,
         email: (user?.email ?? "").trim(),
         status: r.status ?? "",
+        provider: providerFrom(r.provider),
+        period: periodFrom(r.period_type),
         startedAt: r.created_at ?? null,
         currentPeriodEnd: r.current_period_end ?? null,
         canceledAt: canceledAtFrom(r.status, r.updated_at),
@@ -175,7 +262,7 @@ export async function fetchAllSubscribers(
   for (let batch = 0; batch < EXPORT_MAX_BATCHES; batch++) {
     const { data, error } = await sb
       .from("subscription")
-      .select("id,status,created_at,updated_at,current_period_end,user:user_id(name,email,is_admin)")
+      .select(SUBSCRIPTION_SELECT)
       .order("created_at", { ascending: false })
       .order("id", { ascending: false })
       .range(from, from + EXPORT_BATCH_SIZE - 1);
@@ -225,13 +312,24 @@ export async function fetchAllSubscribers(
   return mapRows(all, now);
 }
 
-/** Apply status / tenure / q filters in JS. Pure — unit-tested directly. */
+/** Apply status / provider / period / tenure / q filters in JS. Pure — unit-tested directly. */
 export function applyFilters(rows: SubscriberRow[], f: SubscriberFilters): SubscriberRow[] {
   let out = rows;
 
   if (f.status && f.status !== "all") {
     const status = f.status;
     out = out.filter((r) => r.status === status);
+  }
+  if (f.provider && f.provider !== "all") {
+    const provider = f.provider;
+    out = out.filter((r) => r.provider === provider);
+  }
+  // Trial vs Paid filters on the period, NEVER on `status`: a Pricing v2
+  // trialist is status `active`, and a legacy status-`trial` row with a NULL
+  // period_type is "unknown", not a trialist.
+  if (f.period && f.period !== "all") {
+    const period = f.period;
+    out = out.filter((r) => r.period === period);
   }
   if (typeof f.minMonths === "number" && !Number.isNaN(f.minMonths)) {
     const min = f.minMonths;
@@ -289,19 +387,25 @@ function csvField(value: string): string {
 
 /**
  * RFC4180-ish CSV for the subscribers export:
- * `name,email,status,started_at,tenure_months,current_period_end,canceled_at`
+ * `name,email,status,provider,period,started_at,tenure_months,current_period_end,canceled_at`
  * header, `\r\n` line endings, a trailing newline. Escapes quotes/commas/
  * newlines and neutralises a leading `=`/`+`/`-`/`@` so opening the file in
  * Excel can't execute a formula from an attacker-supplied name.
  */
 export function toCsv(rows: SubscriberRow[]): string {
-  const lines = ["name,email,status,started_at,tenure_months,current_period_end,canceled_at"];
+  const lines = ["name,email,status,provider,period,started_at,tenure_months,current_period_end,canceled_at"];
   for (const r of rows) {
     lines.push(
       [
         csvField(r.name ?? ""),
         csvField(r.email),
         csvField(r.status),
+        // CHECK-constrained values today, but through the same escaper as
+        // every other field — the guard should not depend on the schema.
+        csvField(r.provider),
+        // The table's own label (Trial / Paid / Unknown), not the raw column,
+        // so the export and the screen say the same thing (ENG-1329).
+        csvField(periodLabel(r.period)),
         csvField(r.startedAt ?? ""),
         csvField(String(r.tenureMonths)),
         csvField(r.currentPeriodEnd ?? ""),
